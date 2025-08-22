@@ -13,6 +13,7 @@ users_commands: dict[str, dict[str, str]] = {
         "menu": "main menu with earning schemes",
         "settings": "setting information about you",
         "supports": "support contacts",
+        "onboarding": "nutrition onboarding",
     },
     "uk": {
         "help": "help",
@@ -20,6 +21,7 @@ users_commands: dict[str, dict[str, str]] = {
         "menu": "main menu with earning schemes",
         "settings": "setting information about you",
         "supports": "support contacts",
+        "onboarding": "nutrition onboarding",
     },
     "ru": {
         "help": "help",
@@ -27,6 +29,7 @@ users_commands: dict[str, dict[str, str]] = {
         "menu": "main menu with earning schemes",
         "settings": "setting information about you",
         "supports": "support contacts",
+        "onboarding": "nutrition onboarding",
     },
 }
 
