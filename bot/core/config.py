@@ -11,7 +11,7 @@ DIR = Path(__file__).absolute().parent.parent.parent
 BOT_DIR = Path(__file__).absolute().parent.parent
 LOCALES_DIR = f"{BOT_DIR}/locales"
 I18N_DOMAIN = "messages"
-DEFAULT_LOCALE = "en"
+DEFAULT_LOCALE = "ru"
 
 
 class EnvBaseSettings(BaseSettings):
@@ -37,6 +37,7 @@ class BotSettings(WebhookSettings):
     BOT_TOKEN: str
     SUPPORT_URL: str | None = None
     RATE_LIMIT: int | float = 0.5  # for throttling control
+    PAY_URL: str | None = None
 
 
 class DBSettings(EnvBaseSettings):
