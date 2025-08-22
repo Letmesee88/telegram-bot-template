@@ -18,7 +18,8 @@ from sqlalchemy import inspect
 from wtforms import PasswordField
 
 from admin.views.users import UserView as AppUserView
-from bot.database.models import UserModel as AppUserModel
+from admin.views.onboarding import OnboardingAnswerView
+from bot.database.models import UserModel as AppUserModel, OnboardingAnswerModel
 
 if TYPE_CHECKING:
     from werkzeug.wrappers.response import Response
@@ -200,6 +201,16 @@ admin.add_view(
         menu_icon_value="fa-tags",
         name="Roles",
         endpoint="roles",
+    ),
+)
+admin.add_view(
+    OnboardingAnswerView(
+        OnboardingAnswerModel,
+        db.session,
+        menu_icon_type=ICON_TYPE_FONT_AWESOME,
+        menu_icon_value="fa-list-alt",
+        name="Onboarding",
+        endpoint="onboarding",
     ),
 )
 
