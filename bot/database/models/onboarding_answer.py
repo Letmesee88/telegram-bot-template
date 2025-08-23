@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Optional
+from datetime import datetime
 
 from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -25,6 +26,6 @@ class OnboardingAnswerModel(Base):
     calories: Mapped[Optional[int]] = mapped_column(Integer, index=True)
 
     created_at: Mapped[created_at]
-    updated_at: Mapped[Optional[str]] = mapped_column(
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(), server_default=text("TIMEZONE('utc', now())"), onupdate=text("TIMEZONE('utc', now())")
     )
