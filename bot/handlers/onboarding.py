@@ -65,31 +65,43 @@ async def gender_retry(message: Message) -> None:
 
 @router.message(OnboardingStates.age, F.text.regexp(r"^\d{1,3}$"))
 async def age_set(message: Message, state: FSMContext) -> None:
-    await state.update_data(age=int(message.text))
+    age = int(message.text)
+    if not (1 <= age <= 120):
+        await message.answer(_("Пожалуйста, введите корректный возраст (от 1 до 120 лет)"))
+        return
+    await state.update_data(age=age)
     await state.set_state(OnboardingStates.weight)
     await message.answer(_("Вес, кг (например: 82.5):"))
 
 
 @router.message(OnboardingStates.age)
 async def age_retry(message: Message) -> None:
-    await message.answer(_("Некорректный возраст. Пример: 27"))
+    await message.answer(_("Пожалуйста, введите корректный возраст (от 1 до 120 лет)"))
 
 
-@router.message(OnboardingStates.weight, F.text.regexp(r"^\d{2,3}(\.\d{1,2})?$"))
+@router.message(OnboardingStates.weight, F.text.regexp(r"^\d{2,3}([.,]\d{1,2})?$"))
 async def weight_set(message: Message, state: FSMContext) -> None:
-    await state.update_data(weight_kg=float(message.text.replace(",", ".")))
+    w = float(message.text.replace(",", "."))
+    if not (30 <= w <= 300):
+        await message.answer(_("Пожалуйста, введите корректный вес (от 30 до 300 килограммов)"))
+        return
+    await state.update_data(weight_kg=w)
     await state.set_state(OnboardingStates.height)
     await message.answer(_("Рост, см (например: 178):"))
 
 
 @router.message(OnboardingStates.weight)
 async def weight_retry(message: Message) -> None:
-    await message.answer(_("Некорректный вес. Пример: 82.5"))
+    await message.answer(_("Пожалуйста, введите корректный вес (от 30 до 300 килограммов)"))
 
 
 @router.message(OnboardingStates.height, F.text.regexp(r"^\d{3}$"))
 async def height_set(message: Message, state: FSMContext) -> None:
-    await state.update_data(height_cm=float(message.text))
+    h = float(message.text)
+    if not (120 <= h <= 250):
+        await message.answer(_("Пожалуйста, введите корректный рост (от 120 до 250 см)"))
+        return
+    await state.update_data(height_cm=h)
     await state.set_state(OnboardingStates.activity)
     await message.answer(
         _(
@@ -101,7 +113,7 @@ async def height_set(message: Message, state: FSMContext) -> None:
 
 @router.message(OnboardingStates.height)
 async def height_retry(message: Message) -> None:
-    await message.answer(_("Некорректный рост. Пример: 178"))
+    await message.answer(_("Пожалуйста, введите корректный рост (от 120 до 250 см)"))
 
 
 @router.message(OnboardingStates.activity, F.text.len() >= 10)
@@ -113,7 +125,7 @@ async def activity_set(message: Message, state: FSMContext) -> None:
 
 @router.message(OnboardingStates.activity)
 async def activity_retry(message: Message) -> None:
-    await message.answer(_("Слишком коротко. Напиши подробнее (минимум 10 символов)"))
+    await message.answer(_("Пожалуйста, опишите вашу активность подробнее (минимум 10 символов)"))
 
 
 @router.message(OnboardingStates.goal, F.text.casefold().in_(["lose", "gain", "maintain"]))
@@ -137,7 +149,7 @@ async def goal_retry(message: Message) -> None:
     await message.answer(_("Введи одну из целей: lose | gain | maintain"))
 
 
-@router.message(OnboardingStates.goal_weight, F.text.regexp(r"^\d{2,3}(\.\d{1,2})?$"))
+@router.message(OnboardingStates.goal_weight, F.text.regexp(r"^\d{2,3}([.,]\d{1,2})?$"))
 async def goal_weight_set(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     current_w = float(data.get("weight_kg"))
