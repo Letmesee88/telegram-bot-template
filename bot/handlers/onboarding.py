@@ -24,6 +24,7 @@ class OnboardingStates(StatesGroup):
     height = State()
     activity = State()
     goal = State()
+    goal_weight = State()
     speed = State()
 
 
@@ -117,14 +118,48 @@ async def activity_retry(message: Message) -> None:
 
 @router.message(OnboardingStates.goal, F.text.casefold().in_(["lose", "gain", "maintain"]))
 async def goal_set(message: Message, state: FSMContext) -> None:
-    await state.update_data(goal=message.text.strip().lower())
-    await state.set_state(OnboardingStates.speed)
-    await message.answer(_("Скорость: COMFORT | EFFORT | FAST (или пропусти сообщением '-')"))
+    goal_raw = message.text.strip().lower()
+    await state.update_data(goal=goal_raw)
+
+    # Если поддержание веса — скорость не нужна, сразу к финалу
+    if goal_raw == "maintain":
+        await state.set_state(OnboardingStates.speed)
+        await message.answer(_("Скорость для поддержания не требуется. Отправь '-' чтобы продолжить."))
+        return
+
+    # Для lose/gain — спросим целевой вес
+    await state.set_state(OnboardingStates.goal_weight)
+    await message.answer(_("К какому весу стремишься? Укажи в кг (например: 75.0)"))
 
 
 @router.message(OnboardingStates.goal)
 async def goal_retry(message: Message) -> None:
     await message.answer(_("Введи одну из целей: lose | gain | maintain"))
+
+
+@router.message(OnboardingStates.goal_weight, F.text.regexp(r"^\d{2,3}(\.\d{1,2})?$"))
+async def goal_weight_set(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    current_w = float(data.get("weight_kg"))
+    goal_w = float(message.text.replace(",", "."))
+    goal_raw = str(data.get("goal"))
+
+    # Простая бизнес-валидация из ТЗ
+    if goal_raw == "lose" and goal_w >= current_w:
+        await message.answer(_("Для похудения целевой вес должен быть меньше текущего. Попробуй ещё раз."))
+        return
+    if goal_raw == "gain" and goal_w <= current_w:
+        await message.answer(_("Для набора массы целевой вес должен быть больше текущего. Попробуй ещё раз."))
+        return
+
+    await state.update_data(goal_weight_kg=goal_w)
+    await state.set_state(OnboardingStates.speed)
+    await message.answer(_("Скорость: COMFORT | EFFORT | FAST (или пропусти сообщением '-')"))
+
+
+@router.message(OnboardingStates.goal_weight)
+async def goal_weight_retry(message: Message) -> None:
+    await message.answer(_("Некорректный формат. Пример: 75.0"))
 
 
 @router.message(OnboardingStates.speed)
@@ -150,6 +185,7 @@ async def speed_and_finish(message: Message, state: FSMContext) -> None:
             activity_text=str(data["activity_text"]),
             goal=Goal(data["goal"]),
             speed=speed,
+            goal_weight_kg=float(data["goal_weight_kg"]) if data.get("goal_weight_kg") is not None else None,
         )
     except Exception as e:  # pydantic validation errors
         logger.warning(f"Onboarding validation failed: {e}")
@@ -169,19 +205,19 @@ async def speed_and_finish(message: Message, state: FSMContext) -> None:
                 select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == payload.user_id)
             )
 
-            data_json = payload.model_dump()
+            data_json = payload.model_dump(mode="json")
             data_json["activity_level"] = level.value
 
             if existing:
                 existing.data = data_json
-                existing.daily_plan = plan.model_dump()
+                existing.daily_plan = plan.model_dump(mode="json")
                 existing.goal = payload.goal.value
                 existing.calories = plan.calories
             else:
                 record = OnboardingAnswerModel(
                     user_id=payload.user_id,
                     data=data_json,
-                    daily_plan=plan.model_dump(),
+                    daily_plan=plan.model_dump(mode="json"),
                     goal=payload.goal.value,
                     calories=plan.calories,
                 )
@@ -193,15 +229,22 @@ async def speed_and_finish(message: Message, state: FSMContext) -> None:
         # оставляем состояние, чтобы пользователь мог повторить ввод скорости или отменить
         return
 
-    await message.answer(
-        _("Готово! Твой дневной план:")
-        + "\n"
-        + f"- {_("Калории")}: {plan.calories}\n"
-        + f"- {_("Белки")}: {plan.protein_g} г\n"
-        + f"- {_("Жиры")}: {plan.fat_g} г\n"
-        + f"- {_("Углеводы")}: {plan.carbs_g} г\n"
-        + "\n"
-        + f"{_("Цель")}: {payload.goal.value} | {_("Скорость")}: {speed.value if speed else '-'} | {_("Активность")}: {level.value}"
-    )
+    # Формируем ответ
+    lines = [_("Готово! Твой дневной план:")]
+    lines.append(f"- {_('Калории')}: {plan.calories}")
+    lines.append(f"- {_('Белки')}: {plan.protein_g} г")
+    lines.append(f"- {_('Жиры')}: {plan.fat_g} г")
+    lines.append(f"- {_('Углеводы')}: {plan.carbs_g} г")
+    lines.append("")
+    lines.append(f"{_('TDEE')}: {plan.tdee} {_('ккал/день')}")
+    if payload.goal != Goal.maintain:
+        lines.append(f"{_('Скорость')}: {plan.weekly_rate_kg} {_('кг/нед')}")
+        if plan.eta_date is not None:
+            formatted_date = plan.eta_date.strftime('%d-%m-%Y')
+            lines.append(f"{_('Ориентировочно к дате')}: {formatted_date}")
+    lines.append("")
+    lines.append(f"{_('Цель')}: {payload.goal.value} | {_('Скорость')}: {speed.value if speed else '-'} | {_('Активность')}: {level.value}")
+
+    await message.answer("\n".join(lines))
 
     await state.clear()

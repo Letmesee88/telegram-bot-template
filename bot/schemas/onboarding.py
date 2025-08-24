@@ -1,6 +1,7 @@
 from __future__ import annotations
 from enum import Enum
 from typing import Optional
+from datetime import date
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -88,3 +89,6 @@ class DailyPlan(BaseModel):
     fat_g: int
     carbs_g: int
     sources: list[str]
+    tdee: int
+    weekly_rate_kg: float
+    eta_date: Optional[date]

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from math import floor
-from typing import Tuple
+from typing import Tuple, Optional
+from datetime import date, timedelta
 
 from loguru import logger
 
@@ -21,6 +22,21 @@ SOURCES = [
     "https://journals.physiology.org/doi/full/10.1152/ajpendo.00156.2017",  # Metabolic calculations
     "https://ceur-ws.org/Vol-3806/S_42_Pleskach.pdf",  # Calorie counting systems
 ]
+
+# Speed presets as percent of body weight per week (absolute value)
+SPEED_PERCENT_BY_WEIGHT = {
+    Speed.comfort: 0.003,  # 0.3%
+    Speed.effort: 0.005,   # 0.5%
+    Speed.fast: 0.008,     # 0.8%
+}
+
+# Safety limits
+MAX_LOSS_RATE = 0.01  # 1% weight/week
+MAX_GAIN_RATE = 0.005  # 0.5% weight/week
+MAX_DEFICIT_ABS = 1000  # kcal/day
+MAX_DEFICIT_FRAC = 0.25  # 25% of TDEE
+GAIN_MIN_SURPLUS = 200  # kcal/day
+GAIN_MAX_SURPLUS = 500  # kcal/day
 
 
 def calc_bmr_mifflin(gender: Gender, age: int, weight: float, height: float) -> float:
@@ -56,30 +72,52 @@ def _infer_activity_level(text: str) -> ActivityLevel:
     return ActivityLevel.sedentary
 
 
-def _apply_goal_and_speed(tdee: float, goal: Goal, speed: Speed | None) -> float:
-    """Apply base goal adjustment and speed multiplier as percent of TDEE.
-    Base: lose -15%, gain +15%, maintain 0%.
-    Speed: COMFORT ±5%, EFFORT ±10%, FAST ±15% (same direction), maintain ignores speed.
+def _decide_rate_and_target_cal(
+    tdee: float,
+    goal: Goal,
+    speed: Optional[Speed],
+    weight_kg: float,
+) -> tuple[float, float]:
     """
-    base = 0.0
+    Returns (weekly_rate_kg, target_calories).
+
+    - Convert speed preset to kg/week using percent of body weight.
+    - Apply safety limits on rate and daily calorie delta.
+    - Maintain -> rate=0, target=tdee.
+    """
+    if goal == Goal.maintain or speed is None:
+        return 0.0, float(tdee)
+
+    # requested weekly rate in kg/week (absolute value)
+    requested_rate = SPEED_PERCENT_BY_WEIGHT.get(speed, 0.003) * weight_kg
+
     if goal == Goal.lose:
-        base = -0.15
+        # cap by max percent/week
+        rate = min(requested_rate, MAX_LOSS_RATE * weight_kg)
+        # translate to kcal/day deficit
+        deficit = rate * 7700.0 / 7.0
+        # cap by TDEE-based safety
+        max_deficit = min(MAX_DEFICIT_ABS, MAX_DEFICIT_FRAC * tdee)
+        if deficit > max_deficit:
+            deficit = max_deficit
+            rate = deficit * 7.0 / 7700.0
+        target = max(100.0, tdee - deficit)
+        return rate, target
+
     elif goal == Goal.gain:
-        base = 0.15
-    else:  # maintain
-        base = 0.0
+        rate = min(requested_rate, MAX_GAIN_RATE * weight_kg)
+        surplus = rate * 7700.0 / 7.0
+        # keep surplus within 200..500 kcal/day
+        if surplus < GAIN_MIN_SURPLUS:
+            surplus = GAIN_MIN_SURPLUS
+            rate = surplus * 7.0 / 7700.0
+        if surplus > GAIN_MAX_SURPLUS:
+            surplus = GAIN_MAX_SURPLUS
+            rate = surplus * 7.0 / 7700.0
+        target = tdee + surplus
+        return rate, target
 
-    extra = 0.0
-    if goal != Goal.maintain and speed is not None:
-        if speed == Speed.comfort:
-            extra = 0.05 if goal == Goal.gain else -0.05
-        elif speed == Speed.effort:
-            extra = 0.10 if goal == Goal.gain else -0.10
-        elif speed == Speed.fast:
-            extra = 0.15 if goal == Goal.gain else -0.15
-
-    factor = 1.0 + base + extra
-    return max(100.0, tdee * factor)  # never below 100 kcal as a sanity floor
+    return 0.0, float(tdee)
 
 
 def _macro_split(goal: Goal) -> Tuple[float, float, float]:
@@ -109,7 +147,7 @@ def calculate_daily_plan(data: OnboardingData) -> DailyPlan:
     - BMR via Mifflin–St Jeor
     - Determine activity level (provided or inferred)
     - TDEE = BMR * activity_multiplier
-    - Apply goal and speed adjustments
+    - Convert speed preset to weekly rate (kg/нед) with safety limits; compute target calories
     - Split macros per TZ and convert to grams
     """
     # Activity
@@ -120,12 +158,25 @@ def calculate_daily_plan(data: OnboardingData) -> DailyPlan:
     bmr = calc_bmr_mifflin(data.gender, data.age, data.weight_kg, data.height_cm)
     tdee = bmr * activity_multiplier
 
-    # Apply goal/speed
-    target_cal = _apply_goal_and_speed(tdee, data.goal, data.speed)
+    # Rate and target calories according to TZ presets and safety
+    weekly_rate_kg, target_cal = _decide_rate_and_target_cal(
+        tdee=tdee,
+        goal=data.goal,
+        speed=data.speed,
+        weight_kg=data.weight_kg,
+    )
 
     # Macros
     p_frac, f_frac, c_frac = _macro_split(data.goal)
     p_g, f_g, c_g = _cal_to_grams(target_cal, p_frac, f_frac, c_frac)
+
+    # ETA
+    eta: Optional[date] = None
+    if data.goal != Goal.maintain and data.goal_weight_kg is not None and weekly_rate_kg > 0:
+        delta = abs(data.weight_kg - data.goal_weight_kg)
+        if delta > 0:
+            weeks = delta / weekly_rate_kg
+            eta = date.today() + timedelta(days=int(round(weeks * 7)))
 
     result = DailyPlan(
         calories=int(round(target_cal)),
@@ -133,10 +184,13 @@ def calculate_daily_plan(data: OnboardingData) -> DailyPlan:
         fat_g=f_g,
         carbs_g=c_g,
         sources=SOURCES,
+        tdee=int(round(tdee)),
+        weekly_rate_kg=round(weekly_rate_kg, 2),
+        eta_date=eta,
     )
 
     logger.info(
-        "daily_plan computed | user_id={}, gender={}, age={}, w={}, h={}, act={}, bmr={}, tdee={}, target={}, p/f/c={}/{}/{}",
+        "daily_plan computed | user_id={}, gender={}, age={}, w={}, h={}, act={}, bmr={}, tdee={}, target={}, rate_kg_per_wk={}, eta={}, p/f/c={}/{}/{}",
         data.user_id,
         data.gender,
         data.age,
@@ -146,6 +200,8 @@ def calculate_daily_plan(data: OnboardingData) -> DailyPlan:
         round(bmr, 2),
         round(tdee, 2),
         result.calories,
+        weekly_rate_kg,
+        eta,
         result.protein_g,
         result.fat_g,
         result.carbs_g,
