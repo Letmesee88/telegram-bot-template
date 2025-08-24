@@ -18,6 +18,8 @@ def register_middlewares(dp: Dispatcher) -> None:
 
     dp.message.middleware(AuthMiddleware())
 
+    dp.callback_query.middleware(AuthMiddleware())
+
     ACLMiddleware(i18n=_i18n).setup(dp)
 
     dp.callback_query.middleware(CallbackAnswerMiddleware())

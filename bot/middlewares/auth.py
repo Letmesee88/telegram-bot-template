@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from aiogram import BaseMiddleware
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from loguru import logger
 
 from bot.services.users import add_user, user_exists
@@ -22,12 +22,19 @@ class AuthMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        if not isinstance(event, Message):
-            return await handler(event, data)
-
         session: AsyncSession = data["session"]
-        message: Message = event
-        user = message.from_user
+
+        user = None
+        referrer: str | None = None
+
+        if isinstance(event, Message):
+            user = event.from_user
+            referrer = find_command_argument(event.text)
+        elif isinstance(event, CallbackQuery):
+            user = event.from_user
+            # referrer не извлекаем из callback
+        else:
+            return await handler(event, data)
 
         if not user:
             return await handler(event, data)
@@ -35,9 +42,7 @@ class AuthMiddleware(BaseMiddleware):
         if await user_exists(session, user.id):
             return await handler(event, data)
 
-        referrer = find_command_argument(message.text)
-
-        logger.info(f"new user registration | user_id: {user.id} | message: {message.text}")
+        logger.info(f"new user registration | user_id: {user.id}")
 
         await add_user(session=session, user=user, referrer=referrer)
 
