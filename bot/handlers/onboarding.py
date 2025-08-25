@@ -141,13 +141,13 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
     lines.append(f"🔥 {_('Калории')}: {plan.calories} {_('ккал')}")
     lines.append(f"🥩 {_('Белки')}: {plan.protein_g} {_('г')}")
     lines.append(f"🥑 {_('Жиры')}: {plan.fat_g} {_('г')}")
-    lines.append(f"🥔 {_('Углеводы')}: {plan.carbs_g} {_('г')}")
+    lines.append(f"🍞 {_('Углеводы')}: {plan.carbs_g} {_('г')}")
 
     lines.append("")
     lines.append("📚 <b>" + _("Научные основы расчетов:") + "</b>")
-    lines.append("• " + "https://pubmed.ncbi.nlm.nih.gov/2305711/")
-    lines.append("• " + "https://journals.physiology.org/doi/full/10.1152/ajpendo.00156.2017")
-    lines.append("• " + "https://ceur-ws.org/Vol-3806/S_42_Pleskach.pdf")
+    lines.append("• <a href=\"https://pubmed.ncbi.nlm.nih.gov/2305711/\">Формула Миффлина-Сан Жеора</a>")
+    lines.append("• <a href=\"https://journals.physiology.org/doi/full/10.1152/ajpendo.00156.2017\">Метаболические расчеты</a>")
+    lines.append("• <a href=\"https://ceur-ws.org/Vol-3806/S_42_Pleskach.pdf\">Системы подсчета калорий</a>")
 
     lines.append("")
     lines.append(_("Оставим так или что-то скорректируем?"))
@@ -157,7 +157,7 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
         [("Хочу скорректировать", "final:adjust")],
     ])
 
-    await message.answer("\n".join(lines), reply_markup=kb)
+    await message.answer("\n".join(lines), reply_markup=kb, disable_web_page_preview=True)
     await state.set_state(OnboardingStates.review)
 
 
