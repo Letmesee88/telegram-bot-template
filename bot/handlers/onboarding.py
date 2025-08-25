@@ -187,6 +187,7 @@ async def cmd_onboarding(message: Message, state: FSMContext) -> None:
 # Allow launching from inline menu button (backward compat)
 @router.callback_query(F.data == "onboarding")
 async def cb_onboarding(call: CallbackQuery, state: FSMContext) -> None:
+    logger.info("cb_onboarding | user_id={} | chat_id={}", getattr(call.from_user, 'id', None), getattr(call.message.chat, 'id', None))
     await cmd_onboarding(call.message, state)  # type: ignore[arg-type]
     await call.answer()
 
