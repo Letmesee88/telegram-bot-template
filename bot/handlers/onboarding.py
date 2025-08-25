@@ -197,8 +197,7 @@ async def cb_onboarding_start(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(OnboardingStates.gender)
     caption = _("Теперь нужно собрать начальные показатели, чтобы составить план. Начнём с выбора пола")
     kb = _ikb([
-        [("Я мужчина", "gender:male")],
-        [("Я девушка", "gender:female")],
+        [("Я мужчина", "gender:male"), ("Я девушка", "gender:female")],
     ])
     try:
         photo = FSInputFile("bot/static/gender.jpg")
