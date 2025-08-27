@@ -220,17 +220,32 @@ async def cb_gender(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
 
 
-# Текстовый fallback (male/female)
+# Текстовый fallback (male/female) — запрещаем свободный ввод, повторяем шаг с кнопками
 @router.message(OnboardingStates.gender, F.text.casefold().in_(["male", "female"]))
 async def gender_set(message: Message, state: FSMContext) -> None:
-    await state.update_data(gender=message.text.strip().lower())
-    await state.set_state(OnboardingStates.age)
-    await message.answer(_("Сколько тебе лет?"))
+    caption = _("Теперь нужно собрать начальные показатели, чтобы составить план. Начнём с выбора пола")
+    kb = _ikb([
+        [("Я мужчина", "gender:male"), ("Я девушка", "gender:female")],
+    ])
+    try:
+        photo = FSInputFile("bot/static/gender.jpg")
+        await message.answer_photo(photo, caption=caption, reply_markup=kb)
+    except Exception:
+        await message.answer(caption, reply_markup=kb)
 
 
+# На шаге выбора пола любые сообщения — только кнопки
 @router.message(OnboardingStates.gender)
 async def gender_retry(message: Message) -> None:
-    await message.answer(_("Введи male или female"))
+    caption = _("Теперь нужно собрать начальные показатели, чтобы составить план. Начнём с выбора пола")
+    kb = _ikb([
+        [("Я мужчина", "gender:male"), ("Я девушка", "gender:female")],
+    ])
+    try:
+        photo = FSInputFile("bot/static/gender.jpg")
+        await message.answer_photo(photo, caption=caption, reply_markup=kb)
+    except Exception:
+        await message.answer(caption, reply_markup=kb)
 
 
 # =====================
@@ -336,24 +351,33 @@ async def cb_goal(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
 
 
-# Текстовый fallback цели
+# Текстовый fallback цели — запрещаем свободный ввод, повторяем шаг с кнопками
 @router.message(OnboardingStates.goal, F.text.casefold().in_(["lose", "gain", "maintain"]))
 async def goal_set(message: Message, state: FSMContext) -> None:
-    goal_raw = message.text.strip().lower()
-    await state.update_data(goal=goal_raw)
-
-    if goal_raw == "maintain":
-        await state.set_state(OnboardingStates.speed)
-        await _finalize_and_show(message, state, message.from_user.id)
-        return
-
-    await state.set_state(OnboardingStates.goal_weight)
-    await message.answer(_("К какому весу стремишься? Укажи в кг (например: 75.0)"))
+    text = _(
+        "Зафиксировал! Теперь самое главное — поставим цель\n"
+        "TapTap  помогает достигать долгосрочных результатов благодаря развитию полезных привычек"
+    )
+    kb = _ikb([
+        [("Хочу похудеть", "goal:lose")],
+        [("Хочу набрать мышечную массу", "goal:gain")],
+        [("Хочу поддерживать текущий вес", "goal:maintain")],
+    ])
+    await message.answer(text, reply_markup=kb)
 
 
 @router.message(OnboardingStates.goal)
 async def goal_retry(message: Message) -> None:
-    await message.answer(_("Введи одну из целей: lose | gain | maintain"))
+    text = _(
+        "Зафиксировал! Теперь самое главное — поставим цель\n"
+        "TapTap  помогает достигать долгосрочных результатов благодаря развитию полезных привычек"
+    )
+    kb = _ikb([
+        [("Хочу похудеть", "goal:lose")],
+        [("Хочу набрать мышечную массу", "goal:gain")],
+        [("Хочу поддерживать текущий вес", "goal:maintain")],
+    ])
+    await message.answer(text, reply_markup=kb)
 
 
 # =====================
@@ -408,21 +432,32 @@ async def cb_speed(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
 
 
-# Fallback: ввод скорости текстом
+# Fallback: ввод скорости текстом — запрещаем свободный ввод, повторяем шаг с кнопками
 @router.message(OnboardingStates.speed)
 async def speed_and_finish(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
+    current_w = float(data.get("weight_kg")) if data.get("weight_kg") is not None else None
 
-    speed_raw = message.text.strip().upper() if message.text else None
-    speed = None
-    if speed_raw and speed_raw != "-":
-        if speed_raw not in {"COMFORT", "EFFORT", "FAST"}:
-            await message.answer(_("Скорость не распознана. Используй: COMFORT | EFFORT | FAST | '-' для пропуска"))
-            return
-        speed = Speed(speed_raw)
-        await state.update_data(speed=speed.value)
+    # Если нет веса в состоянии, просто просим выбрать кнопку ещё раз
+    if current_w is None:
+        kb = _ikb([
+            [("С комфортом", "speed:COMFORT")],
+            [("С усилием", "speed:EFFORT")],
+            [("Ускоренно", "speed:FAST")],
+        ])
+        await message.answer(_("Как быстро хочешь достичь цели?"), reply_markup=kb)
+        return
 
-    await _finalize_and_show(message, state, message.from_user.id)
+    comfort = _format_rate(current_w, SPEED_PERCENT_BY_WEIGHT[Speed.comfort])
+    effort = _format_rate(current_w, SPEED_PERCENT_BY_WEIGHT[Speed.effort])
+    fast = _format_rate(current_w, SPEED_PERCENT_BY_WEIGHT[Speed.fast])
+
+    kb = _ikb([
+        [(f"С комфортом {comfort} кг в неделю", "speed:COMFORT")],
+        [(f"С усилием {effort} кг в неделю", "speed:EFFORT")],
+        [(f"Ускоренно {fast} кг в неделю", "speed:FAST")],
+    ])
+    await message.answer(_("Как быстро хочешь достичь цели?"), reply_markup=kb)
 
 
 # =====================
