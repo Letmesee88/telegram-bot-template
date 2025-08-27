@@ -17,7 +17,7 @@ class OnboardingAnswerModel(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True, nullable=False)
     user: Mapped[UserModel] = relationship(UserModel, lazy="joined")  # Removed quotes around UserModel
 
-    # Raw onboarding answers and computed plan stored as JSON
+    # Raw onboarding answers and computed plan stored as json
     data: Mapped[dict] = mapped_column(JSON, nullable=False)
     daily_plan: Mapped[dict] = mapped_column(JSON, nullable=False)
 
