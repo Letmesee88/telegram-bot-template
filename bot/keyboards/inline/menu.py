@@ -7,14 +7,10 @@ def main_keyboard() -> InlineKeyboardMarkup:
     """Use in main menu."""
     buttons = [
         [InlineKeyboardButton(text=_("onboarding button"), callback_data="onboarding")],
-        [InlineKeyboardButton(text=_("wallet button"), callback_data="wallet")],
-        [InlineKeyboardButton(text=_("premium button"), callback_data="premium")],
-        [InlineKeyboardButton(text=_("info button"), callback_data="info")],
-        [InlineKeyboardButton(text=_("support button"), callback_data="support")],
     ]
 
     keyboard = InlineKeyboardBuilder(markup=buttons)
 
-    keyboard.adjust(1, 1, 2)
+    keyboard.adjust(1)
 
     return keyboard.as_markup()

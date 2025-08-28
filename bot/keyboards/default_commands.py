@@ -8,27 +8,15 @@ if TYPE_CHECKING:
 
 users_commands: dict[str, dict[str, str]] = {
     "en": {
-        "help": "help",
-        "contacts": "developer contact details",
-        "menu": "main menu with earning schemes",
-        "settings": "setting information about you",
-        "supports": "support contacts",
+        "start": "start bot",
         "onboarding": "nutrition onboarding",
     },
     "uk": {
-        "help": "help",
-        "contacts": "developer contact details",
-        "menu": "main menu with earning schemes",
-        "settings": "setting information about you",
-        "supports": "support contacts",
+        "start": "start bot",
         "onboarding": "nutrition onboarding",
     },
     "ru": {
-        "help": "help",
-        "contacts": "developer contact details",
-        "menu": "main menu with earning schemes",
-        "settings": "setting information about you",
-        "supports": "support contacts",
+        "start": "start bot",
         "onboarding": "nutrition onboarding",
     },
 }

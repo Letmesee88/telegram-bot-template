@@ -20,7 +20,6 @@ def support_keyboard() -> InlineKeyboardMarkup:
     """Use when call support query."""
     buttons = [
         [InlineKeyboardButton(text=_("support button"), url=settings.SUPPORT_URL)],
-        [InlineKeyboardButton(text=_("back button"), callback_data="menu")],
     ]
 
     keyboard = InlineKeyboardBuilder(markup=buttons)
