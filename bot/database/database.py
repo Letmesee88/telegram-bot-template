@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from asyncpg import Connection
+from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from bot.core.config import settings
@@ -20,7 +21,7 @@ def get_engine(url: URL | str = settings.database_url) -> AsyncEngine:
     return create_async_engine(
         url=url,
         echo=settings.DEBUG,
-        pool_size=0,
+        poolclass=NullPool,
         connect_args={
             "connection_class": CConnection,
         },

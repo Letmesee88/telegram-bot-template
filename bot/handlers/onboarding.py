@@ -153,7 +153,7 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
     lines.append(_("Оставим так или что-то скорректируем?"))
 
     kb = _ikb([
-        [("Все отлично", "final:ok")],
+        [("Отлично", "final:ok")],
         [("Хочу скорректировать", "final:adjust")],
     ])
 
