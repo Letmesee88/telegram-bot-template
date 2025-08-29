@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from aiogram.types import BotCommand, BotCommandScopeDefault
+from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeAllPrivateChats
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -9,15 +9,12 @@ if TYPE_CHECKING:
 users_commands: dict[str, dict[str, str]] = {
     "en": {
         "start": "start bot",
-        "onboarding": "nutrition onboarding",
     },
     "uk": {
         "start": "start bot",
-        "onboarding": "nutrition onboarding",
     },
     "ru": {
         "start": "start bot",
-        "onboarding": "nutrition onboarding",
     },
 }
 
@@ -46,6 +43,11 @@ async def set_default_commands(bot: Bot) -> None:
             scope=BotCommandScopeDefault(),
             language_code=language_code,
         )
+        await bot.set_my_commands(
+            [BotCommand(command=command, description=description) for command, description in commands.items()],
+            scope=BotCommandScopeAllPrivateChats(),
+            language_code=language_code,
+        )
 
         """ Commands for admins
         for admin_id in await admin_ids():
@@ -61,3 +63,4 @@ async def set_default_commands(bot: Bot) -> None:
 
 async def remove_default_commands(bot: Bot) -> None:
     await bot.delete_my_commands(scope=BotCommandScopeDefault())
+    await bot.delete_my_commands(scope=BotCommandScopeAllPrivateChats())

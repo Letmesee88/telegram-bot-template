@@ -25,6 +25,7 @@ from bot.services.plan import (
     _infer_activity_level as infer_activity_level,
     SPEED_PERCENT_BY_WEIGHT,
 )
+from bot.handlers import start as start_module
 
 router = Router()
 
@@ -84,7 +85,7 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
         )
     except Exception as e:
         logger.warning(f"Onboarding validation failed: {e}")
-        await message.answer(_("Данные не прошли валидацию. Попробуй заново: /onboarding"))
+        await message.answer(_("Данные не прошли валидацию. Попробуй заново: /start"))
         await state.clear()
         return
 
@@ -120,7 +121,7 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
             await session.commit()
     except Exception as e:
         logger.exception("onboarding.finalize.db_error | user_id={} | error={}", payload.user_id, e)
-        await message.answer(_("Не удалось сохранить данные. Попробуй ещё раз или позже: /onboarding"))
+        await message.answer(_("Не удалось сохранить данные. Попробуй ещё раз или позже: /start"))
         return
 
     # Сформировать финальный текст согласно ТЗ
@@ -170,25 +171,9 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
 @router.message(Command("onboarding"))
 @router.message(Command("onbording"))  # alias for common typo
 async def cmd_onboarding(message: Message, state: FSMContext) -> None:
-    logger.info("/onboarding command received | from_user={} | chat_id={}", getattr(message.from_user, 'id', None), getattr(message.chat, 'id', None))
-    current_state = await state.get_state()
-    intro = _(
-        "Привет! 👋\n"
-        "Я помогаю поддерживать фигуру с помощью контроля калорий и БЖУ.\n\n"
-        "Процесс максимально простой:\n"
-        "1. Определяем начальные показатели и цели\n"
-        "2. Рассчитываем необходимое потребление калорий с балансом БЖУ\n"
-        "3. Каждый день на основе фото или описания блюд считаем калории и, при необходимости, корректируем рацион\n\n"
-        "Это гораздо удобнее, чем считать калории вручную, поэтому по статистике наши пользователи в 2 раза чаще достигают поставленных целей.\n\n"
-    )
-
-    if current_state is not None:
-        text = intro + _("Ты уже начал онбординг. Продолжим с места, где остановились?")
-        kb = _ikb([[ ("Продолжить", "onboarding_resume"), ("Начать заново", "onboarding_restart") ]])
-    else:
-        text = intro + _("Приступим? 🚀")
-        kb = _ikb([[("Начнем", "onboarding_start")]])
-    await message.answer(text, reply_markup=kb)
+    logger.info("/onboarding command received -> redirect to /start | from_user={} | chat_id={}", getattr(message.from_user, 'id', None), getattr(message.chat, 'id', None))
+    # Soft-redirect: показываем единый стартовый экран с корректным ветвлением
+    await start_module.start_handler(message, state)
 
 
 # Allow launching from inline menu button (backward compat)
