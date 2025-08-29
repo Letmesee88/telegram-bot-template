@@ -14,6 +14,8 @@ from aiogram.types import (
 from aiogram.utils.i18n import gettext as _
 from loguru import logger
 from sqlalchemy import select
+from bot.analytics.types import BaseEvent, EventProperties, Plan
+from bot.services.analytics import analytics
 
 from bot.database.database import sessionmaker
 from bot.database.models import OnboardingAnswerModel
@@ -169,8 +171,8 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
 @router.message(Command("onbording"))  # alias for common typo
 async def cmd_onboarding(message: Message, state: FSMContext) -> None:
     logger.info("/onboarding command received | from_user={} | chat_id={}", getattr(message.from_user, 'id', None), getattr(message.chat, 'id', None))
-    await state.clear()
-    text = _(
+    current_state = await state.get_state()
+    intro = _(
         "Привет! 👋\n"
         "Я помогаю поддерживать фигуру с помощью контроля калорий и БЖУ.\n\n"
         "Процесс максимально простой:\n"
@@ -178,9 +180,14 @@ async def cmd_onboarding(message: Message, state: FSMContext) -> None:
         "2. Рассчитываем необходимое потребление калорий с балансом БЖУ\n"
         "3. Каждый день на основе фото или описания блюд считаем калории и, при необходимости, корректируем рацион\n\n"
         "Это гораздо удобнее, чем считать калории вручную, поэтому по статистике наши пользователи в 2 раза чаще достигают поставленных целей.\n\n"
-        "Приступим? 🚀"
     )
-    kb = _ikb([[("Начнем", "onboarding_start")]])
+
+    if current_state is not None:
+        text = intro + _("Ты уже начал онбординг. Продолжим с места, где остановились?")
+        kb = _ikb([[ ("Продолжить", "onboarding_resume"), ("Начать заново", "onboarding_restart") ]])
+    else:
+        text = intro + _("Приступим? 🚀")
+        kb = _ikb([[("Начнем", "onboarding_start")]])
     await message.answer(text, reply_markup=kb)
 
 
@@ -205,6 +212,156 @@ async def cb_onboarding_start(call: CallbackQuery, state: FSMContext) -> None:
     except Exception:
         await call.message.answer(caption, reply_markup=kb)
     await call.answer()
+
+
+# =====================
+# Возобновление/перезапуск онбординга
+# =====================
+
+async def _ask_gender(message: Message) -> None:
+    caption = _("Теперь нужно собрать начальные показатели, чтобы составить план. Начнём с выбора пола")
+    kb = _ikb([[ ("Я мужчина", "gender:male"), ("Я девушка", "gender:female") ]])
+    try:
+        photo = FSInputFile("bot/static/gender.jpg")
+        await message.answer_photo(photo, caption=caption, reply_markup=kb)
+    except Exception:
+        await message.answer(caption, reply_markup=kb)
+
+
+async def _ask_age(message: Message) -> None:
+    await message.answer(_("Сколько тебе лет?"))
+
+
+async def _ask_weight(message: Message) -> None:
+    await message.answer(_("Какой у тебя текущий вес в килограммах?"))
+
+
+async def _ask_height(message: Message) -> None:
+    await message.answer(_("Какой у тебя рост в сантиметрах?"))
+
+
+async def _ask_activity(message: Message) -> None:
+    await message.answer(
+        _(
+            "Опиши, пожалуйста, свою повседневную активность. Так мы сможем учесть уровень активности в плане питания, чтобы он был максимально точным.\n\n"
+            "Например:\nВ среднем хожу 7-10 тысяч шагов в день, 2 раза в неделю тренируюсь в зале, 1 раз в неделю бегаю."
+        )
+    )
+
+
+async def _ask_goal(message: Message) -> None:
+    text = _(
+        "Зафиксировал! Теперь самое главное — поставим цель\n"
+        "TapTap  помогает достигать долгосрочных результатов благодаря развитию полезных привычек"
+    )
+    kb = _ikb([
+        [("Хочу похудеть", "goal:lose")],
+        [("Хочу набрать мышечную массу", "goal:gain")],
+        [("Хочу поддерживать текущий вес", "goal:maintain")],
+    ])
+    await message.answer(text, reply_markup=kb)
+
+
+async def _ask_goal_weight(message: Message) -> None:
+    await message.answer(_("К какому весу ты стремишься?"))
+
+
+async def _ask_speed(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    current_w = float(data.get("weight_kg")) if data.get("weight_kg") is not None else None
+    if current_w is None:
+        kb_simple = _ikb([
+            [("С комфортом", "speed:COMFORT")],
+            [("С усилием", "speed:EFFORT")],
+            [("Ускоренно", "speed:FAST")],
+        ])
+        await message.answer(_("Как быстро хочешь достичь цели?"), reply_markup=kb_simple)
+        return
+    comfort = _format_rate(current_w, SPEED_PERCENT_BY_WEIGHT[Speed.comfort])
+    effort = _format_rate(current_w, SPEED_PERCENT_BY_WEIGHT[Speed.effort])
+    fast = _format_rate(current_w, SPEED_PERCENT_BY_WEIGHT[Speed.fast])
+    kb = _ikb([
+        [(f"С комфортом {comfort} кг в неделю", "speed:COMFORT")],
+        [(f"С усилием {effort} кг в неделю", "speed:EFFORT")],
+        [(f"Ускоренно {fast} кг в неделю", "speed:FAST")],
+    ])
+    await message.answer(_("Как быстро хочешь достичь цели?"), reply_markup=kb)
+
+
+@router.callback_query(F.data == "onboarding_resume")
+async def cb_onboarding_resume(call: CallbackQuery, state: FSMContext) -> None:
+    # Analytics
+    if analytics.logger and call.from_user:
+        await analytics.logger.log_event(
+            BaseEvent(
+                user_id=call.from_user.id,
+                event_type="Onboarding:Resume",
+                event_properties=EventProperties(
+                    chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
+                    chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                    text=None,
+                    command="/start",
+                ),
+                language=getattr(call.from_user, 'language_code', None),
+                plan=Plan(branch="InProgress", source="start", version="v1"),
+            )
+        )
+
+    cur = await state.get_state()
+    if cur is None:
+        await cb_onboarding_start(call, state)
+        return
+
+    if cur == OnboardingStates.gender.state:
+        await _ask_gender(call.message)
+    elif cur == OnboardingStates.age.state:
+        await _ask_age(call.message)
+    elif cur == OnboardingStates.weight.state:
+        await _ask_weight(call.message)
+    elif cur == OnboardingStates.height.state:
+        await _ask_height(call.message)
+    elif cur == OnboardingStates.activity.state:
+        await _ask_activity(call.message)
+    elif cur == OnboardingStates.goal.state:
+        await _ask_goal(call.message)
+    elif cur == OnboardingStates.goal_weight.state:
+        await _ask_goal_weight(call.message)
+    elif cur == OnboardingStates.speed.state:
+        await _ask_speed(call.message, state)
+    elif cur == OnboardingStates.review.state:
+        await _finalize_and_show(call.message, state, call.from_user.id)
+    elif cur == OnboardingStates.adjust.state:
+        kb = _ikb([[ ("Вернуться", "final:back") ]])
+        await call.message.answer(_("Напиши, в свободном формате, что нужно скорректировать в твоём индивидуальном плане"), reply_markup=kb)
+    else:
+        # Fallback — начнем сначала
+        await cb_onboarding_start(call, state)
+        return
+
+    await call.answer()
+
+
+@router.callback_query(F.data == "onboarding_restart")
+async def cb_onboarding_restart(call: CallbackQuery, state: FSMContext) -> None:
+    # Analytics
+    if analytics.logger and call.from_user:
+        await analytics.logger.log_event(
+            BaseEvent(
+                user_id=call.from_user.id,
+                event_type="Onboarding:Restart",
+                event_properties=EventProperties(
+                    chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
+                    chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                    text=None,
+                    command="/start",
+                ),
+                language=getattr(call.from_user, 'language_code', None),
+                plan=Plan(branch="Restart", source="start", version="v1"),
+            )
+        )
+
+    await state.clear()
+    await cb_onboarding_start(call, state)
 
 
 # =====================

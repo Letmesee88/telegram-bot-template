@@ -117,6 +117,8 @@ services:
     command: alembic upgrade head
     env_file:
       - .env
+    environment:
+      - PYTHONPATH=/usr/src/app
     networks:
       - app
     depends_on:

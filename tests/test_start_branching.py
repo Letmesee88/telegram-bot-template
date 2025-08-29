@@ -72,7 +72,7 @@ async def test_start_handler_in_progress(monkeypatch: pytest.MonkeyPatch) -> Non
     text = msg.captured.get("text")
     assert isinstance(text, str)
     assert "Привет!" in text
-    assert "Приступим?" in text
+    assert "Продолжим" in text
     assert "Хочешь его сбросить" not in text
 
     kb = msg.captured.get("reply_markup")
@@ -81,8 +81,8 @@ async def test_start_handler_in_progress(monkeypatch: pytest.MonkeyPatch) -> Non
     datas = {btn.callback_data for btn in buttons}
     texts = {btn.text for btn in buttons}
 
-    assert datas == {"onboarding_start"}
-    assert texts == {"Начнем"}
+    assert datas == {"onboarding_resume", "onboarding_restart"}
+    assert texts == {"Продолжить", "Начать заново"}
 
 
 @pytest.mark.asyncio

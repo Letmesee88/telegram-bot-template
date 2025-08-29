@@ -68,11 +68,20 @@ async def start_handler(message: types.Message, state: FSMContext) -> None:
         await message.answer(text, reply_markup=kb)
         return
 
-    # not completed: both fresh and in-progress show simple "Начнем"
-    text = intro + _("Приступим? 🚀")
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=_("Начнем"), callback_data="onboarding_start")]]
-    )
+    # not completed: branch by in-progress vs fresh
+    if in_progress:
+        text = intro + _("Ты уже начал онбординг. Продолжим с места, где остановились?")
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[
+                InlineKeyboardButton(text=_("Продолжить"), callback_data="onboarding_resume"),
+                InlineKeyboardButton(text=_("Начать заново"), callback_data="onboarding_restart"),
+            ]]
+        )
+    else:
+        text = intro + _("Приступим? 🚀")
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text=_("Начнем"), callback_data="onboarding_start")]]
+        )
     # Analytics: log Fresh vs InProgress start type
     if analytics.logger and user_id is not None:
         await analytics.logger.log_event(
