@@ -13,12 +13,12 @@ from aiogram.types import (
 )
 from aiogram.utils.i18n import gettext as _
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update, func
 from bot.analytics.types import BaseEvent, EventProperties, Plan
 from bot.services.analytics import analytics
 
 from bot.database.database import sessionmaker
-from bot.database.models import OnboardingAnswerModel
+from bot.database.models import OnboardingAnswerModel, UserModel
 from bot.schemas.onboarding import ActivityLevel, Gender, Goal, OnboardingData, Speed
 from bot.services.plan import (
     calculate_daily_plan,
@@ -608,9 +608,25 @@ async def speed_and_finish(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(OnboardingStates.review, F.data == "final:ok")
 async def cb_final_ok(call: CallbackQuery, state: FSMContext) -> None:
+    # Активируем FoodAI для пользователя (временный гейтинг до оплаты)
+    try:
+        async with sessionmaker() as session:
+            await session.execute(
+                update(UserModel)
+                .where(UserModel.id == call.from_user.id)
+                .values(foodai_enabled_at=func.now())
+            )
+            await session.commit()
+    except Exception as e:
+        logger.exception("onboarding.final.ok.update_user_failed | user_id={} | error={}", getattr(call.from_user, 'id', None), e)
+
     await call.answer()
     await state.clear()
-    await call.message.answer(_("Отлично! Продолжим позже с оплатой."))
+    await call.message.answer(
+        _(
+            "Готово! Я активировал распознавание еды (FoodAI). Отправь фото блюда — я проанализирую калории и БЖУ."
+        )
+    )
 
 
 @router.callback_query(OnboardingStates.review, F.data == "final:adjust")

@@ -129,5 +129,5 @@ dmypy.json
 .pyre/
 
 # Pycharm
-.idea/
-AI Nutrition bot Logic.md
+.idea/ 
+AIFood.md
