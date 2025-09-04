@@ -3,6 +3,7 @@
 
 # exclusion
 !/bot/
+!/migrations/
 
 !/alembic.ini
 !/pyproject.toml

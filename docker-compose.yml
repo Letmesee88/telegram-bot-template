@@ -114,15 +114,38 @@ services:
     image: bot:latest
     container_name: ${COMPOSE_PROJECT_NAME}-migrator
     restart: "on-failure"
-    command: alembic upgrade head
+    command:
+      - sh
+      - -c
+      - |
+          python - <<'PY'
+          import os, socket, time, sys
+          host = os.environ.get('DB_HOST', 'pgbouncer')
+          port = int(os.environ.get('DB_PORT', '5432'))
+          print(f'Waiting for {host}:{port}...')
+          deadline = time.time() + 60
+          while True:
+              try:
+                  s = socket.create_connection((host, port), timeout=2)
+                  s.close()
+                  break
+              except Exception:
+                  if time.time() > deadline:
+                      print('DB wait timeout', file=sys.stderr)
+                      sys.exit(1)
+                  time.sleep(1)
+          PY
+          alembic upgrade head
     env_file:
       - .env
     environment:
       - PYTHONPATH=/usr/src/app
+      - DB_HOST=pgbouncer
+      - DB_PORT=${DB_PORT}
     networks:
       - app
     depends_on:
-      - bot
+      - pgbouncer
     volumes:
       - ./migrations:/usr/src/app/migrations
 

@@ -6,6 +6,14 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+import sys
+from pathlib import Path
+
+# Ensure project root ('/usr/src/app') is importable when running Alembic from migrations dir
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
 from bot.core.config import settings
 from bot.database.models import Base
 
