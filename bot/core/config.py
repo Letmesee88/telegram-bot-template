@@ -84,5 +84,12 @@ class Settings(BotSettings, DBSettings, CacheSettings):
 
     AMPLITUDE_API_KEY: str  # or for example it could be POSTHOG_API_KEY
 
+    # OpenAI / FoodAI settings
+    OPENAI_API_KEY: str | None = None
+    OPENAI_BASE_URL: str | None = None  # optional, e.g. custom proxy/Azure endpoint
+    FOODAI_DEFAULT_MODEL: str = "gpt-5-mini"
+    FOODAI_EDIT_MODEL: str = "gpt-5"
+    FOODAI_CONFIDENCE_ESCALATE: float = 0.70
+
 
 settings = Settings()
