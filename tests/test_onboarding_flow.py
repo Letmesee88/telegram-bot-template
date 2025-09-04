@@ -145,6 +145,7 @@ async def test_onboarding_happy_path_lose(apply_migrations, db_session, monkeypa
         select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id)
     )
     assert rec is not None
+    assert rec.user_id == user_id
     assert rec.daily_plan is not None
     assert rec.goal in ("lose", "gain", "maintain")
     assert isinstance(rec.calories, int) and rec.calories > 0
@@ -214,5 +215,6 @@ async def test_onboarding_maintain_direct_finalize(apply_migrations, db_session,
         select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id)
     )
     assert rec is not None
+    assert rec.user_id == user_id
     assert rec.goal == "maintain"
     assert isinstance(rec.calories, int) and rec.calories > 0
