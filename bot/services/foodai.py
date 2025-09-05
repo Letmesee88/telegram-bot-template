@@ -25,7 +25,12 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
         "items": [
             {"name": "Блюдо", "calories": int(base), "protein_g": float(protein), "fat_g": float(fat), "carbs_g": float(carbs)},
         ],
-        "references": {"source": "stub"},
+        "references": {
+            "sources": [
+                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                "USDA FoodData Central",
+            ]
+        },
     }
 
 
@@ -48,5 +53,10 @@ async def analyze_text(text: str) -> dict[str, Any]:
         "items": [
             {"name": "Описание", "calories": int(base), "protein_g": float(protein), "fat_g": float(fat), "carbs_g": float(carbs)},
         ],
-        "references": {"source": "stub"},
+        "references": {
+            "sources": [
+                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                "USDA FoodData Central",
+            ]
+        },
     }

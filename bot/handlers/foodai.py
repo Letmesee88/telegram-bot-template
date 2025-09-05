@@ -10,7 +10,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from bot.database.database import sessionmaker
-from bot.database.models import DailyIntakeModel, MealItemModel, MealModel, MealPhotoModel
+from bot.database.models import DailyIntakeModel, MealItemModel, MealModel, MealPhotoModel, OnboardingAnswerModel
 from bot.filters.foodai_enabled import FoodAIEnabledFilter
 from bot.services.foodai import analyze_photo, analyze_text
 from bot.core.config import settings
@@ -110,12 +110,25 @@ async def handle_food_photo(message: types.Message) -> None:
 
         await session.commit()
 
-    await analyzing_msg.edit_text(_("Готово. Предпросмотр ниже."))
-    await message.answer_photo(
-        tg_file_id,
-        caption=_build_preview_text(calories, protein_g, fat_g, carbs_g, confidence),
-        reply_markup=_preview_kb(meal_id),
+    # Remove status message; just clean up the temporary "analyzing" message
+    try:
+        await analyzing_msg.delete()
+    except Exception:
+        pass
+    preview_text = _build_preview_text(
+        calories,
+        protein_g,
+        fat_g,
+        carbs_g,
+        confidence,
+        weight=weight_g,
+        items=items,
+        references=references,
+        title=None,
+        source="photo",
     )
+    # Do NOT resend the photo; just send full preview as a separate text message with inline keyboard
+    await message.answer(preview_text, reply_markup=_preview_kb(meal_id))
 
     # Analytics: preview shown for photo
     if analytics.logger and message.from_user:
@@ -209,11 +222,25 @@ async def handle_food_text(message: types.Message) -> None:
 
         await session.commit()
 
-    await analyzing_msg.edit_text(_("Готово. Предпросмотр ниже."))
-    await message.answer(
-        _build_preview_text(calories, protein_g, fat_g, carbs_g, confidence),
-        reply_markup=_preview_kb(meal_id),
+    # Remove status message; just clean up the temporary "analyzing" message
+    try:
+        await analyzing_msg.delete()
+    except Exception:
+        pass
+    preview_text = _build_preview_text(
+        calories,
+        protein_g,
+        fat_g,
+        carbs_g,
+        confidence,
+        weight=weight_g,
+        items=items,
+        references=references,
+        title=text[:255] if text else None,
+        source="text",
     )
+    # Send full preview as a separate text message with inline keyboard
+    await message.answer(preview_text, reply_markup=_preview_kb(meal_id))
 
     # Analytics: preview shown for text
     if analytics.logger and message.from_user:
@@ -235,23 +262,80 @@ async def handle_food_text(message: types.Message) -> None:
 
 # ===== Helpers and callbacks =====
 
-def _build_preview_text(cal: int, p: float, f: float, c: float, conf: float) -> str:
-    parts = [
-        _("Предпросмотр блюда:"),
-        _("{cal} ккал, Б {p} г / Ж {f} г / У {c} г").format(cal=int(cal), p=p, f=f, c=c),
-        _("Точность: {conf}%").format(conf=int(float(conf) * 100)),
-    ]
+def _build_preview_text(
+    cal: int,
+    p: float,
+    f: float,
+    c: float,
+    conf: float,
+    *,
+    weight: float | None = None,
+    items: list | None = None,
+    references: dict | None = None,
+    title: str | None = None,
+    source: str | None = None,
+) -> str:
+    parts: list[str] = []
+    # Header by source
+    if source == "photo":
+        parts.append(_("📸 Анализ фото завершен!"))
+    elif source == "text":
+        parts.append(_("📝 Анализ описания завершен!"))
+    else:
+        parts.append(_("Предпросмотр блюда:"))
+
+    if title:
+        parts.append(_("Название: {title}").format(title=title))
+
+    # Composition
+    if items:
+        parts.append("")
+        parts.append(_("💰 Состав:"))
+        for it in items:
+            name = str((it or {}).get("name") or _("Блюдо"))
+            parts.append(f"• {name}")
+
+    # Totals
+    parts.append("")
+    parts.append(_("🔥 Калории: {cal} ккал").format(cal=int(cal)))
+    parts.append(_("🥩 Белки: {p} г").format(p=p))
+    parts.append(_("🥑 Жиры: {f} г").format(f=f))
+    parts.append(_("🍞 Углеводы: {c} г").format(c=c))
+
+    if weight:
+        parts.append("")
+        parts.append(_("⚖️ Вес: {w} г").format(w=weight))
+
+    # Sources
+    srcs: list[str] = []
+    if isinstance(references, dict):
+        if isinstance(references.get("sources"), list):
+            srcs = [str(x) for x in references.get("sources") if x]
+        elif references.get("source"):
+            srcs = [str(references.get("source"))]
+    if srcs:
+        parts.append("")
+        parts.append(_("📋 Источники данных:"))
+        for s in srcs:
+            parts.append(f"• {s}")
+
+    # Analysis
+    parts.append("")
+    parts.append(_("🔍 Анализ: Уровень уверенности {conf}%").format(conf=int(float(conf) * 100)))
     if float(conf) < float(settings.FOODAI_CONFIDENCE_ESCALATE):
         parts.append(_("Внимание: низкая уверенность. Рекомендуем отредактировать перед сохранением."))
+
     return "\n".join(parts)
 
 
 def _preview_kb(meal_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=_("Сохранить"), callback_data=f"foodai:save:{meal_id}")],
-            [InlineKeyboardButton(text=_("Редактировать"), callback_data=f"foodai:edit:{meal_id}")],
-            [InlineKeyboardButton(text=_("Удалить"), callback_data=f"foodai:del:{meal_id}")],
+            [InlineKeyboardButton(text=_("✅ Сохранить"), callback_data=f"foodai:save:{meal_id}")],
+            [
+                InlineKeyboardButton(text=_("✏️ Редактировать"), callback_data=f"foodai:edit:{meal_id}"),
+                InlineKeyboardButton(text=_("🗑 Удалить"), callback_data=f"foodai:del:{meal_id}"),
+            ],
         ]
     )
 
@@ -267,9 +351,9 @@ def _edit_kb(meal_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="-10 г", callback_data=f"foodai:adj:wt:-10:{meal_id}"),
                 InlineKeyboardButton(text="+10 г", callback_data=f"foodai:adj:wt:10:{meal_id}"),
             ],
-            [InlineKeyboardButton(text=_("Сохранить"), callback_data=f"foodai:save:{meal_id}")],
-            [InlineKeyboardButton(text=_("Назад"), callback_data=f"foodai:back:{meal_id}")],
-            [InlineKeyboardButton(text=_("Удалить"), callback_data=f"foodai:del:{meal_id}")],
+            [InlineKeyboardButton(text=_("✅ Сохранить"), callback_data=f"foodai:save:{meal_id}")],
+            [InlineKeyboardButton(text=_("◀️ Назад"), callback_data=f"foodai:back:{meal_id}")],
+            [InlineKeyboardButton(text=_("🗑 Удалить"), callback_data=f"foodai:del:{meal_id}")],
         ]
     )
 
@@ -347,12 +431,62 @@ async def cb_foodai_save(callback: types.CallbackQuery) -> None:
             )
         )
 
-    await _edit_caption_or_text(
-        callback,
-        _("Сохранено: {cal} ккал, Б {p} г / Ж {f} г / У {c} г.").format(cal=_cal, p=_p, f=_f, c=_c),
-        kb=None,
-    )
-    await callback.answer(_("Сохранено"))
+    # Build combined message: Saved line + Day analysis in one message
+    saved_line = _("✅ Еда сохранена")
+    analysis_text = ""
+    try:
+        async with sessionmaker() as session:
+            di = await session.scalar(
+                select(DailyIntakeModel).where(
+                    (DailyIntakeModel.user_id == user_id) & (DailyIntakeModel.date_utc == today_utc)
+                )
+            )
+            oa = await session.scalar(
+                select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id)
+            )
+
+        if di and oa and isinstance(getattr(oa, "daily_plan", None), dict):
+            plan = oa.daily_plan or {}
+            plan_cal = int(plan.get("calories") or 0)
+            plan_p = float(plan.get("protein_g") or 0)
+            plan_f = float(plan.get("fat_g") or 0)
+            plan_c = float(plan.get("carbs_g") or 0)
+
+            fact_cal = int(di.calories or 0)
+            fact_p = float(di.protein_g or 0)
+            fact_f = float(di.fat_g or 0)
+            fact_c = float(di.carbs_g or 0)
+
+            diff_cal = plan_cal - fact_cal
+            diff_p = plan_p - fact_p
+            diff_f = plan_f - fact_f
+            diff_c = plan_c - fact_c
+
+            def _fmt(delta: float, emoji: str, unit: str) -> str:
+                if unit == "ккал":
+                    val = int(abs(delta))
+                else:
+                    val = round(abs(delta), 1)
+                if delta > 0:
+                    return f"{emoji} {val} {unit} до нормы"
+                if delta < 0:
+                    return f"⚠️ {emoji} +{val} {unit} превышено"
+                return f"{emoji} норма достигнута"
+
+            lines = [
+                _("Анализ дня:"),
+                _fmt(diff_cal, "🔥", "ккал"),
+                _fmt(diff_p, "🥩", "г"),
+                _fmt(diff_f, "🥑", "г"),
+                _fmt(diff_c, "🍞", "г"),
+            ]
+            analysis_text = "\n".join(lines)
+    except Exception as e:
+        logger.warning("day_analysis_failed | user_id={} | err={}", user_id, e)
+
+    combined_text = saved_line if not analysis_text else f"{saved_line}\n\n{analysis_text}"
+    await _edit_caption_or_text(callback, combined_text, kb=None)
+    await callback.answer(_("✅ Еда сохранена"))
 
 
 @router.callback_query(F.data.regexp(r"^foodai:del:(\d+)$"))
@@ -388,8 +522,8 @@ async def cb_foodai_delete(callback: types.CallbackQuery) -> None:
             )
         )
 
-    await _edit_caption_or_text(callback, _("Еда удалена"), kb=None)
-    await callback.answer(_("Еда удалена"))
+    await _edit_caption_or_text(callback, _("🗑 Еда удалена"), kb=None)
+    await callback.answer(_("🗑 Еда удалена"))
 
 
 @router.callback_query(F.data.regexp(r"^foodai:edit:(\d+)$"))
@@ -404,7 +538,25 @@ async def cb_foodai_edit(callback: types.CallbackQuery) -> None:
         if not meal or meal.user_id != user_id:
             await callback.answer(_("Не найдено"), show_alert=True)
             return
-        text = _build_preview_text(int(meal.calories or 0), float(meal.protein_g or 0), float(meal.fat_g or 0), float(meal.carbs_g or 0), float(meal.confidence or 0))
+        # Build items list safely
+        items = []
+        try:
+            for it in (meal.items or []):
+                items.append({"name": it.name})
+        except Exception:
+            items = []
+        text = _build_preview_text(
+            int(meal.calories or 0),
+            float(meal.protein_g or 0),
+            float(meal.fat_g or 0),
+            float(meal.carbs_g or 0),
+            float(meal.confidence or 0),
+            weight=float(meal.weight_g or 0),
+            items=items,
+            references=meal.references or None,
+            title=meal.title or None,
+            source=meal.source or None,
+        )
 
     # Analytics: edit clicked
     if analytics.logger and callback.from_user:
@@ -439,7 +591,24 @@ async def cb_foodai_back(callback: types.CallbackQuery) -> None:
         if not meal or meal.user_id != user_id:
             await callback.answer(_("Не найдено"), show_alert=True)
             return
-        text = _build_preview_text(int(meal.calories or 0), float(meal.protein_g or 0), float(meal.fat_g or 0), float(meal.carbs_g or 0), float(meal.confidence or 0))
+        items = []
+        try:
+            for it in (meal.items or []):
+                items.append({"name": it.name})
+        except Exception:
+            items = []
+        text = _build_preview_text(
+            int(meal.calories or 0),
+            float(meal.protein_g or 0),
+            float(meal.fat_g or 0),
+            float(meal.carbs_g or 0),
+            float(meal.confidence or 0),
+            weight=float(meal.weight_g or 0),
+            items=items,
+            references=meal.references or None,
+            title=meal.title or None,
+            source=meal.source or None,
+        )
 
     # Analytics: back clicked
     if analytics.logger and callback.from_user:
@@ -508,8 +677,34 @@ async def cb_foodai_adjust(callback: types.CallbackQuery) -> None:
             )
         )
 
+    # Cache values and items before session closes
+    cal_v = int(meal.calories or 0)
+    p_v = float(meal.protein_g or 0)
+    f_v = float(meal.fat_g or 0)
+    c_v = float(meal.carbs_g or 0)
+    conf_v = float(meal.confidence or 0)
+    weight_v = float(meal.weight_g or 0)
+    title_v = meal.title or None
+    source_v = meal.source or None
+    items_v = []
+    try:
+        for it in (meal.items or []):
+            items_v.append({"name": it.name})
+    except Exception:
+        items_v = []
+    refs_v = meal.references or None
+
     text = _build_preview_text(
-        int(meal.calories or 0), float(meal.protein_g or 0), float(meal.fat_g or 0), float(meal.carbs_g or 0), float(meal.confidence or 0)
+        cal_v,
+        p_v,
+        f_v,
+        c_v,
+        conf_v,
+        weight=weight_v,
+        items=items_v,
+        references=refs_v,
+        title=title_v,
+        source=source_v,
     )
 
     await _edit_caption_or_text(callback, text, kb=_edit_kb(meal_id))
