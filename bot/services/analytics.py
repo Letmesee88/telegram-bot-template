@@ -1,6 +1,7 @@
 from __future__ import annotations
 from functools import wraps
 from typing import TYPE_CHECKING, Any, TypeVar
+import asyncio
 
 from aiogram.types import CallbackQuery, Message
 
@@ -8,6 +9,7 @@ from bot.analytics.amplitude import AmplitudeTelegramLogger
 from bot.analytics.types import AbstractAnalyticsLogger, BaseEvent, EventProperties, EventType, UserProperties
 from bot.core.config import settings
 from bot.utils.singleton import SingletonMeta
+from loguru import logger
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -19,16 +21,32 @@ class AnalyticsService(metaclass=SingletonMeta):
     def __init__(self, logger: AbstractAnalyticsLogger | None) -> None:
         self.logger = logger
 
-    async def _track_error(self, user_id: int, error_text: str) -> None:
+    def _fire_and_forget(self, coro: Any) -> None:
+        """Schedule analytics call without blocking handler.
+
+        Any exception is caught and logged to avoid crashing the loop.
+        """
+        if coro is None:
+            return
+        task = asyncio.create_task(coro)
+        def _done(t: asyncio.Task) -> None:
+            try:
+                t.result()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("analytics task failed: {}", e)
+        task.add_done_callback(_done)
+
+    def _track_error_fire(self, user_id: int, error_text: str) -> None:
         if not self.logger:
             return
-
-        await self.logger.log_event(
-            BaseEvent(
-                user_id=user_id,
-                event_type="Error",
-                event_properties=EventProperties(text=error_text),
-            ),
+        self._fire_and_forget(
+            self.logger.log_event(
+                BaseEvent(
+                    user_id=user_id,
+                    event_type="Error",
+                    event_properties=EventProperties(text=error_text),
+                )
+            )
         )
 
     def track_event(
@@ -68,29 +86,33 @@ class AnalyticsService(metaclass=SingletonMeta):
                     text = update.data
                     command = None
 
-                await self.logger.log_event(
-                    BaseEvent(
-                        user_id=user_id,
-                        event_type=event_name,
-                        user_properties=UserProperties(
-                            first_name=first_name,
-                            last_name=last_name,
-                            username=username,
-                            url=url,
-                        ),
-                        event_properties=EventProperties(
-                            chat_id=chat_id,
-                            chat_type=chat_type,
-                            text=text,
-                            command=command,
-                        ),
-                        language=language,
-                    ),
+                # Do NOT block handler on external analytics
+                self._fire_and_forget(
+                    self.logger.log_event(
+                        BaseEvent(
+                            user_id=user_id,
+                            event_type=event_name,
+                            user_properties=UserProperties(
+                                first_name=first_name,
+                                last_name=last_name,
+                                username=username,
+                                url=url,
+                            ),
+                            event_properties=EventProperties(
+                                chat_id=chat_id,
+                                chat_type=chat_type,
+                                text=text,
+                                command=command,
+                            ),
+                            language=language,
+                        )
+                    )
                 )
                 try:
                     result = await handler(update, *args, **kwargs)
                 except Exception as e:
-                    await self._track_error(user_id, str(e))
+                    # Schedule error event, don't block exception propagation
+                    self._track_error_fire(user_id, str(e))
                     raise
                 return result
 
@@ -99,6 +121,13 @@ class AnalyticsService(metaclass=SingletonMeta):
         return decorator
 
 
-logger = AmplitudeTelegramLogger(api_token=settings.AMPLITUDE_API_KEY) if settings.AMPLITUDE_API_KEY else None
+if settings.AMPLITUDE_API_KEY:
+    base_url = getattr(settings, "AMPLITUDE_BASE_URL", None)
+    logger = (
+        AmplitudeTelegramLogger(api_token=settings.AMPLITUDE_API_KEY, base_url=base_url)
+        if base_url else AmplitudeTelegramLogger(api_token=settings.AMPLITUDE_API_KEY)
+    )
+else:
+    logger = None
 
 analytics = AnalyticsService(logger)

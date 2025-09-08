@@ -38,16 +38,20 @@ class AmplitudeTelegramLogger(AbstractAnalyticsLogger):
         self._validate_response(json_response)
 
     def _validate_response(self, response: dict[str, str | int]) -> None:
-        """Validate response."""
+        """Validate response.
+
+        Never raise to avoid impacting bot business logic. Errors are logged only.
+        """
         if response.get("code") != self.SUCCESS_STATUS_CODE:
             error = response.get("error")
             code = response.get("code")
+            logger.warning(f"Amplitude API error | error: {error} | code: {code}")
+            return
 
-            logger.error(f"get error from amplitude api | error: {error} | code: {code}")
-            msg = f"Error in amplitude api call | error: {error} | code: {code}"
-            raise ValueError(msg)
-
-        logger.info(f"successfully send to Amplitude | server_upload_time: {response['server_upload_time']}")
+        try:
+            logger.info(f"successfully send to Amplitude | server_upload_time: {response['server_upload_time']}")
+        except Exception:
+            logger.info("successfully send to Amplitude")
 
     async def log_event(
         self,

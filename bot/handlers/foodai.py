@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from time import perf_counter
 import re
 
 from aiogram import F, Router, types
@@ -61,13 +62,49 @@ async def handle_food_photo(message: types.Message) -> None:
     # Notify user we're analyzing
     analyzing_msg = await message.answer(_("Анализирую фото…"))
 
+    # Analytics: photo analyze started
+    if analytics.logger and message.from_user:
+        await analytics.logger.log_event(
+            BaseEvent(
+                user_id=message.from_user.id,
+                event_type="FoodAI:PhotoAnalyzeStarted",
+                event_properties=EventProperties(
+                    chat_id=message.chat.id if message.chat else None,
+                    chat_type=message.chat.type if message.chat else None,
+                    text=f"file_id_len={len(tg_file_id)}",
+                    command=None,
+                ),
+                language=message.from_user.language_code if message.from_user else None,
+                plan=Plan(branch="Analyze", source="FoodAI", version="v1"),
+            )
+        )
+
     # Step 2: analyze via stub service
+    t0 = perf_counter()
     try:
         result = await analyze_photo(tg_file_id)
     except Exception as e:
         logger.exception("FoodAI analyze_photo failed: {}", e)
+        # Analytics: photo analyze failed
+        if analytics.logger and message.from_user:
+            await analytics.logger.log_event(
+                BaseEvent(
+                    user_id=message.from_user.id,
+                    event_type="FoodAI:PhotoAnalyzeFailed",
+                    event_properties=EventProperties(
+                        chat_id=message.chat.id if message.chat else None,
+                        chat_type=message.chat.type if message.chat else None,
+                        text=str(e),
+                        command=None,
+                    ),
+                    language=message.from_user.language_code if message.from_user else None,
+                    plan=Plan(branch="Analyze", source="FoodAI", version="v1"),
+                )
+            )
         await analyzing_msg.edit_text(_("Не удалось проанализировать фото. Попробуй ещё раз позже."))
         return
+    finally:
+        pass
 
     calories = int(result.get("calories") or 0)
     protein_g = float(result.get("protein_g") or 0)
@@ -132,6 +169,25 @@ async def handle_food_photo(message: types.Message) -> None:
 
     # Analytics: preview shown for photo
     if analytics.logger and message.from_user:
+        # Photo analyze succeeded (duration + confidence)
+        try:
+            dur_ms = int((perf_counter() - t0) * 1000)
+        except Exception:
+            dur_ms = None
+        await analytics.logger.log_event(
+            BaseEvent(
+                user_id=message.from_user.id,
+                event_type="FoodAI:PhotoAnalyzeSucceeded",
+                event_properties=EventProperties(
+                    chat_id=message.chat.id if message.chat else None,
+                    chat_type=message.chat.type if message.chat else None,
+                    text=f"meal_id={meal_id}, confidence={confidence}, dur_ms={dur_ms}",
+                    command=None,
+                ),
+                language=message.from_user.language_code if message.from_user else None,
+                plan=Plan(branch="Analyze", source="FoodAI", version="v1"),
+            )
+        )
         await analytics.logger.log_event(
             BaseEvent(
                 user_id=message.from_user.id,
@@ -175,12 +231,48 @@ async def handle_food_text(message: types.Message) -> None:
 
     analyzing_msg = await message.answer(_("Анализирую описание…"))
 
+    # Analytics: text analyze started
+    if analytics.logger and message.from_user:
+        await analytics.logger.log_event(
+            BaseEvent(
+                user_id=message.from_user.id,
+                event_type="FoodAI:TextAnalyzeStarted",
+                event_properties=EventProperties(
+                    chat_id=message.chat.id if message.chat else None,
+                    chat_type=message.chat.type if message.chat else None,
+                    text=f"len={len(text or '')}",
+                    command=None,
+                ),
+                language=message.from_user.language_code if message.from_user else None,
+                plan=Plan(branch="Analyze", source="FoodAI", version="v1"),
+            )
+        )
+
+    t0 = perf_counter()
     try:
         result = await analyze_text(text)
     except Exception as e:
         logger.exception("FoodAI analyze_text failed: {}", e)
+        # Analytics: text analyze failed
+        if analytics.logger and message.from_user:
+            await analytics.logger.log_event(
+                BaseEvent(
+                    user_id=message.from_user.id,
+                    event_type="FoodAI:TextAnalyzeFailed",
+                    event_properties=EventProperties(
+                        chat_id=message.chat.id if message.chat else None,
+                        chat_type=message.chat.type if message.chat else None,
+                        text=str(e),
+                        command=None,
+                    ),
+                    language=message.from_user.language_code if message.from_user else None,
+                    plan=Plan(branch="Analyze", source="FoodAI", version="v1"),
+                )
+            )
         await analyzing_msg.edit_text(_("Не удалось проанализировать текст. Попробуй ещё раз позже."))
         return
+    finally:
+        pass
 
     calories = int(result.get("calories") or 0)
     protein_g = float(result.get("protein_g") or 0)
@@ -244,6 +336,25 @@ async def handle_food_text(message: types.Message) -> None:
 
     # Analytics: preview shown for text
     if analytics.logger and message.from_user:
+        # Text analyze succeeded
+        try:
+            dur_ms = int((perf_counter() - t0) * 1000)
+        except Exception:
+            dur_ms = None
+        await analytics.logger.log_event(
+            BaseEvent(
+                user_id=message.from_user.id,
+                event_type="FoodAI:TextAnalyzeSucceeded",
+                event_properties=EventProperties(
+                    chat_id=message.chat.id if message.chat else None,
+                    chat_type=message.chat.type if message.chat else None,
+                    text=f"meal_id={meal_id}, confidence={confidence}, dur_ms={dur_ms}",
+                    command=None,
+                ),
+                language=message.from_user.language_code if message.from_user else None,
+                plan=Plan(branch="Analyze", source="FoodAI", version="v1"),
+            )
+        )
         await analytics.logger.log_event(
             BaseEvent(
                 user_id=message.from_user.id,

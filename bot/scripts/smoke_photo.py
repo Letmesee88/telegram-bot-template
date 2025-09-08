@@ -1,5 +1,6 @@
 import asyncio
 import json
+from urllib.parse import urlparse
 from sqlalchemy import select
 
 from bot.database.database import sessionmaker
@@ -15,7 +16,15 @@ async def main() -> None:
             return
         fid = row.tg_file_id
         url = await _tg_file_url(fid)
-        print("TG_URL=", url)
+        # Security: never print full TG URL with token; show only file_path
+        if url:
+            try:
+                path = urlparse(url).path  # e.g., /file/botTOKEN/photos/file_9.jpg
+                parts = path.split('/', 3)
+                file_path = parts[3] if len(parts) > 3 else path
+                print("TG_FILE_PATH=", file_path)
+            except Exception:
+                print("TG_FILE_PATH=", "<unknown>")
         res = await analyze_photo(fid)
         print(json.dumps(res, ensure_ascii=False, indent=2))
 

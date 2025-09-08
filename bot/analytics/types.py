@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, IPvAnyAddress
 
 EventType = Literal[
+    # Generic events
     "Start Session",
     "End Session",
     "Revenue",
@@ -17,6 +18,23 @@ EventType = Literal[
     "View Item",
     "Complete Purchase",
     "Error",
+    # FoodAI: custom domain events
+    "FoodAI:PreviewShown",
+    "FoodAI:SaveClicked",
+    "FoodAI:DeleteClicked",
+    "FoodAI:EditClicked",
+    "FoodAI:BackClicked",
+    "FoodAI:AdjustCal",
+    "FoodAI:AdjustWt",
+    "FoodAI:PhotoAnalyzeStarted",
+    "FoodAI:PhotoAnalyzeSucceeded",
+    "FoodAI:PhotoAnalyzeFailed",
+    "FoodAI:TextAnalyzeStarted",
+    "FoodAI:TextAnalyzeSucceeded",
+    "FoodAI:TextAnalyzeFailed",
+    # Onboarding
+    "Onboarding:Resume",
+    "Onboarding:Restart",
 ]
 PaymentMethod = Literal["Stripe", "PayPal", "Square", "Crypto"]
 

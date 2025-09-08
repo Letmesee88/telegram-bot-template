@@ -83,6 +83,7 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     SENTRY_DSN: str | None = None
 
     AMPLITUDE_API_KEY: str  # or for example it could be POSTHOG_API_KEY
+    AMPLITUDE_BASE_URL: str | None = None  # e.g., https://api.eu.amplitude.com/2/httpapi for EU region
 
     # OpenAI / FoodAI settings
     OPENAI_API_KEY: str | None = None

@@ -41,7 +41,7 @@ async def test_start_handler_sends_welcome_and_keyboard_completed(monkeypatch: p
     # Import after monkeypatch to ensure wrapper uses disabled analytics
     from bot.handlers import start as start_module
 
-    # Avoid aiogram I18n context by replacing _ with identity
+    # Avoid aiogram I18n context by replacing _ with Identity
     monkeypatch.setattr(start_module, "_", lambda s: s)
 
     # Monkeypatch DB sessionmaker to simulate completed=True
