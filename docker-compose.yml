@@ -14,8 +14,12 @@ services:
       - app
       - monitoring
     depends_on:
-      - pgbouncer
-      - redis
+      pgbouncer:
+        condition: service_started
+      redis:
+        condition: service_started
+      migrator:
+        condition: service_completed_successfully
 
   admin:
     build:

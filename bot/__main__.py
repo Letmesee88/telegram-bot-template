@@ -1,5 +1,7 @@
 from __future__ import annotations
 import asyncio
+import os
+import sys
 
 import sentry_sdk
 import uvloop
@@ -18,6 +20,19 @@ from bot.middlewares.prometheus import prometheus_middleware_factory
 async def on_startup() -> None:
     logger.info("bot starting...")
 
+    # Snapshot of critical runtime settings to simplify ops triage
+    try:
+        logger.info(
+            "Config snapshot | USE_WEBHOOK=%s | BOT_TOKEN_SET=%s | DB_HOST=%s | REDIS_HOST=%s",
+            settings.USE_WEBHOOK,
+            bool(settings.BOT_TOKEN),
+            getattr(settings, "DB_HOST", None),
+            getattr(settings, "REDIS_HOST", None),
+        )
+    except Exception:
+        # Defensive: never fail startup on logging
+        pass
+
     register_middlewares(dp)
 
     dp.include_router(get_handlers_router())
@@ -25,6 +40,13 @@ async def on_startup() -> None:
     if settings.USE_WEBHOOK:
         app.middlewares.append(prometheus_middleware_factory())
         app.router.add_route("GET", "/metrics", MetricsView)
+    else:
+        # Polling mode: ensure webhook is cleared to avoid 409 conflicts (no incoming updates otherwise)
+        try:
+            await bot.delete_webhook(drop_pending_updates=False)
+            logger.info("webhook cleared (polling mode)")
+        except Exception as e:
+            logger.warning(f"failed to clear webhook: {e}")
 
     await set_default_commands(bot)
 
@@ -101,6 +123,9 @@ async def main() -> None:
             integrations=[sentry_loguru],
         )
 
+    # Ensure logs directory exists and add both file and stdout sinks
+    os.makedirs("logs", exist_ok=True)
+    logger.add(sys.stdout, level="INFO", format="{time} | {level} | {module}:{function}:{line} | {message}")
     logger.add(
         "logs/telegram_bot.log",
         level="DEBUG",
