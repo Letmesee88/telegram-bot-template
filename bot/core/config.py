@@ -87,9 +87,18 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     # OpenAI / FoodAI settings
     OPENAI_API_KEY: str | None = None
     OPENAI_BASE_URL: str | None = None  # optional, e.g. custom proxy/Azure endpoint
+    FOODAI_PROVIDER: str = "stub"  # one of: stub, openai
     FOODAI_DEFAULT_MODEL: str = "gpt-5-mini"
     FOODAI_EDIT_MODEL: str = "gpt-5"
+    FOODAI_API: str = "chat"  # one of: chat, responses
+    FOODAI_REASONING_EFFORT: str = "minimal"  # minimal|low|medium|high (responses API)
+    FOODAI_TEXT_VERBOSITY: str = "low"        # low|medium|high (responses API)
     FOODAI_CONFIDENCE_ESCALATE: float = 0.70
+    FOODAI_TIMEOUT: int = 20
+    # Vision controls
+    FOODAI_IMAGE_DETAIL: str = "low"  # low|high|auto
+    FOODAI_IMAGE_DETAIL_HIGH_RETRY: bool = True  # retry photo analysis with detail=high if confidence below threshold
+    FOODAI_VISION_MODEL: str = "gpt-4o-mini"  # preferred model for image analysis (falls back to FOODAI_DEFAULT_MODEL)
 
 
 settings = Settings()
