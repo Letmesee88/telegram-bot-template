@@ -64,7 +64,7 @@ async def handle_food_photo(message: types.Message) -> None:
 
     # Analytics: photo analyze started
     if analytics.logger and message.from_user:
-        await analytics.logger.log_event(
+        analytics.fire_event(
             BaseEvent(
                 user_id=message.from_user.id,
                 event_type="FoodAI:PhotoAnalyzeStarted",
@@ -87,7 +87,7 @@ async def handle_food_photo(message: types.Message) -> None:
         logger.exception("FoodAI analyze_photo failed: {}", e)
         # Analytics: photo analyze failed
         if analytics.logger and message.from_user:
-            await analytics.logger.log_event(
+            analytics.fire_event(
                 BaseEvent(
                     user_id=message.from_user.id,
                     event_type="FoodAI:PhotoAnalyzeFailed",
@@ -174,7 +174,7 @@ async def handle_food_photo(message: types.Message) -> None:
             dur_ms = int((perf_counter() - t0) * 1000)
         except Exception:
             dur_ms = None
-        await analytics.logger.log_event(
+        analytics.fire_event(
             BaseEvent(
                 user_id=message.from_user.id,
                 event_type="FoodAI:PhotoAnalyzeSucceeded",
@@ -188,7 +188,7 @@ async def handle_food_photo(message: types.Message) -> None:
                 plan=Plan(branch="Analyze", source="FoodAI", version="v1"),
             )
         )
-        await analytics.logger.log_event(
+        analytics.fire_event(
             BaseEvent(
                 user_id=message.from_user.id,
                 event_type="FoodAI:PreviewShown",
@@ -233,7 +233,7 @@ async def handle_food_text(message: types.Message) -> None:
 
     # Analytics: text analyze started
     if analytics.logger and message.from_user:
-        await analytics.logger.log_event(
+        analytics.fire_event(
             BaseEvent(
                 user_id=message.from_user.id,
                 event_type="FoodAI:TextAnalyzeStarted",
@@ -255,7 +255,7 @@ async def handle_food_text(message: types.Message) -> None:
         logger.exception("FoodAI analyze_text failed: {}", e)
         # Analytics: text analyze failed
         if analytics.logger and message.from_user:
-            await analytics.logger.log_event(
+            analytics.fire_event(
                 BaseEvent(
                     user_id=message.from_user.id,
                     event_type="FoodAI:TextAnalyzeFailed",
@@ -341,7 +341,7 @@ async def handle_food_text(message: types.Message) -> None:
             dur_ms = int((perf_counter() - t0) * 1000)
         except Exception:
             dur_ms = None
-        await analytics.logger.log_event(
+        analytics.fire_event(
             BaseEvent(
                 user_id=message.from_user.id,
                 event_type="FoodAI:TextAnalyzeSucceeded",
@@ -355,7 +355,7 @@ async def handle_food_text(message: types.Message) -> None:
                 plan=Plan(branch="Analyze", source="FoodAI", version="v1"),
             )
         )
-        await analytics.logger.log_event(
+        analytics.fire_event(
             BaseEvent(
                 user_id=message.from_user.id,
                 event_type="FoodAI:PreviewShown",
@@ -527,7 +527,7 @@ async def cb_foodai_save(callback: types.CallbackQuery) -> None:
 
     # Analytics: save clicked
     if analytics.logger and callback.from_user:
-        await analytics.logger.log_event(
+        analytics.fire_event(
             BaseEvent(
                 user_id=callback.from_user.id,
                 event_type="FoodAI:SaveClicked",
@@ -618,7 +618,7 @@ async def cb_foodai_delete(callback: types.CallbackQuery) -> None:
 
     # Analytics: delete clicked
     if analytics.logger and callback.from_user:
-        await analytics.logger.log_event(
+        analytics.fire_event(
             BaseEvent(
                 user_id=callback.from_user.id,
                 event_type="FoodAI:DeleteClicked",
@@ -671,7 +671,7 @@ async def cb_foodai_edit(callback: types.CallbackQuery) -> None:
 
     # Analytics: edit clicked
     if analytics.logger and callback.from_user:
-        await analytics.logger.log_event(
+        analytics.fire_event(
             BaseEvent(
                 user_id=callback.from_user.id,
                 event_type="FoodAI:EditClicked",
@@ -723,7 +723,7 @@ async def cb_foodai_back(callback: types.CallbackQuery) -> None:
 
     # Analytics: back clicked
     if analytics.logger and callback.from_user:
-        await analytics.logger.log_event(
+        analytics.fire_event(
             BaseEvent(
                 user_id=callback.from_user.id,
                 event_type="FoodAI:BackClicked",
@@ -773,7 +773,7 @@ async def cb_foodai_adjust(callback: types.CallbackQuery) -> None:
 
     # Analytics for adjust
     if analytics.logger and callback.from_user:
-        await analytics.logger.log_event(
+        analytics.fire_event(
             BaseEvent(
                 user_id=callback.from_user.id,
                 event_type=("FoodAI:AdjustCal" if field == "cal" else "FoodAI:AdjustWt"),

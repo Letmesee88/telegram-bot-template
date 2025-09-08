@@ -277,7 +277,7 @@ async def _ask_speed(message: Message, state: FSMContext) -> None:
 async def cb_onboarding_resume(call: CallbackQuery, state: FSMContext) -> None:
     # Analytics
     if analytics.logger and call.from_user:
-        await analytics.logger.log_event(
+        analytics.fire_event(
             BaseEvent(
                 user_id=call.from_user.id,
                 event_type="Onboarding:Resume",
@@ -330,7 +330,7 @@ async def cb_onboarding_resume(call: CallbackQuery, state: FSMContext) -> None:
 async def cb_onboarding_restart(call: CallbackQuery, state: FSMContext) -> None:
     # Analytics
     if analytics.logger and call.from_user:
-        await analytics.logger.log_event(
+        analytics.fire_event(
             BaseEvent(
                 user_id=call.from_user.id,
                 event_type="Onboarding:Restart",

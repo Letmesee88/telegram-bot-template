@@ -49,9 +49,9 @@ async def start_handler(message: types.Message, state: FSMContext) -> None:
                 InlineKeyboardButton(text=_("Нет"), callback_data="start:no"),
             ]]
         )
-        # Analytics: log start type as Completed
+        # Analytics: log start type as Completed (non-blocking)
         if analytics.logger and user_id is not None:
-            await analytics.logger.log_event(
+            analytics.fire_event(
                 BaseEvent(
                     user_id=user_id,
                     event_type="Start Session",
@@ -82,9 +82,9 @@ async def start_handler(message: types.Message, state: FSMContext) -> None:
         kb = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text=_("Начнем"), callback_data="onboarding_start")]]
         )
-    # Analytics: log Fresh vs InProgress start type
+    # Analytics: log Fresh vs InProgress start type (non-blocking)
     if analytics.logger and user_id is not None:
-        await analytics.logger.log_event(
+        analytics.fire_event(
             BaseEvent(
                 user_id=user_id,
                 event_type="Start Session",

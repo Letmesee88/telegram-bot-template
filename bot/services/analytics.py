@@ -49,6 +49,15 @@ class AnalyticsService(metaclass=SingletonMeta):
             )
         )
 
+    def fire_event(self, event: BaseEvent) -> None:
+        """Schedule analytics event send without blocking handler.
+
+        Safe to call without checking logger presence; this method is a no-op when logger is None.
+        """
+        if not self.logger:
+            return
+        self._fire_and_forget(self.logger.log_event(event))
+
     def track_event(
         self,
         event_name: EventType,
