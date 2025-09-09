@@ -1,0 +1,12 @@
+route:
+  receiver: telegram
+  group_by: [alertname]
+  group_wait: 10s
+  group_interval: 2m
+  repeat_interval: 1h
+
+receivers:
+  - name: telegram
+    webhook_configs:
+      - url: http://alertmanager-bot:8080
+        send_resolved: true

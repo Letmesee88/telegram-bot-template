@@ -187,6 +187,7 @@ services:
       - monitoring
     volumes:
       - ./configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./configs/prometheus/alerts.yml:/etc/prometheus/alerts.yml
       - prometheus-data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
@@ -194,6 +195,35 @@ services:
       - "--web.console.libraries=/etc/prometheus/console_libraries"
       - "--web.console.templates=/etc/prometheus/consoles"
       - "--web.enable-lifecycle"
+
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: ${COMPOSE_PROJECT_NAME}-alertmanager
+    restart: unless-stopped
+    networks:
+      - monitoring
+    volumes:
+      - ./configs/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--log.level=info"
+
+  alertmanager-bot:
+    image: metalmatze/alertmanager-bot:0.4.3
+    container_name: ${COMPOSE_PROJECT_NAME}-alertmanager-bot
+    restart: unless-stopped
+    networks:
+      - monitoring
+    environment:
+      TELEGRAM_ADMIN: ${ALERT_TG_ADMIN_ID}
+      TELEGRAM_TOKEN: ${ALERT_TG_BOT_TOKEN}
+    command:
+      - "--alertmanager.url=http://alertmanager:9093"
+      - "--log.level=info"
+      - "--store=bolt"
+      - "--bolt.path=/data/bot.db"
+    volumes:
+      - alertmanager-bot-data:/data
 
   grafana:
     image: grafana/grafana:8.5.22
@@ -215,6 +245,7 @@ services:
       - ./configs/grafana/datasources:/etc/grafana/provisioning/datasources
       - ./configs/grafana/dashboards:/etc/grafana/provisioning/dashboards
       - ./configs/grafana/node-exporter.json:/var/lib/grafana/dashboards/node-exporter.json
+      - ./configs/grafana/foodai.json:/var/lib/grafana/dashboards/foodai.json
       - grafana-data:/var/lib/grafana
     user: "0"
 
@@ -230,3 +261,4 @@ volumes:
   redis-data: {}
   prometheus-data: {}
   grafana-data: {}
+  alertmanager-bot-data: {}

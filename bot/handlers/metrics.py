@@ -3,6 +3,34 @@ from aiohttp import web
 from aiohttp.web_request import Request
 from aiohttp.web_response import Response
 
+"""
+Prometheus metrics registry
+- FoodAI counters: started/succeeded/failed
+- FoodAI duration histogram (milliseconds)
+"""
+
+# Note: keep label sets LOW cardinality.
+foodai_started = prometheus_client.Counter(
+    "foodai_started_total",
+    "FoodAI analyze started",
+    ["source"],  # photo|text
+)
+foodai_succeeded = prometheus_client.Counter(
+    "foodai_succeeded_total",
+    "FoodAI analyze succeeded",
+    ["source"],
+)
+foodai_failed = prometheus_client.Counter(
+    "foodai_failed_total",
+    "FoodAI analyze failed",
+    ["source"],
+)
+foodai_duration_ms = prometheus_client.Histogram(
+    "foodai_duration_ms",
+    "FoodAI analyze duration in milliseconds",
+    buckets=[50, 100, 200, 400, 800, 1600, 3200, 6400],
+)
+
 
 class MetricsView(web.View):
     def __init__(

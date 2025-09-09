@@ -17,6 +17,12 @@ from bot.services.foodai import analyze_photo, analyze_text
 from bot.core.config import settings
 from bot.analytics.types import BaseEvent, EventProperties, Plan
 from bot.services.analytics import analytics
+from bot.handlers.metrics import (
+    foodai_started,
+    foodai_succeeded,
+    foodai_failed,
+    foodai_duration_ms,
+)
 
 router = Router(name="foodai")
 router.message.filter(FoodAIEnabledFilter())
@@ -63,6 +69,11 @@ async def handle_food_photo(message: types.Message) -> None:
     analyzing_msg = await message.answer(_("Анализирую фото…"))
 
     # Analytics: photo analyze started
+    # Prometheus: started
+    try:
+        foodai_started.labels(source="photo").inc()
+    except Exception:
+        pass
     if analytics.logger and message.from_user:
         analytics.fire_event(
             BaseEvent(
@@ -85,6 +96,11 @@ async def handle_food_photo(message: types.Message) -> None:
         result = await analyze_photo(tg_file_id)
     except Exception as e:
         logger.exception("FoodAI analyze_photo failed: {}", e)
+        # Prometheus: failed
+        try:
+            foodai_failed.labels(source="photo").inc()
+        except Exception:
+            pass
         # Analytics: photo analyze failed
         if analytics.logger and message.from_user:
             analytics.fire_event(
@@ -167,6 +183,18 @@ async def handle_food_photo(message: types.Message) -> None:
     # Do NOT resend the photo; just send full preview as a separate text message with inline keyboard
     await message.answer(preview_text, reply_markup=_preview_kb(meal_id))
 
+    # Prometheus: succeeded + duration
+    try:
+        try:
+            _dur_ms = int((perf_counter() - t0) * 1000)
+        except Exception:
+            _dur_ms = None
+        foodai_succeeded.labels(source="photo").inc()
+        if _dur_ms is not None:
+            foodai_duration_ms.observe(_dur_ms)
+    except Exception:
+        pass
+
     # Analytics: preview shown for photo
     if analytics.logger and message.from_user:
         # Photo analyze succeeded (duration + confidence)
@@ -232,6 +260,11 @@ async def handle_food_text(message: types.Message) -> None:
     analyzing_msg = await message.answer(_("Анализирую описание…"))
 
     # Analytics: text analyze started
+    # Prometheus: started
+    try:
+        foodai_started.labels(source="text").inc()
+    except Exception:
+        pass
     if analytics.logger and message.from_user:
         analytics.fire_event(
             BaseEvent(
@@ -253,6 +286,11 @@ async def handle_food_text(message: types.Message) -> None:
         result = await analyze_text(text)
     except Exception as e:
         logger.exception("FoodAI analyze_text failed: {}", e)
+        # Prometheus: failed
+        try:
+            foodai_failed.labels(source="text").inc()
+        except Exception:
+            pass
         # Analytics: text analyze failed
         if analytics.logger and message.from_user:
             analytics.fire_event(
@@ -333,6 +371,18 @@ async def handle_food_text(message: types.Message) -> None:
     )
     # Send full preview as a separate text message with inline keyboard
     await message.answer(preview_text, reply_markup=_preview_kb(meal_id))
+
+    # Prometheus: succeeded + duration
+    try:
+        try:
+            _dur_ms = int((perf_counter() - t0) * 1000)
+        except Exception:
+            _dur_ms = None
+        foodai_succeeded.labels(source="text").inc()
+        if _dur_ms is not None:
+            foodai_duration_ms.observe(_dur_ms)
+    except Exception:
+        pass
 
     # Analytics: preview shown for text
     if analytics.logger and message.from_user:

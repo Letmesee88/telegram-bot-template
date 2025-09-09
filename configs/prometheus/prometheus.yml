@@ -9,6 +9,9 @@ alerting:
         - targets:
             - alertmanager:9093
 
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   - job_name: "prometheus"
     scrape_interval: 5s # 1m

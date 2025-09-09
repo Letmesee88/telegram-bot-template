@@ -1,0 +1,83 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "thresholds": {"mode": "absolute","steps": [{"color": "green","value": null},{"color": "red","value": 0.9}]},
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"legend": {"displayMode": "table","placement": "right"}, "tooltip": {"mode": "single"}},
+      "targets": [
+        {
+          "expr": "sum(rate(foodai_succeeded_total[5m])) / clamp_min(sum(rate(foodai_started_total[5m])), 1)",
+          "legendFormat": "success rate",
+          "refId": "A"
+        }
+      ],
+      "title": "FoodAI Success Rate (5m)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus","uid": "Prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"fillOpacity": 50}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2,
+      "options": {"legend": {"displayMode": "table", "placement": "right"}, "tooltip": {"mode": "single"}, "stacking": {"mode": "normal", "group": "A"}},
+      "targets": [
+        {"expr": "sum by (source) (rate(foodai_started_total[5m]))", "legendFormat": "started {{source}}", "refId": "A"},
+        {"expr": "sum by (source) (rate(foodai_succeeded_total[5m]))", "legendFormat": "succeeded {{source}}", "refId": "B"},
+        {"expr": "sum by (source) (rate(foodai_failed_total[5m]))", "legendFormat": "failed {{source}}", "refId": "C"}
+      ],
+      "title": "FoodAI Started/Succeeded/Failed by source (5m, stacked)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus","uid": "Prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ms"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 3,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(foodai_duration_ms_bucket[5m])))", "legendFormat": "p95", "refId": "A"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(foodai_duration_ms_bucket[5m])))", "legendFormat": "p99", "refId": "B"}
+      ],
+      "title": "FoodAI Duration (p95/p99)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 37,
+  "style": "dark",
+  "tags": ["foodai", "prometheus"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "FoodAI",
+  "version": 1
+}

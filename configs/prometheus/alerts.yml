@@ -1,0 +1,24 @@
+groups:
+  - name: foodai
+    rules:
+      - alert: FoodAI_SuccessRateLow
+        expr: |
+          (sum(rate(foodai_succeeded_total[10m])) / sum(rate(foodai_started_total[10m]))) < 0.9
+          and sum(rate(foodai_started_total[10m])) > 0.01
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "FoodAI success rate < 90%"
+          description: "Success rate over 10m is below 90%. Investigate model/provider/network."
+
+      - alert: FoodAI_LatencyHighP95
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(foodai_duration_ms_bucket[5m]))) > 3000
+          and sum(rate(foodai_started_total[10m])) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "FoodAI p95 latency > 3s"
+          description: "95th percentile of analyze duration is above 3 seconds over 5m."
