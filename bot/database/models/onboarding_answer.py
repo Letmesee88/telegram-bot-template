@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Optional
 from datetime import datetime
 
-from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Integer, String, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bot.database.models.base import Base, created_at
@@ -18,8 +19,8 @@ class OnboardingAnswerModel(Base):
     user: Mapped[UserModel] = relationship(UserModel, lazy="joined")  # Removed quotes around UserModel
 
     # Raw onboarding answers and computed plan stored as json
-    data: Mapped[dict] = mapped_column(JSON, nullable=False)
-    daily_plan: Mapped[dict] = mapped_column(JSON, nullable=False)
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    daily_plan: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
     # Denormalized fields for fast admin filtering/sorting
     goal: Mapped[Optional[str]] = mapped_column(String(16), index=True)
