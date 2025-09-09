@@ -125,6 +125,7 @@ async def main() -> None:
 
     # Ensure logs directory exists and add both file and stdout sinks
     os.makedirs("logs", exist_ok=True)
+    logger.remove()
     logger.add(sys.stdout, level="INFO", format="{time} | {level} | {module}:{function}:{line} | {message}")
     logger.add(
         "logs/telegram_bot.log",
