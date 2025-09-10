@@ -6,7 +6,15 @@ import re
 from aiohttp import ClientSession
 from bot.core.config import settings
 from loguru import logger
-from bot.handlers.metrics import foodai_analysis_text_rewrite
+from bot.handlers.metrics import (
+    foodai_analysis_text_rewrite,
+    foodai_precheck_is_food,
+    foodai_precheck_not_food,
+    foodai_precheck_error,
+    foodai_provider_error,
+    foodai_file_url_missing,
+    foodai_lexicon_is_food,
+)
 
 
 def _use_openai() -> bool:
@@ -118,10 +126,64 @@ def _strip_code_fence(s: str | None) -> str | None:
     return t
 
 
+def _lexicon_is_food_text(text: str | None) -> bool | None:
+    """Lightweight lexical whitelist for short texts.
+
+    Returns True if text clearly denotes an edible item or beverage (e.g., "кофе").
+    Returns None otherwise (caller proceeds to LLM precheck).
+    """
+    try:
+        t = (text or "").strip().lower()
+        if not t:
+            return None
+        # normalize basic punctuation
+        for ch in [",", ".", "!", "?", ":", ";", "(", ")", "[", "]", "{", "}"]:
+            t = t.replace(ch, " ")
+        t = " ".join(t.split())
+        # one-token beverage/food whitelist (Russian forms)
+        lex = {
+            "кофе",
+            "чай",
+            "вода",
+            "сок",
+            "компот",
+            "морс",
+            "квас",
+            "лимонад",
+            "молоко",
+            "кефир",
+            "какао",
+            "йогурт",
+            "суп",
+            "борщ",
+            "окрошка",
+        }
+        # obvious non-food single objects (guard for one-token)
+        non_food = {
+            "телефон",
+            "ноутбук",
+            "книга",
+            "машина",
+            "авто",
+            "иконка",
+            "эмодзи",
+            "смайлик",
+        }
+        # only trust whitelist on single words to avoid accidental matches
+        if " " not in t:
+            if t in lex:
+                return True
+            if t in non_food:
+                return None  # explicitly not promoting to True; LLM precheck will handle as not food
+        return None
+    except Exception:
+        return None
+
+
 def _normalize_openai_json(raw_text: str) -> dict[str, Any] | None:
     """Parse assistant content as JSON and coerce types safely.
 
-    Expected keys: title, calories, protein_g, fat_g, carbs_g, weight_g, confidence, items[], references{sources[]}, analysis_text, appearance.
+    Expected keys: title, calories, protein_g, fat_g, carbs_g, weight_g, confidence, items[], references{sources[]}, analysis_text, appearance, not_food.
     """
     try:
         data = json.loads(raw_text)
@@ -135,6 +197,7 @@ def _normalize_openai_json(raw_text: str) -> dict[str, Any] | None:
         refs = data.get("references") or {}
         title = (data.get("title") or "").strip()
         analysis_text = (data.get("analysis_text") or "").strip()
+        not_food = bool(data.get("not_food") or False)
         appearance = data.get("appearance") or {}
         if not isinstance(items, list):
             items = []
@@ -169,6 +232,7 @@ def _normalize_openai_json(raw_text: str) -> dict[str, Any] | None:
             "references": refs,
             "analysis_text": analysis_text or None,
             "appearance": appearance,
+            "not_food": not_food,
         }
     except Exception:
         return None
@@ -309,20 +373,46 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
     if _use_openai():
         # Try real provider first
         file_url = await _tg_file_url(file_id)
-        if file_url:
+        if not file_url:
+            try:
+                foodai_file_url_missing.labels(source="photo").inc()
+            except Exception:
+                pass
+            return {"error": "file_url_unavailable"}
+        else:
+            # Strict pre-check; any failure counts as not_food (conservative)
+            is_food = await _foodness_photo(file_url)
+            if is_food is False or is_food is None:
+                return {
+                    "title": None,
+                    "calories": 0,
+                    "protein_g": 0.0,
+                    "fat_g": 0.0,
+                    "carbs_g": 0.0,
+                    "weight_g": 0.0,
+                    "confidence": 0.0,
+                    "items": [],
+                    "references": {"sources": [
+                        "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                        "USDA FoodData Central",
+                    ]},
+                    "analysis_text": None,
+                    "appearance": {},
+                    "not_food": True,
+                }
             system = (
                 "You are a nutrition analyst. Given an image, estimate total calories, protein_g, fat_g, carbs_g, "
                 "and weight_g for the pictured dish. Return ONLY a compact JSON with keys: \n"
                 "title(string), calories(int), protein_g(float), fat_g(float), carbs_g(float), weight_g(float), confidence(float 0..1),\n"
-                "items(list of {name, calories, protein_g, fat_g, carbs_g, weight_g}), references({sources: [string]}), analysis_text(string), appearance({is_packaged: boolean, plate_visible: boolean, plate_diameter_cm: int|null}).\n"
+                "items(list of {name, calories, protein_g, fat_g, carbs_g, weight_g, is_liquid:boolean}), references({sources: [string]}), analysis_text(string), appearance({is_packaged: boolean, plate_visible: boolean, plate_diameter_cm: int|null}), not_food(boolean).\n"
                 "Important: Answer in Russian language. Field 'title' must be in Russian. Ingredient names (items[].name) must be in Russian. "
                 "Always set references.sources to exactly [\"ФГБУН \\\"ФИЦ питания и биотехнологии\\\"\", \"USDA FoodData Central\"]. "
+                "If the image clearly does not contain any food or drinks, set not_food=true and keep items minimal. "
+                "For liquids, set items[].is_liquid=true (e.g., вода, сок, кофе, чай, молоко, кефир, йогурт питьевой, бульон, суп-пюре, лимонад). "
                 "analysis_text: a single paragraph of 350–420 characters in Russian that (1) states whether the dish appears homemade or packaged (do not invent brands unless clearly visible), "
                 "(2) names 2–3 visually identified main components, (3) explains how portion size was estimated (e.g., by plate size ~24 cm and ingredient count/volume); "
                 "include the exact sentence: \"Использованы справочные данные ФИЦ питания и USDA.\" Return JSON only, without explanations."
             )
-
-            # Prefer a dedicated vision model if provided
             vision_model = getattr(settings, "FOODAI_VISION_MODEL", None) or settings.FOODAI_DEFAULT_MODEL
 
             async def _build_and_call(detail: str) -> dict[str, Any] | None:
@@ -425,35 +515,123 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                     parsed_hi = await _build_and_call("high")
                     if parsed_hi:
                         return parsed_hi
-        # Fallback to stub if URL not available or parsing failed
+        # If we are here and parsing still failed — return provider error (no stub)
+        try:
+            foodai_provider_error.labels(source="photo", error="provider_unavailable").inc()
+        except Exception:
+            pass
+        return {"error": "provider_unavailable"}
 
-    # Fake deterministic output based on file_id hash length just to vary a little
-    base = (len(file_id) % 100) + 250
-    protein = round(base * 0.25 / 4, 1)  # grams assuming 4 kcal/g
-    fat = round(base * 0.30 / 9, 1)      # grams assuming 9 kcal/g
-    carbs = round(base * 0.45 / 4, 1)    # grams assuming 4 kcal/g
-    weight = round(protein * 4 + fat * 9 + carbs * 4, 1)  # pseudo-weight proxy
 
-    return {
-        "title": "Блюдо",
-        "calories": int(base),
-        "protein_g": float(protein),
-        "fat_g": float(fat),
-        "carbs_g": float(carbs),
-        "weight_g": float(weight),
-        "confidence": 0.72,
-        "items": [
-            {"name": "Блюдо", "calories": int(base), "protein_g": float(protein), "fat_g": float(fat), "carbs_g": float(carbs), "weight_g": float(weight)},
+async def _foodness_photo(file_url: str) -> bool | None:
+    """Return False if image likely does NOT contain food/drink. True if contains. None on failure."""
+    if not _use_openai():
+        return None
+    system = (
+        "You are a binary classifier. Determine if the image shows edible food or a drink. "
+        "Respond with strict JSON: {\"is_food\": boolean}. If unsure or ambiguous, set is_food=false."
+    )
+    vision_model = getattr(settings, "FOODAI_VISION_MODEL", None) or settings.FOODAI_DEFAULT_MODEL
+    payload = {
+        "model": vision_model,
+        "temperature": 0,
+        "messages": [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Does this image contain food or drink?"},
+                    {"type": "image_url", "image_url": {"url": file_url}},
+                ],
+            },
         ],
-        "references": {
-            "sources": [
-                "ФГБУН \"ФИЦ питания и биотехнологии\"",
-                "USDA FoodData Central",
-            ]
-        },
-        "analysis_text": "Блюдо домашнее, без видимых брендов или упаковок. Оценка порции по размеру посуды и количеству ингредиентов; высокая уверенность по основным компонентам, средняя по точному весу. Использованы справочные данные ФИЦ питания и USDA.",
-        "appearance": {"is_packaged": False, "plate_visible": True, "plate_diameter_cm": 24},
     }
+    try:
+        content = await _openai_request("chat", payload)
+        if not content:
+            try:
+                foodai_precheck_error.labels(source="photo", reason="http").inc()
+            except Exception:
+                pass
+            return None
+        try:
+            data = json.loads(content)
+        except Exception:
+            try:
+                data = json.loads((_strip_code_fence(content) or "{}"))
+            except Exception:
+                try:
+                    foodai_precheck_error.labels(source="photo", reason="json").inc()
+                except Exception:
+                    pass
+                return None
+        is_food = bool((data or {}).get("is_food"))
+        try:
+            (foodai_precheck_is_food if is_food else foodai_precheck_not_food).labels(source="photo").inc()
+        except Exception:
+            pass
+        return is_food
+    except Exception:
+        try:
+            foodai_precheck_error.labels(source="photo", reason="other").inc()
+        except Exception:
+            pass
+        return None
+
+
+async def _foodness_text(text: str) -> bool | None:
+    """Return False if text likely does NOT describe food/drink. True if describes. None on failure."""
+    if not _use_openai():
+        return None
+    system = (
+        "You are a binary classifier. Determine if the text describes edible food or a drink. "
+        "Respond with strict JSON: {\"is_food\": boolean}. If unsure or ambiguous, set is_food=false. "
+        "If the text is a single common beverage name in Russian (e.g., кофе, чай, вода, сок, компот, морс, квас, лимонад, молоко, кефир, какао, йогурт), set is_food=true. "
+        "If the text is a single common household object (e.g., телефон, ноутбук, книга, машина, иконка, смайлик), set is_food=false."
+    )
+    primary_model = getattr(settings, "FOODAI_DEFAULT_MODEL", None) or getattr(settings, "FOODAI_VISION_MODEL", None)
+    payload = {
+        "model": primary_model,
+        "temperature": 0,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": (text or "")[:500]},
+        ],
+    }
+    try:
+        content = await _openai_request("chat", payload)
+        if not content and getattr(settings, "FOODAI_VISION_MODEL", None) and settings.FOODAI_VISION_MODEL != primary_model:
+            payload["model"] = settings.FOODAI_VISION_MODEL
+            content = await _openai_request("chat", payload)
+        if not content:
+            try:
+                foodai_precheck_error.labels(source="text", reason="http").inc()
+            except Exception:
+                pass
+            return None
+        try:
+            data = json.loads(content)
+        except Exception:
+            try:
+                data = json.loads((_strip_code_fence(content) or "{}"))
+            except Exception:
+                try:
+                    foodai_precheck_error.labels(source="text", reason="json").inc()
+                except Exception:
+                    pass
+                return None
+        is_food = bool((data or {}).get("is_food"))
+        try:
+            (foodai_precheck_is_food if is_food else foodai_precheck_not_food).labels(source="text").inc()
+        except Exception:
+            pass
+        return is_food
+    except Exception:
+        try:
+            foodai_precheck_error.labels(source="text", reason="other").inc()
+        except Exception:
+            pass
+        return None
 
 
 async def analyze_text(text: str) -> dict[str, Any]:
@@ -462,13 +640,44 @@ async def analyze_text(text: str) -> dict[str, Any]:
     If OpenAI provider is enabled, use the model; otherwise fallback to stub.
     """
     if _use_openai() and (text or "").strip():
+        # Lexicon whitelist for short beverage/food names
+        lex_hit = _lexicon_is_food_text(text)
+        if lex_hit is True:
+            try:
+                foodai_lexicon_is_food.labels(source="text").inc()
+            except Exception:
+                pass
+            is_food = True
+        else:
+            # Strict pre-check; any failure counts as not_food (conservative)
+            is_food = await _foodness_text(text)
+        if is_food is False or is_food is None:
+            return {
+                "title": None,
+                "calories": 0,
+                "protein_g": 0.0,
+                "fat_g": 0.0,
+                "carbs_g": 0.0,
+                "weight_g": 0.0,
+                "confidence": 0.0,
+                "items": [],
+                "references": {"sources": [
+                    "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                    "USDA FoodData Central",
+                ]},
+                "analysis_text": None,
+                "appearance": {},
+                "not_food": True,
+            }
         system = (
             "You are a nutrition analyst. Given a short dish description, estimate total calories, protein_g, "
             "fat_g, carbs_g and weight_g. Return ONLY JSON with keys: title(string), calories(int), protein_g(float), fat_g(float), "
-            "carbs_g(float), weight_g(float), confidence(float 0..1), items(list of {name, calories, protein_g, fat_g, carbs_g, weight_g}), "
-            "references({sources: [string]}), analysis_text(string), appearance({is_packaged: boolean, plate_visible: boolean, plate_diameter_cm: int|null}).\n"
+            "carbs_g(float), weight_g(float), confidence(float 0..1), items(list of {name, calories, protein_g, fat_g, carbs_g, weight_g, is_liquid:boolean}), "
+            "references({sources: [string]}), analysis_text(string), appearance({is_packaged: boolean, plate_visible: boolean, plate_diameter_cm: int|null}), not_food(boolean).\n"
             "Important: Answer in Russian language. Field 'title' must be in Russian. Ingredient names (items[].name) must be in Russian. "
             "Always set references.sources to exactly [\"ФГБУН \\\"ФИЦ питания и биотехнологии\\\"\", \"USDA FoodData Central\"]. "
+            "If the description clearly does not refer to food or drinks, set not_food=true and keep items minimal. "
+            "For liquids, set items[].is_liquid=true. "
             "analysis_text: a single paragraph of 350–420 characters in Russian that (1) states whether the dish appears homemade or packaged (do not invent brands unless clearly visible), "
             "(2) names 2–3 visually identified main components, (3) explains how portion size was estimated (e.g., by plate size ~24 cm and ingredient count/volume); "
             "include the exact sentence: \"Использованы справочные данные ФИЦ питания и USDA.\" Return JSON only, without explanations."
@@ -543,30 +752,8 @@ async def analyze_text(text: str) -> dict[str, Any]:
                     except Exception:
                         pass
                     return parsed
-    words = len(text.split())
-    base = 150 + (words % 200)
-    protein = round(base * 0.2 / 4, 1)
-    fat = round(base * 0.3 / 9, 1)
-    carbs = round(base * 0.5 / 4, 1)
-    weight = round(protein * 4 + fat * 9 + carbs * 4, 1)
-
-    return {
-        "title": (text or "Описание").strip()[:80] or "Описание",
-        "calories": int(base),
-        "protein_g": float(protein),
-        "fat_g": float(fat),
-        "carbs_g": float(carbs),
-        "weight_g": float(weight),
-        "confidence": 0.65,
-        "items": [
-            {"name": "Описание", "calories": int(base), "protein_g": float(protein), "fat_g": float(fat), "carbs_g": float(carbs), "weight_g": float(weight)},
-        ],
-        "references": {
-            "sources": [
-                "ФГБУН \"ФИЦ питания и биотехнологии\"",
-                "USDA FoodData Central",
-            ]
-        },
-        "analysis_text": "Оценка по текстовому описанию; макроэлементы рассчитаны по типовым справочникам. Уверенность средняя из‑за неопределённости веса и состава. Использованы справочные данные ФИЦ питания и USDA.",
-        "appearance": {"is_packaged": False, "plate_visible": True, "plate_diameter_cm": 24},
-    }
+    try:
+        foodai_provider_error.labels(source="text", error="provider_unavailable").inc()
+    except Exception:
+        pass
+    return {"error": "provider_unavailable"}

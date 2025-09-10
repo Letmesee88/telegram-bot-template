@@ -38,6 +38,49 @@ foodai_itogo_shown = prometheus_client.Counter(
     ["source"],  # photo|text
 )
 
+# Not-food cases flagged by model
+foodai_not_food = prometheus_client.Counter(
+    "foodai_not_food_total",
+    "FoodAI input flagged as not containing food/drink",
+    ["source"],  # photo|text
+)
+
+# Pre-check (foodness) outcomes
+foodai_precheck_is_food = prometheus_client.Counter(
+    "foodai_precheck_is_food_total",
+    "FoodAI precheck decided input contains food/drink",
+    ["source"],  # photo|text
+)
+foodai_precheck_not_food = prometheus_client.Counter(
+    "foodai_precheck_not_food_total",
+    "FoodAI precheck decided input does not contain food/drink",
+    ["source"],  # photo|text
+)
+foodai_precheck_error = prometheus_client.Counter(
+    "foodai_precheck_error_total",
+    "FoodAI precheck failed",
+    ["source", "reason"],  # photo|text | timeout|json|http|other
+)
+
+# Lexicon-based positive match (text only)
+foodai_lexicon_is_food = prometheus_client.Counter(
+    "foodai_lexicon_is_food_total",
+    "FoodAI text matched simple food/beverage lexicon (precheck bypass)",
+    ["source"],  # text
+)
+
+# Provider and transport errors
+foodai_provider_error = prometheus_client.Counter(
+    "foodai_provider_error_total",
+    "Errors during provider processing or parsing",
+    ["source", "error"],  # photo|text | provider_unavailable|parse_error
+)
+foodai_file_url_missing = prometheus_client.Counter(
+    "foodai_file_url_missing_total",
+    "Telegram file_url could not be resolved",
+    ["source"],  # photo
+)
+
 # analysis_text was rewritten by post-processor (hybrid pipeline)
 foodai_analysis_text_rewrite = prometheus_client.Counter(
     "foodai_analysis_text_rewrite_total",

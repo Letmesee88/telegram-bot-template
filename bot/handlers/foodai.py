@@ -23,6 +23,7 @@ from bot.handlers.metrics import (
     foodai_failed,
     foodai_duration_ms,
     foodai_itogo_shown,
+    foodai_not_food,
 )
 
 router = Router(name="foodai")
@@ -118,9 +119,49 @@ async def handle_food_photo(message: types.Message) -> None:
                     plan=Plan(branch="Analyze", source="FoodAI", version="v1"),
                 )
             )
-        await analyzing_msg.edit_text(_("Не удалось проанализировать фото. Попробуй ещё раз позже."))
+        await analyzing_msg.edit_text(_("Не удалось проанализировать фото. Попробуйте ещё раз позже."))
         return
     finally:
+        pass
+
+    # Provider error short-circuit (no preview on operational issues)
+    try:
+        if isinstance(result, dict) and result.get("error"):
+            err = str(result.get("error") or "")
+            msg = _("Не удалось проанализировать фото. Попробуйте ещё раз позже.")
+            if err == "file_url_unavailable":
+                msg = _("Не удалось получить файл с серверов Telegram. Попробуйте ещё раз.")
+            await analyzing_msg.edit_text(msg)
+            try:
+                foodai_failed.labels(source="photo").inc()
+            except Exception:
+                pass
+            return
+    except Exception:
+        pass
+
+    # Not-food short-circuit
+    try:
+        if isinstance(result, dict) and bool(result.get("not_food")):
+            try:
+                foodai_not_food.labels(source="photo").inc()
+            except Exception:
+                pass
+            await analyzing_msg.edit_text(_("Похоже, на изображении нет еды или напитков. Пришлите фото блюда или продукта."))
+            return
+    except Exception:
+        pass
+
+    # Not-food short-circuit for text
+    try:
+        if isinstance(result, dict) and bool(result.get("not_food")):
+            try:
+                foodai_not_food.labels(source="text").inc()
+            except Exception:
+                pass
+            await analyzing_msg.edit_text(_("Похоже, это не описание еды или напитков. Попробуйте описать блюдо или продукт."))
+            return
+    except Exception:
         pass
 
     title = (result.get("title") or None) if isinstance(result, dict) else None
@@ -350,6 +391,20 @@ async def handle_food_text(message: types.Message) -> None:
     finally:
         pass
 
+    # Provider error short-circuit (no preview on operational issues)
+    try:
+        if isinstance(result, dict) and result.get("error"):
+            err = str(result.get("error") or "")
+            msg = _("Не удалось проанализировать текст. Попробуйте ещё раз позже.")
+            await analyzing_msg.edit_text(msg)
+            try:
+                foodai_failed.labels(source="text").inc()
+            except Exception:
+                pass
+            return
+    except Exception:
+        pass
+
     title = (result.get("title") or None) if isinstance(result, dict) else None
     calories = int(result.get("calories") or 0)
     protein_g = float(result.get("protein_g") or 0)
@@ -514,6 +569,28 @@ def _build_preview_text(
     analysis_text: str | None = None,
 ) -> str:
     parts: list[str] = []
+    # Early exit if not_food flagged
+    try:
+        not_food_flag = bool((itogo or {}) and False)
+    except Exception:
+        not_food_flag = False
+    try:
+        if isinstance(references, dict) and bool(references.get("not_food")):
+            not_food_flag = True
+    except Exception:
+        pass
+    try:
+        if isinstance(items, dict) and bool((items or {}).get("not_food")):
+            not_food_flag = True
+    except Exception:
+        pass
+    # Some providers place not_food in analysis_json root; try finding in a shadow field
+    try:
+        if isinstance(items, list):
+            # no-op; keep list
+            pass
+    except Exception:
+        pass
     # Header by source (aligned to AIFood.md wording)
     if source == "photo":
         parts.append(_("👌🏼 Анализ фото готов !"))
@@ -525,19 +602,64 @@ def _build_preview_text(
     if title:
         parts.append(str(title))
 
+    # If not food — refuse with a short message
+    if not_food_flag:
+        try:
+            parts.append("")
+            parts.append(_("Похоже, на изображении нет еды или напитков. Пришлите фото блюда или пищевого продукта."))
+            try:
+                foodai_not_food.labels(source=source or "unknown").inc()
+            except Exception:
+                pass
+            return "\n".join(parts)
+        except Exception:
+            return "\n".join(parts)
+
     # Composition
     if items:
         parts.append("")
         parts.append(_("🍜 Состав:"))
+        # Simple density map for liquids (g/ml)
+        density = {
+            "вода": 1.0,
+            "сок": 1.04,
+            "кофе": 1.0,
+            "чай": 1.0,
+            "молоко": 1.03,
+            "кефир": 1.03,
+            "йогурт": 1.03,
+            "бульон": 1.0,
+            "суп": 1.0,
+            "лимонад": 1.02,
+            "масло": 0.91,
+        }
         for it in items:
             name = str((it or {}).get("name") or _("Блюдо"))
             w = (it or {}).get("weight_g")
             kc = (it or {}).get("calories")
+            is_liquid = bool((it or {}).get("is_liquid"))
             if w or kc is not None:
                 segs = []
                 if w:
                     try:
-                        segs.append(f"{float(w):g} г")
+                        val_g = float(w)
+                        unit = "г"
+                        show_val = f"{val_g:g}"
+                        # Convert to ml if liquid
+                        if is_liquid:
+                            # pick density by name prefix if available
+                            d = None
+                            key = name.lower().strip()
+                            for k in density.keys():
+                                if key.startswith(k):
+                                    d = density[k]
+                                    break
+                            if not d:
+                                d = 1.0
+                            ml = val_g / d
+                            unit = "мл"
+                            show_val = f"{ml:.0f}"
+                        segs.append(f"{show_val} {unit}")
                     except Exception:
                         segs.append(str(w))
                 if kc is not None:
