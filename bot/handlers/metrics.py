@@ -31,6 +31,13 @@ foodai_duration_ms = prometheus_client.Histogram(
     buckets=[50, 100, 200, 400, 800, 1600, 3200, 6400],
 )
 
+# Preview contained per-meal percent block ("Итого % от нормы").
+foodai_itogo_shown = prometheus_client.Counter(
+    "foodai_preview_itogo_shown_total",
+    "FoodAI preview included per-meal percent block",
+    ["source"],  # photo|text
+)
+
 
 class MetricsView(web.View):
     def __init__(

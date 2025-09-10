@@ -119,7 +119,7 @@ def _strip_code_fence(s: str | None) -> str | None:
 def _normalize_openai_json(raw_text: str) -> dict[str, Any] | None:
     """Parse assistant content as JSON and coerce types safely.
 
-    Expected keys: calories, protein_g, fat_g, carbs_g, weight_g, confidence, items[], references{sources[]}.
+    Expected keys: title, calories, protein_g, fat_g, carbs_g, weight_g, confidence, items[], references{sources[]}, analysis_text.
     """
     try:
         data = json.loads(raw_text)
@@ -131,11 +131,23 @@ def _normalize_openai_json(raw_text: str) -> dict[str, Any] | None:
         conf = float(data.get("confidence") or 0.7)
         items = data.get("items") or []
         refs = data.get("references") or {}
+        title = (data.get("title") or "").strip()
+        analysis_text = (data.get("analysis_text") or "").strip()
         if not isinstance(items, list):
             items = []
         if not isinstance(refs, dict):
             refs = {}
+        if not isinstance(title, str):
+            title = ""
+        if not isinstance(analysis_text, str):
+            analysis_text = ""
+        # Trim analysis_text to ~420 chars for UX safety
+        if analysis_text:
+            analysis_text = analysis_text.replace("\n", " ").replace("\r", " ")
+            if len(analysis_text) > 420:
+                analysis_text = analysis_text[:417].rstrip() + "…"
         return {
+            "title": title,
             "calories": cal,
             "protein_g": p,
             "fat_g": f,
@@ -144,6 +156,7 @@ def _normalize_openai_json(raw_text: str) -> dict[str, Any] | None:
             "confidence": conf,
             "items": items,
             "references": refs,
+            "analysis_text": analysis_text or None,
         }
     except Exception:
         return None
@@ -166,8 +179,13 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
             system = (
                 "You are a nutrition analyst. Given an image, estimate total calories, protein_g, fat_g, carbs_g, "
                 "and weight_g for the pictured dish. Return ONLY a compact JSON with keys: \n"
-                "calories(int), protein_g(float), fat_g(float), carbs_g(float), weight_g(float), confidence(float 0..1),\n"
-                "items(list of {name, calories, protein_g, fat_g, carbs_g}), references({sources: [string]})."
+                "title(string), calories(int), protein_g(float), fat_g(float), carbs_g(float), weight_g(float), confidence(float 0..1),\n"
+                "items(list of {name, calories, protein_g, fat_g, carbs_g, weight_g}), references({sources: [string]}), analysis_text(string).\n"
+                "Important: Answer in Russian language. Field 'title' must be in Russian. Ingredient names (items[].name) must be in Russian. "
+                "Always set references.sources to exactly [\"ФГБУН \\\"ФИЦ питания и биотехнологии\\\"\", \"USDA FoodData Central\"]. "
+                "analysis_text: a single paragraph of 350–420 characters in Russian that (1) states whether the dish appears homemade or packaged (do not invent brands unless clearly visible), "
+                "(2) names 2–3 visually identified main components, (3) explains how portion size was estimated (e.g., by plate size ~24 cm and ingredient count/volume); "
+                "include the exact sentence: \"Использованы справочные данные ФИЦ питания и USDA.\" Return JSON only, without explanations."
             )
 
             # Prefer a dedicated vision model if provided
@@ -250,6 +268,7 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
     weight = round(protein * 4 + fat * 9 + carbs * 4, 1)  # pseudo-weight proxy
 
     return {
+        "title": "Блюдо",
         "calories": int(base),
         "protein_g": float(protein),
         "fat_g": float(fat),
@@ -257,7 +276,7 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
         "weight_g": float(weight),
         "confidence": 0.72,
         "items": [
-            {"name": "Блюдо", "calories": int(base), "protein_g": float(protein), "fat_g": float(fat), "carbs_g": float(carbs)},
+            {"name": "Блюдо", "calories": int(base), "protein_g": float(protein), "fat_g": float(fat), "carbs_g": float(carbs), "weight_g": float(weight)},
         ],
         "references": {
             "sources": [
@@ -265,6 +284,7 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                 "USDA FoodData Central",
             ]
         },
+        "analysis_text": "Блюдо домашнее, без видимых брендов или упаковок. Оценка порции по размеру посуды и количеству ингредиентов; высокая уверенность по основным компонентам, средняя по точному весу. Использованы справочные данные ФИЦ питания и USDA.",
     }
 
 
@@ -276,9 +296,14 @@ async def analyze_text(text: str) -> dict[str, Any]:
     if _use_openai() and (text or "").strip():
         system = (
             "You are a nutrition analyst. Given a short dish description, estimate total calories, protein_g, "
-            "fat_g, carbs_g and weight_g. Return ONLY JSON with keys: calories(int), protein_g(float), fat_g(float), "
-            "carbs_g(float), weight_g(float), confidence(float 0..1), items(list of {name, calories, protein_g, fat_g, carbs_g}), "
-            "references({sources: [string]})."
+            "fat_g, carbs_g and weight_g. Return ONLY JSON with keys: title(string), calories(int), protein_g(float), fat_g(float), "
+            "carbs_g(float), weight_g(float), confidence(float 0..1), items(list of {name, calories, protein_g, fat_g, carbs_g, weight_g}), "
+            "references({sources: [string]}), analysis_text(string).\n"
+            "Important: Answer in Russian language. Field 'title' must be in Russian. Ingredient names (items[].name) must be in Russian. "
+            "Always set references.sources to exactly [\"ФГБУН \\\"ФИЦ питания и биотехнологии\\\"\", \"USDA FoodData Central\"]. "
+            "analysis_text: a single paragraph of 350–420 characters in Russian that (1) states whether the dish appears homemade or packaged (do not invent brands unless clearly visible), "
+            "(2) names 2–3 visually identified main components, (3) explains how portion size was estimated (e.g., by plate size ~24 cm and ingredient count/volume); "
+            "include the exact sentence: \"Использованы справочные данные ФИЦ питания и USDA.\" Return JSON only, without explanations."
         )
         api = (settings.FOODAI_API or "chat").lower()
         if api == "responses":
@@ -327,6 +352,7 @@ async def analyze_text(text: str) -> dict[str, Any]:
     weight = round(protein * 4 + fat * 9 + carbs * 4, 1)
 
     return {
+        "title": (text or "Описание").strip()[:80] or "Описание",
         "calories": int(base),
         "protein_g": float(protein),
         "fat_g": float(fat),
@@ -334,7 +360,7 @@ async def analyze_text(text: str) -> dict[str, Any]:
         "weight_g": float(weight),
         "confidence": 0.65,
         "items": [
-            {"name": "Описание", "calories": int(base), "protein_g": float(protein), "fat_g": float(fat), "carbs_g": float(carbs)},
+            {"name": "Описание", "calories": int(base), "protein_g": float(protein), "fat_g": float(fat), "carbs_g": float(carbs), "weight_g": float(weight)},
         ],
         "references": {
             "sources": [
@@ -342,4 +368,5 @@ async def analyze_text(text: str) -> dict[str, Any]:
                 "USDA FoodData Central",
             ]
         },
+        "analysis_text": "Оценка по текстовому описанию; макроэлементы рассчитаны по типовым справочникам. Уверенность средняя из‑за неопределённости веса и состава. Использованы справочные данные ФИЦ питания и USDA.",
     }

@@ -22,6 +22,7 @@ from bot.handlers.metrics import (
     foodai_succeeded,
     foodai_failed,
     foodai_duration_ms,
+    foodai_itogo_shown,
 )
 
 router = Router(name="foodai")
@@ -90,7 +91,7 @@ async def handle_food_photo(message: types.Message) -> None:
             )
         )
 
-    # Step 2: analyze via stub service
+    # Step 2: analyze via service
     t0 = perf_counter()
     try:
         result = await analyze_photo(tg_file_id)
@@ -122,6 +123,7 @@ async def handle_food_photo(message: types.Message) -> None:
     finally:
         pass
 
+    title = (result.get("title") or None) if isinstance(result, dict) else None
     calories = int(result.get("calories") or 0)
     protein_g = float(result.get("protein_g") or 0)
     fat_g = float(result.get("fat_g") or 0)
@@ -130,6 +132,7 @@ async def handle_food_photo(message: types.Message) -> None:
     confidence = float(result.get("confidence") or 0)
     items = list(result.get("items") or [])
     references = result.get("references") or {"source": "stub"}
+    analysis_text = (result.get("analysis_text") or None)
 
     # Step 3: update Meal only (keep draft). DailyIntake — только по кнопке Сохранить.
     async with sessionmaker() as session:
@@ -138,6 +141,7 @@ async def handle_food_photo(message: types.Message) -> None:
             await analyzing_msg.edit_text(_("Не удалось сохранить результат, попробуй ещё раз."))
             return
 
+        meal.title = title
         meal.calories = calories
         meal.protein_g = protein_g
         meal.fat_g = fat_g
@@ -163,7 +167,34 @@ async def handle_food_photo(message: types.Message) -> None:
 
         await session.commit()
 
-    # Remove status message; just clean up the temporary "analyzing" message
+    # Prepare optional per-meal % of plan for preview
+    itogo = None
+    try:
+        async with sessionmaker() as session:
+            oa = await session.scalar(select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id))
+            if oa and isinstance(getattr(oa, "daily_plan", None), dict):
+                plan = oa.daily_plan or {}
+                plan_cal = float(plan.get("calories") or 0)
+                plan_p = float(plan.get("protein_g") or 0)
+                plan_f = float(plan.get("fat_g") or 0)
+                plan_c = float(plan.get("carbs_g") or 0)
+                def pct(val: float, base: float) -> float:
+                    try:
+                        if base and base > 0:
+                            return round(100.0 * float(val) / float(base), 1)
+                        return 0.0
+                    except Exception:
+                        return 0.0
+                itogo = {
+                    "p_pct": pct(protein_g, plan_p),
+                    "f_pct": pct(fat_g, plan_f),
+                    "c_pct": pct(carbs_g, plan_c),
+                    "cal_pct": pct(calories, plan_cal),
+                }
+    except Exception:
+        itogo = None
+
+    # Remove status message
     try:
         await analyzing_msg.delete()
     except Exception:
@@ -177,8 +208,10 @@ async def handle_food_photo(message: types.Message) -> None:
         weight=weight_g,
         items=items,
         references=references,
-        title=None,
+        title=title,
         source="photo",
+        itogo=itogo,
+        analysis_text=analysis_text,
     )
     # Do NOT resend the photo; just send full preview as a separate text message with inline keyboard
     await message.answer(preview_text, reply_markup=_preview_kb(meal_id))
@@ -190,6 +223,11 @@ async def handle_food_photo(message: types.Message) -> None:
         except Exception:
             _dur_ms = None
         foodai_succeeded.labels(source="photo").inc()
+        if itogo:
+            try:
+                foodai_itogo_shown.labels(source="photo").inc()
+            except Exception:
+                pass
         if _dur_ms is not None:
             foodai_duration_ms.observe(_dur_ms)
     except Exception:
@@ -312,6 +350,7 @@ async def handle_food_text(message: types.Message) -> None:
     finally:
         pass
 
+    title = (result.get("title") or None) if isinstance(result, dict) else None
     calories = int(result.get("calories") or 0)
     protein_g = float(result.get("protein_g") or 0)
     fat_g = float(result.get("fat_g") or 0)
@@ -320,6 +359,7 @@ async def handle_food_text(message: types.Message) -> None:
     confidence = float(result.get("confidence") or 0)
     items = list(result.get("items") or [])
     references = result.get("references") or {"source": "stub"}
+    analysis_text = (result.get("analysis_text") or None)
 
     async with sessionmaker() as session:
         meal = await session.get(MealModel, meal_id)
@@ -327,6 +367,7 @@ async def handle_food_text(message: types.Message) -> None:
             await analyzing_msg.edit_text(_("Не удалось сохранить результат, попробуй ещё раз."))
             return
 
+        meal.title = title or meal.title
         meal.calories = calories
         meal.protein_g = protein_g
         meal.fat_g = fat_g
@@ -352,6 +393,33 @@ async def handle_food_text(message: types.Message) -> None:
 
         await session.commit()
 
+    # Prepare optional per-meal % of plan for preview
+    itogo = None
+    try:
+        async with sessionmaker() as session:
+            oa = await session.scalar(select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id))
+            if oa and isinstance(getattr(oa, "daily_plan", None), dict):
+                plan = oa.daily_plan or {}
+                plan_cal = float(plan.get("calories") or 0)
+                plan_p = float(plan.get("protein_g") or 0)
+                plan_f = float(plan.get("fat_g") or 0)
+                plan_c = float(plan.get("carbs_g") or 0)
+                def pct(val: float, base: float) -> float:
+                    try:
+                        if base and base > 0:
+                            return round(100.0 * float(val) / float(base), 1)
+                        return 0.0
+                    except Exception:
+                        return 0.0
+                itogo = {
+                    "p_pct": pct(protein_g, plan_p),
+                    "f_pct": pct(fat_g, plan_f),
+                    "c_pct": pct(carbs_g, plan_c),
+                    "cal_pct": pct(calories, plan_cal),
+                }
+    except Exception:
+        itogo = None
+
     # Remove status message; just clean up the temporary "analyzing" message
     try:
         await analyzing_msg.delete()
@@ -366,8 +434,10 @@ async def handle_food_text(message: types.Message) -> None:
         weight=weight_g,
         items=items,
         references=references,
-        title=text[:255] if text else None,
+        title=title or (text[:255] if text else None),
         source="text",
+        itogo=itogo,
+        analysis_text=analysis_text,
     )
     # Send full preview as a separate text message with inline keyboard
     await message.answer(preview_text, reply_markup=_preview_kb(meal_id))
@@ -379,6 +449,11 @@ async def handle_food_text(message: types.Message) -> None:
         except Exception:
             _dur_ms = None
         foodai_succeeded.labels(source="text").inc()
+        if itogo:
+            try:
+                foodai_itogo_shown.labels(source="text").inc()
+            except Exception:
+                pass
         if _dur_ms is not None:
             foodai_duration_ms.observe(_dur_ms)
     except Exception:
@@ -435,56 +510,92 @@ def _build_preview_text(
     references: dict | None = None,
     title: str | None = None,
     source: str | None = None,
+    itogo: dict | None = None,
+    analysis_text: str | None = None,
 ) -> str:
     parts: list[str] = []
-    # Header by source
+    # Header by source (aligned to AIFood.md wording)
     if source == "photo":
-        parts.append(_("📸 Анализ фото завершен!"))
+        parts.append(_("👌🏼 Анализ фото готов !"))
     elif source == "text":
         parts.append(_("📝 Анализ описания завершен!"))
     else:
         parts.append(_("Предпросмотр блюда:"))
 
     if title:
-        parts.append(_("Название: {title}").format(title=title))
+        parts.append(str(title))
 
     # Composition
     if items:
         parts.append("")
-        parts.append(_("💰 Состав:"))
+        parts.append(_("🍜 Состав:"))
         for it in items:
             name = str((it or {}).get("name") or _("Блюдо"))
-            parts.append(f"• {name}")
+            w = (it or {}).get("weight_g")
+            kc = (it or {}).get("calories")
+            if w or kc is not None:
+                segs = []
+                if w:
+                    try:
+                        segs.append(f"{float(w):g} г")
+                    except Exception:
+                        segs.append(str(w))
+                if kc is not None:
+                    try:
+                        segs.append(f"{int(float(kc))} ккал")
+                    except Exception:
+                        segs.append(str(kc))
+                parts.append(f"• {name} (" + ", ".join(segs) + ")")
+            else:
+                parts.append(f"• {name}")
 
-    # Totals
+    # Totals in one line
     parts.append("")
-    parts.append(_("🔥 Калории: {cal} ккал").format(cal=int(cal)))
-    parts.append(_("🥩 Белки: {p} г").format(p=p))
-    parts.append(_("🥑 Жиры: {f} г").format(f=f))
-    parts.append(_("🍞 Углеводы: {c} г").format(c=c))
+    parts.append(
+        _("🔥 Калории: {cal} ккал | 🥩 Белки: {p} г | 🥑 Жиры: {f} г | 🍞 Углеводы: {c} г").format(
+            cal=int(cal), p=p, f=f, c=c
+        )
+    )
 
     if weight:
         parts.append("")
         parts.append(_("⚖️ Вес: {w} г").format(w=weight))
 
+    # Separator
+    parts.append("")
+    parts.append("------------------------------")
+
     # Sources
-    srcs: list[str] = []
-    if isinstance(references, dict):
-        if isinstance(references.get("sources"), list):
-            srcs = [str(x) for x in references.get("sources") if x]
-        elif references.get("source"):
-            srcs = [str(references.get("source"))]
-    if srcs:
-        parts.append("")
-        parts.append(_("📋 Источники данных:"))
-        for s in srcs:
-            parts.append(f"• {s}")
+    parts.append("")
+    parts.append(_("📋 Источники данных:"))
+    parts.append("• ФГБУН ФИЦ питания и биотехнологии")
+    parts.append("• USDA FoodData Central")
 
     # Analysis
     parts.append("")
-    parts.append(_("🔍 Анализ: Уровень уверенности {conf}%").format(conf=int(float(conf) * 100)))
+    parts.append(_("🔍 Анализ:"))
+    if analysis_text:
+        try:
+            txt = str(analysis_text).replace("\n", " ").replace("\r", " ").strip()
+            if txt:
+                parts.append(txt)
+        except Exception:
+            pass
+    parts.append(_("Уровень уверенности {conf}%").format(conf=int(float(conf) * 100)))
     if float(conf) < float(settings.FOODAI_CONFIDENCE_ESCALATE):
         parts.append(_("Внимание: низкая уверенность. Рекомендуем отредактировать перед сохранением."))
+
+    # Optional per-meal percent of plan
+    if isinstance(itogo, dict):
+        parts.append("")
+        parts.append(_("📊 Итого:"))
+        try:
+            parts.append(_("🥩 Белки: {v} г ({pct}% от нормы)").format(v=p, pct=itogo.get("p_pct") or 0))
+            parts.append(_("🥑 Жиры: {v} г ({pct}% от нормы)").format(v=f, pct=itogo.get("f_pct") or 0))
+            parts.append(_("🍞 Углеводы: {v} г ({pct}% от нормы)").format(v=c, pct=itogo.get("c_pct") or 0))
+            parts.append(_("🔥 Калории: {v} ккал ({pct}% от нормы)").format(v=int(cal), pct=itogo.get("cal_pct") or 0))
+        except Exception:
+            pass
 
     return "\n".join(parts)
 
