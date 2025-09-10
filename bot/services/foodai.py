@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 import json
 import re
+import asyncio
 from aiohttp import ClientSession
 from bot.core.config import settings
 from loguru import logger
@@ -33,22 +34,28 @@ async def _tg_file_url(file_id: str) -> str | None:
     if not token:
         return None
     api_base = f"https://api.telegram.org/bot{token}"
-    try:
-        async with ClientSession() as sess:
-            async with sess.get(f"{api_base}/getFile", params={"file_id": file_id}, timeout=settings.FOODAI_TIMEOUT) as r:
-                data = await r.json()
-        if not data.get("ok"):
-            return None
-        file_path = (data.get("result") or {}).get("file_path")
-        if not file_path:
-            return None
+    for _attempt in range(2):
         try:
-            logger.debug("FoodAI: TG file_path resolved (len={}): {}", len(file_path), file_path)
+            async with ClientSession() as sess:
+                async with sess.get(f"{api_base}/getFile", params={"file_id": file_id}, timeout=settings.FOODAI_TIMEOUT) as r:
+                    data = await r.json()
+            if not data.get("ok"):
+                raise RuntimeError("tg_api_not_ok")
+            file_path = (data.get("result") or {}).get("file_path")
+            if not file_path:
+                raise RuntimeError("file_path_missing")
+            try:
+                logger.debug("FoodAI: TG file_path resolved (len={}): {}", len(file_path), file_path)
+            except Exception:
+                pass
+            return f"https://api.telegram.org/file/bot{token}/{file_path}"
         except Exception:
-            pass
-        return f"https://api.telegram.org/file/bot{token}/{file_path}"
-    except Exception:
-        return None
+            try:
+                await asyncio.sleep(0.2)
+            except Exception:
+                pass
+            continue
+    return None
 
 
 async def _openai_chat(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -380,9 +387,15 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                 pass
             return {"error": "file_url_unavailable"}
         else:
-            # Strict pre-check; any failure counts as not_food (conservative)
+            # Pre-check with a single retry; failures -> provider_error (not not_food)
             is_food = await _foodness_photo(file_url)
-            if is_food is False or is_food is None:
+            if is_food is None:
+                try:
+                    await asyncio.sleep(0.2)
+                except Exception:
+                    pass
+                is_food = await _foodness_photo(file_url)
+            if is_food is False:
                 return {
                     "title": None,
                     "calories": 0,
@@ -400,6 +413,12 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                     "appearance": {},
                     "not_food": True,
                 }
+            if is_food is None:
+                try:
+                    foodai_provider_error.labels(source="photo", error="precheck_failed").inc()
+                except Exception:
+                    pass
+                return {"error": "provider_unavailable"}
             system = (
                 "You are a nutrition analyst. Given an image, estimate total calories, protein_g, fat_g, carbs_g, "
                 "and weight_g for the pictured dish. Return ONLY a compact JSON with keys: \n"
@@ -529,7 +548,9 @@ async def _foodness_photo(file_url: str) -> bool | None:
         return None
     system = (
         "You are a binary classifier. Determine if the image shows edible food or a drink. "
-        "Respond with strict JSON: {\"is_food\": boolean}. If unsure or ambiguous, set is_food=false."
+        "Respond with strict JSON: {\"is_food\": boolean}. "
+        "If a cup, glass, mug, bottle, plate or bowl is visible, or a food package/container is visible, set is_food=true. "
+        "If unsure or ambiguous, set is_food=false."
     )
     vision_model = getattr(settings, "FOODAI_VISION_MODEL", None) or settings.FOODAI_DEFAULT_MODEL
     payload = {

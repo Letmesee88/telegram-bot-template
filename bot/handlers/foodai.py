@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from time import perf_counter
 import re
+from html import escape as _html_escape
 
 from aiogram import F, Router, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -148,18 +149,6 @@ async def handle_food_photo(message: types.Message) -> None:
             except Exception:
                 pass
             await analyzing_msg.edit_text(_("Похоже, на изображении нет еды или напитков. Пришлите фото блюда или продукта."))
-            return
-    except Exception:
-        pass
-
-    # Not-food short-circuit for text
-    try:
-        if isinstance(result, dict) and bool(result.get("not_food")):
-            try:
-                foodai_not_food.labels(source="text").inc()
-            except Exception:
-                pass
-            await analyzing_msg.edit_text(_("Похоже, это не описание еды или напитков. Попробуйте описать блюдо или продукт."))
             return
     except Exception:
         pass
@@ -311,9 +300,10 @@ async def handle_food_photo(message: types.Message) -> None:
         )
 
 
-@router.message(F.text)
+# Text handler: exclude commands and make non-blocking so other routers (e.g., start) can process too
+@router.message(F.text & (~F.text.startswith("/")), flags={"block": False})
 async def handle_food_text(message: types.Message) -> None:
-    # Игнорируем команды (/start и т.п.)
+    # Игнорируем команды (/start и т.п.) — дополнительная защита
     if not message.text or message.text.startswith("/"):
         return
 
@@ -336,6 +326,10 @@ async def handle_food_text(message: types.Message) -> None:
         await session.commit()
         meal_id = meal.id
 
+    try:
+        logger.info("FoodAI:Text handler entered | user_id={} | len={}", message.from_user.id if message.from_user else None, len(message.text or ""))
+    except Exception:
+        pass
     analyzing_msg = await message.answer(_("Анализирую описание…"))
 
     # Analytics: text analyze started
@@ -398,9 +392,29 @@ async def handle_food_text(message: types.Message) -> None:
             msg = _("Не удалось проанализировать текст. Попробуйте ещё раз позже.")
             await analyzing_msg.edit_text(msg)
             try:
+                logger.warning("FoodAI:Text provider error {} | user_id={}", err, message.from_user.id if message.from_user else None)
+            except Exception:
+                pass
+            try:
                 foodai_failed.labels(source="text").inc()
             except Exception:
                 pass
+            return
+    except Exception:
+        pass
+
+    # Not-food short-circuit for text (ensure explicit log and early return)
+    try:
+        if isinstance(result, dict) and bool(result.get("not_food")):
+            try:
+                logger.info("FoodAI:Text not_food short-circuit | user_id={} | text_len={}", message.from_user.id if message.from_user else None, len(text or ""))
+            except Exception:
+                pass
+            try:
+                foodai_not_food.labels(source="text").inc()
+            except Exception:
+                pass
+            await analyzing_msg.edit_text(_("Похоже, это не описание еды или напитков. Попробуйте описать блюдо или продукт."))
             return
     except Exception:
         pass
@@ -600,7 +614,9 @@ def _build_preview_text(
         parts.append(_("Предпросмотр блюда:"))
 
     if title:
-        parts.append(str(title))
+        # One blank line between header and title; title in bold (HTML parse mode)
+        parts.append("")
+        parts.append(f"<b>{_html_escape(str(title))}</b>")
 
     # If not food — refuse with a short message
     if not_food_flag:
