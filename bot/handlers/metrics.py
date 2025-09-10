@@ -38,6 +38,13 @@ foodai_itogo_shown = prometheus_client.Counter(
     ["source"],  # photo|text
 )
 
+# analysis_text was rewritten by post-processor (hybrid pipeline)
+foodai_analysis_text_rewrite = prometheus_client.Counter(
+    "foodai_analysis_text_rewrite_total",
+    "FoodAI analysis_text was rewritten by post-processor",
+    ["reason"],  # length|cliche|components|citation|empty|timeout|error
+)
+
 
 class MetricsView(web.View):
     def __init__(

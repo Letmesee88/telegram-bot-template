@@ -581,7 +581,23 @@ def _build_preview_text(
                 parts.append(txt)
         except Exception:
             pass
-    parts.append(_("Уровень уверенности {conf}%").format(conf=int(float(conf) * 100)))
+    # Confidence display as category; hide for high confidence
+    try:
+        cval = float(conf)
+        low_thr = float(getattr(settings, "FOODAI_CONF_LOW", 0.6))
+        high_thr = float(getattr(settings, "FOODAI_CONF_HIGH", 0.8))
+        if cval < low_thr:
+            parts.append(_("Уверенность: низкая"))
+        elif cval < high_thr:
+            parts.append(_("Уверенность: средняя"))
+        # else: high — do not show the line
+    except Exception:
+        # fallback: keep old numeric display on parsing issues
+        try:
+            parts.append(_("Уровень уверенности {conf}%").format(conf=int(float(conf) * 100)))
+        except Exception:
+            pass
+    # Keep warning if below escalate threshold
     if float(conf) < float(settings.FOODAI_CONFIDENCE_ESCALATE):
         parts.append(_("Внимание: низкая уверенность. Рекомендуем отредактировать перед сохранением."))
 

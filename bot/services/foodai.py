@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 import json
+import re
 from aiohttp import ClientSession
 from bot.core.config import settings
 from loguru import logger
+from bot.handlers.metrics import foodai_analysis_text_rewrite
 
 
 def _use_openai() -> bool:
@@ -119,7 +121,7 @@ def _strip_code_fence(s: str | None) -> str | None:
 def _normalize_openai_json(raw_text: str) -> dict[str, Any] | None:
     """Parse assistant content as JSON and coerce types safely.
 
-    Expected keys: title, calories, protein_g, fat_g, carbs_g, weight_g, confidence, items[], references{sources[]}, analysis_text.
+    Expected keys: title, calories, protein_g, fat_g, carbs_g, weight_g, confidence, items[], references{sources[]}, analysis_text, appearance.
     """
     try:
         data = json.loads(raw_text)
@@ -133,6 +135,7 @@ def _normalize_openai_json(raw_text: str) -> dict[str, Any] | None:
         refs = data.get("references") or {}
         title = (data.get("title") or "").strip()
         analysis_text = (data.get("analysis_text") or "").strip()
+        appearance = data.get("appearance") or {}
         if not isinstance(items, list):
             items = []
         if not isinstance(refs, dict):
@@ -141,6 +144,14 @@ def _normalize_openai_json(raw_text: str) -> dict[str, Any] | None:
             title = ""
         if not isinstance(analysis_text, str):
             analysis_text = ""
+        if not isinstance(appearance, dict):
+            appearance = {}
+        # Coerce appearance fields lightly
+        try:
+            if "plate_diameter_cm" in appearance and appearance["plate_diameter_cm"] is not None:
+                appearance["plate_diameter_cm"] = int(float(appearance["plate_diameter_cm"]))
+        except Exception:
+            appearance["plate_diameter_cm"] = None
         # Trim analysis_text to ~420 chars for UX safety
         if analysis_text:
             analysis_text = analysis_text.replace("\n", " ").replace("\r", " ")
@@ -157,12 +168,135 @@ def _normalize_openai_json(raw_text: str) -> dict[str, Any] | None:
             "items": items,
             "references": refs,
             "analysis_text": analysis_text or None,
+            "appearance": appearance,
         }
     except Exception:
         return None
 
 
+def _top_components(items: list[dict[str, Any]] | list | None, k: int = 3) -> list[str]:
+    names: list[str] = []
+    for it in (items or []):
+        try:
+            n = str((it or {}).get("name") or "").strip()
+            if n and n not in names:
+                names.append(n)
+        except Exception:
+            continue
+        if len(names) >= k:
+            break
+    return names
+
+
+def _needs_rewrite(analysis_text: str | None, items: list | None) -> tuple[bool, str]:
+    MUST_PHRASE = "Использованы справочные данные ФИЦ питания и USDA."
+    txt = (analysis_text or "").strip()
+    if not txt:
+        return True, "empty"
+    L = len(txt)
+    if L < 330 or L > 450:
+        return True, "length"
+    # cliché in the first sentence ("выгляд"/"похож"): ban in the opener
+    try:
+        first_sent = re.split(r"[\.!?]", txt, maxsplit=1)[0]
+    except Exception:
+        first_sent = txt
+    if re.search(r"\b(выгляд\w*|похож\w*)\b", first_sent, flags=re.IGNORECASE):
+        return True, "cliche"
+    # must contain at least 2 different component names
+    comps = _top_components(items, 3)
+    hit = 0
+    for n in comps:
+        if n and n.lower() in txt.lower():
+            hit += 1
+    if hit < 2:
+        return True, "components"
+    # mandatory citation
+    if MUST_PHRASE.lower() not in txt.lower():
+        return True, "citation"
+    return False, ""
+
+
+def _sanitize_first_sentence(items: list | None, text: str) -> str:
+    """If the first sentence contains banned clichés, replace it with
+    'На фото …' + 2–3 components. Keep the rest of the paragraph intact.
+    """
+    try:
+        parts = re.split(r"([\.!?])", text, maxsplit=1)
+        first = parts[0]
+        # Check cliché in first sentence
+        if re.search(r"\b(выгляд\w*|похож\w*)\b", first, flags=re.IGNORECASE):
+            comps = _top_components(items, 3)
+            if comps:
+                if len(comps) == 1:
+                    lead = f"На фото {comps[0]}"
+                elif len(comps) == 2:
+                    lead = f"На фото {comps[0]} и {comps[1]}"
+                else:
+                    lead = f"На фото {comps[0]}, {comps[1]} и {comps[2]}"
+                rest = "" if len(parts) < 3 else (parts[1] + parts[2])
+                return (lead + "." + rest).strip()
+    except Exception:
+        pass
+    return text
+
+
+async def _compose_analysis_text(items: list | None, appearance: dict | None, confidence: float | int | None) -> str | None:
+    """Generate a concise analysis paragraph 350–420 chars based on structured inputs.
+
+    Returns None on failure.
+    """
+    if not _use_openai():
+        return None
+    comps = _top_components(items, 3)
+    MUST_PHRASE = "Использованы справочные данные ФИЦ питания и USDA."
+    plate_visible = bool((appearance or {}).get("plate_visible"))
+    plate_diam = (appearance or {}).get("plate_diameter_cm")
+    is_packaged = bool((appearance or {}).get("is_packaged"))
+    method_hint = "по количеству и объёму ингредиентов"
+    if plate_visible and plate_diam:
+        method_hint = f"по размеру тарелки (~{int(plate_diam)} см) и количеству ингредиентов"
+    pkg_hint = "в упаковке" if is_packaged else "без упаковки, на тарелке"
+    system = (
+        "Ты — ИИ-нутрициолог. Сформулируй один абзац (350–420 символов) на русском, без markdown. "
+        "Начни первое предложение со слов: 'На фото ...' и перечисли 2–3 основных компонента дословно из списка. "
+        "Опиши вид: " + pkg_hint + ". Объясни, как оценивалась порция (" + method_hint + "). "
+        "Обязательно включи точную фразу: \"" + MUST_PHRASE + "\". "
+        "Запрещено использовать слова с корнями 'выгляд' и 'похож' в первом предложении. Без брендов, если их нет."
+    )
+    user = (
+        "Компоненты: " + ", ".join(comps) + ". "
+        + f"Уверенность: {int(float(confidence or 0)*100)}%. "
+        + ("Тарелка видна." if plate_visible else "Тарелка не видна.")
+    )
+    payload = {
+        "model": settings.FOODAI_DEFAULT_MODEL,
+        "temperature": 0.4,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    try:
+        content = await _openai_request("chat", payload)
+        if not content:
+            return None
+        txt = content.strip().replace("\n", " ")
+        # enforce phrase and length cap + sanitize opener if needed
+        if MUST_PHRASE.lower() not in txt.lower():
+            if not txt.endswith("."):
+                txt += "."
+            txt += " " + MUST_PHRASE
+        txt = _sanitize_first_sentence(items, txt)
+        if len(txt) > 420:
+            txt = txt[:417].rstrip() + "…"
+        return txt
+    except Exception:
+        return None
+
+
 def _norm_detail(val: str | None) -> str:
+    """Normalize image detail value to one of: low|high|auto. Defaults to low."""
     v = (val or "low").lower()
     return v if v in {"low", "high", "auto"} else "low"
 
@@ -180,7 +314,7 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                 "You are a nutrition analyst. Given an image, estimate total calories, protein_g, fat_g, carbs_g, "
                 "and weight_g for the pictured dish. Return ONLY a compact JSON with keys: \n"
                 "title(string), calories(int), protein_g(float), fat_g(float), carbs_g(float), weight_g(float), confidence(float 0..1),\n"
-                "items(list of {name, calories, protein_g, fat_g, carbs_g, weight_g}), references({sources: [string]}), analysis_text(string).\n"
+                "items(list of {name, calories, protein_g, fat_g, carbs_g, weight_g}), references({sources: [string]}), analysis_text(string), appearance({is_packaged: boolean, plate_visible: boolean, plate_diameter_cm: int|null}).\n"
                 "Important: Answer in Russian language. Field 'title' must be in Russian. Ingredient names (items[].name) must be in Russian. "
                 "Always set references.sources to exactly [\"ФГБУН \\\"ФИЦ питания и биотехнологии\\\"\", \"USDA FoodData Central\"]. "
                 "analysis_text: a single paragraph of 350–420 characters in Russian that (1) states whether the dish appears homemade or packaged (do not invent brands unless clearly visible), "
@@ -251,6 +385,39 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                     parsed_hi = await _build_and_call("high")
                     if parsed_hi:
                         return parsed_hi
+                # Optional rewrite of analysis_text
+                try:
+                    mode = (getattr(settings, "FOODAI_ANALYSIS_REWRITE", "auto") or "auto").lower()
+                except Exception:
+                    mode = "auto"
+                do_rewrite = mode == "always"
+                reason = ""
+                if mode == "auto":
+                    do_rewrite, reason = _needs_rewrite(parsed.get("analysis_text"), parsed.get("items"))
+                if do_rewrite:
+                    try:
+                        new_txt = await _compose_analysis_text(parsed.get("items"), parsed.get("appearance") or {}, parsed.get("confidence"))
+                        if new_txt:
+                            parsed["analysis_text"] = new_txt
+                            foodai_analysis_text_rewrite.labels(reason=reason or "auto").inc()
+                        else:
+                            foodai_analysis_text_rewrite.labels(reason or "error").inc()
+                    except Exception:
+                        try:
+                            foodai_analysis_text_rewrite.labels("error").inc()
+                        except Exception:
+                            pass
+                # Final safety: sanitize opener even if rewrite didn't trigger
+                try:
+                    if parsed.get("analysis_text"):
+                        txt = _sanitize_first_sentence(parsed.get("items"), str(parsed.get("analysis_text") or ""))
+                        if txt:
+                            # re-cap length after sanitation
+                            if len(txt) > 420:
+                                txt = txt[:417].rstrip() + "…"
+                            parsed["analysis_text"] = txt
+                except Exception:
+                    pass
                 return parsed
             else:
                 # parsing failed — try a single high-detail retry if enabled
@@ -285,6 +452,7 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
             ]
         },
         "analysis_text": "Блюдо домашнее, без видимых брендов или упаковок. Оценка порции по размеру посуды и количеству ингредиентов; высокая уверенность по основным компонентам, средняя по точному весу. Использованы справочные данные ФИЦ питания и USDA.",
+        "appearance": {"is_packaged": False, "plate_visible": True, "plate_diameter_cm": 24},
     }
 
 
@@ -298,7 +466,7 @@ async def analyze_text(text: str) -> dict[str, Any]:
             "You are a nutrition analyst. Given a short dish description, estimate total calories, protein_g, "
             "fat_g, carbs_g and weight_g. Return ONLY JSON with keys: title(string), calories(int), protein_g(float), fat_g(float), "
             "carbs_g(float), weight_g(float), confidence(float 0..1), items(list of {name, calories, protein_g, fat_g, carbs_g, weight_g}), "
-            "references({sources: [string]}), analysis_text(string).\n"
+            "references({sources: [string]}), analysis_text(string), appearance({is_packaged: boolean, plate_visible: boolean, plate_diameter_cm: int|null}).\n"
             "Important: Answer in Russian language. Field 'title' must be in Russian. Ingredient names (items[].name) must be in Russian. "
             "Always set references.sources to exactly [\"ФГБУН \\\"ФИЦ питания и биотехнологии\\\"\", \"USDA FoodData Central\"]. "
             "analysis_text: a single paragraph of 350–420 characters in Russian that (1) states whether the dish appears homemade or packaged (do not invent brands unless clearly visible), "
@@ -342,8 +510,39 @@ async def analyze_text(text: str) -> dict[str, Any]:
                 except Exception:
                     parsed = None
                 if parsed:
+                    # Optional rewrite
+                    try:
+                        mode = (getattr(settings, "FOODAI_ANALYSIS_REWRITE", "auto") or "auto").lower()
+                    except Exception:
+                        mode = "auto"
+                    do_rewrite = mode == "always"
+                    reason = ""
+                    if mode == "auto":
+                        do_rewrite, reason = _needs_rewrite(parsed.get("analysis_text"), parsed.get("items"))
+                    if do_rewrite:
+                        try:
+                            new_txt = await _compose_analysis_text(parsed.get("items"), parsed.get("appearance") or {}, parsed.get("confidence"))
+                            if new_txt:
+                                parsed["analysis_text"] = new_txt
+                                foodai_analysis_text_rewrite.labels(reason=reason or "auto").inc()
+                            else:
+                                foodai_analysis_text_rewrite.labels(reason or "error").inc()
+                        except Exception:
+                            try:
+                                foodai_analysis_text_rewrite.labels("error").inc()
+                            except Exception:
+                                pass
+                    # Final safety: sanitize opener even if rewrite didn't trigger
+                    try:
+                        if parsed.get("analysis_text"):
+                            txt = _sanitize_first_sentence(parsed.get("items"), str(parsed.get("analysis_text") or ""))
+                            if txt:
+                                if len(txt) > 420:
+                                    txt = txt[:417].rstrip() + "…"
+                                parsed["analysis_text"] = txt
+                    except Exception:
+                        pass
                     return parsed
-
     words = len(text.split())
     base = 150 + (words % 200)
     protein = round(base * 0.2 / 4, 1)
@@ -369,4 +568,5 @@ async def analyze_text(text: str) -> dict[str, Any]:
             ]
         },
         "analysis_text": "Оценка по текстовому описанию; макроэлементы рассчитаны по типовым справочникам. Уверенность средняя из‑за неопределённости веса и состава. Использованы справочные данные ФИЦ питания и USDA.",
+        "appearance": {"is_packaged": False, "plate_visible": True, "plate_diameter_cm": 24},
     }

@@ -95,11 +95,18 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     FOODAI_REASONING_EFFORT: str = "minimal"  # minimal|low|medium|high (responses API)
     FOODAI_TEXT_VERBOSITY: str = "low"        # low|medium|high (responses API)
     FOODAI_CONFIDENCE_ESCALATE: float = 0.70
+    # Confidence display thresholds (for category rendering)
+    FOODAI_CONF_LOW: float = 0.60
+    FOODAI_CONF_HIGH: float = 0.80
     FOODAI_TIMEOUT: int = 20
     # Vision controls
     FOODAI_IMAGE_DETAIL: str = "low"  # low|high|auto
     FOODAI_IMAGE_DETAIL_HIGH_RETRY: bool = True  # retry photo analysis with detail=high if confidence below threshold
     FOODAI_VISION_MODEL: str = "gpt-4o-mini"  # preferred model for image analysis (falls back to FOODAI_DEFAULT_MODEL)
+    # Analysis text rewrite controls
+    # auto|always|off — auto: validate and rewrite only if needed; always: always rewrite; off: never rewrite
+    FOODAI_ANALYSIS_REWRITE: str = "auto"
+    FOODAI_ANALYSIS_REWRITE_TIMEOUT: int = 8
 
 
 settings = Settings()
