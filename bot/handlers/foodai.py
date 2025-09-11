@@ -6,7 +6,9 @@ import re
 from html import escape as _html_escape
 
 from aiogram import F, Router, types
+from aiogram.filters import StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
 from aiogram.utils.i18n import gettext as _
 from loguru import logger
 from sqlalchemy import select
@@ -29,10 +31,22 @@ from bot.handlers.metrics import (
 
 router = Router(name="foodai")
 router.message.filter(FoodAIEnabledFilter())
+# Do not process ANY FoodAI messages while user is in any FSM state (e.g., onboarding)
+router.message.filter(StateFilter(None))
+# Apply same constraints to callbacks to ignore old buttons during onboarding and restrict to enabled users
+router.callback_query.filter(FoodAIEnabledFilter())
+router.callback_query.filter(StateFilter(None))
 
 
 @router.message(F.photo)
-async def handle_food_photo(message: types.Message) -> None:
+async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
+    # Extra safety: ignore during any active FSM state (e.g., onboarding)
+    try:
+        cur = await state.get_state()
+        if cur is not None:
+            return
+    except Exception:
+        pass
     if not message.from_user:
         return
 
@@ -300,9 +314,16 @@ async def handle_food_photo(message: types.Message) -> None:
         )
 
 
-# Text handler: exclude commands and make non-blocking so other routers (e.g., start) can process too
-@router.message(F.text & (~F.text.startswith("/")), flags={"block": False})
-async def handle_food_text(message: types.Message) -> None:
+# Text handler: process ONLY when no FSM state is active (to not interfere with onboarding)
+@router.message(StateFilter(None), F.text & (~F.text.startswith("/")), flags={"block": False})
+async def handle_food_text(message: types.Message, state: FSMContext) -> None:
+    # Extra safety: if ANY FSM state is active (e.g., onboarding), do nothing
+    try:
+        cur = await state.get_state()
+        if cur is not None:
+            return
+    except Exception:
+        pass
     # Игнорируем команды (/start и т.п.) — дополнительная защита
     if not message.text or message.text.startswith("/"):
         return
@@ -792,7 +813,15 @@ async def _edit_caption_or_text(cb: types.CallbackQuery, text: str, kb: InlineKe
 
 
 @router.callback_query(F.data.regexp(r"^foodai:save:(\d+)$"))
-async def cb_foodai_save(callback: types.CallbackQuery) -> None:
+async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> None:
+    # Extra safety: ignore during onboarding or any active FSM state
+    try:
+        cur = await state.get_state()
+        if cur is not None:
+            await callback.answer()
+            return
+    except Exception:
+        pass
     m = re.match(r"^foodai:save:(\d+)$", callback.data or "")
     if not m or not callback.from_user:
         return

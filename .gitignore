@@ -130,4 +130,5 @@ dmypy.json
 
 # Pycharm
 .idea/ 
+AIFood.md.env
 AIFood.md

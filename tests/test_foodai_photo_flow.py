@@ -39,6 +39,12 @@ def test_foodai_photo_flow_basic(monkeypatch):
 
         monkeypatch.setattr(foodai_mod, "_openai_request", fake_openai_request)
 
+        # Ensure pre-check passes
+        async def fake_foodness_photo(url: str):
+            return True
+
+        monkeypatch.setattr(foodai_mod, "_foodness_photo", fake_foodness_photo)
+
         # 2) Run analyze and validate structure
         res = await foodai_mod.analyze_photo("FAKE_FILE_ID")
 

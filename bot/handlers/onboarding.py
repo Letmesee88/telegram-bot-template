@@ -377,7 +377,7 @@ async def gender_set(message: Message, state: FSMContext) -> None:
 
 
 # На шаге выбора пола любые сообщения — только кнопки
-@router.message(OnboardingStates.gender)
+@router.message(OnboardingStates.gender, F.text & (~F.text.startswith("/")))
 async def gender_retry(message: Message) -> None:
     caption = _("Теперь нужно собрать начальные показатели, чтобы составить план. Начнём с выбора пола")
     kb = _ikb([
@@ -405,7 +405,7 @@ async def age_set(message: Message, state: FSMContext) -> None:
     await message.answer(_("Какой у тебя текущий вес в килограммах?"))
 
 
-@router.message(OnboardingStates.age)
+@router.message(OnboardingStates.age, F.text & (~F.text.startswith("/")))
 async def age_retry(message: Message) -> None:
     await message.answer(_("Пожалуйста, введите корректный возраст (от 1 до 120 лет)"))
 
@@ -421,7 +421,7 @@ async def weight_set(message: Message, state: FSMContext) -> None:
     await message.answer(_("Какой у тебя рост в сантиметрах?"))
 
 
-@router.message(OnboardingStates.weight)
+@router.message(OnboardingStates.weight, F.text & (~F.text.startswith("/")))
 async def weight_retry(message: Message) -> None:
     await message.answer(_("Пожалуйста, введите корректный вес (от 30 до 300 килограммов)"))
 
@@ -442,7 +442,7 @@ async def height_set(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(OnboardingStates.height)
+@router.message(OnboardingStates.height, F.text & (~F.text.startswith("/")))
 async def height_retry(message: Message) -> None:
     await message.answer(_("Пожалуйста, введите корректный рост (от 120 до 250 см)"))
 
@@ -466,7 +466,7 @@ async def activity_set(message: Message, state: FSMContext) -> None:
     await message.answer(text, reply_markup=kb)
 
 
-@router.message(OnboardingStates.activity)
+@router.message(OnboardingStates.activity, F.text & (~F.text.startswith("/")))
 async def activity_retry(message: Message) -> None:
     await message.answer(_("Пожалуйста, опишите вашу активность подробнее (минимум 10 символов)"))
 
@@ -508,7 +508,7 @@ async def goal_set(message: Message, state: FSMContext) -> None:
     await message.answer(text, reply_markup=kb)
 
 
-@router.message(OnboardingStates.goal)
+@router.message(OnboardingStates.goal, F.text & (~F.text.startswith("/")))
 async def goal_retry(message: Message) -> None:
     text = _(
         "Зафиксировал! Теперь самое главное — поставим цель\n"
@@ -557,7 +557,7 @@ async def goal_weight_set(message: Message, state: FSMContext) -> None:
     await message.answer(_("Как быстро хочешь достичь цели?"), reply_markup=kb)
 
 
-@router.message(OnboardingStates.goal_weight)
+@router.message(OnboardingStates.goal_weight, F.text & (~F.text.startswith("/")))
 async def goal_weight_retry(message: Message) -> None:
     await message.answer(_("Некорректный формат. Пример: 75.0"))
 
@@ -575,7 +575,7 @@ async def cb_speed(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # Fallback: ввод скорости текстом — запрещаем свободный ввод, повторяем шаг с кнопками
-@router.message(OnboardingStates.speed)
+@router.message(OnboardingStates.speed, F.text & (~F.text.startswith("/")))
 async def speed_and_finish(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     current_w = float(data.get("weight_kg")) if data.get("weight_kg") is not None else None
