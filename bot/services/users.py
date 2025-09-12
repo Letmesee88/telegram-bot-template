@@ -96,6 +96,8 @@ async def set_is_admin(session: AsyncSession, user_id: int, is_admin: bool) -> N
 
     await session.execute(stmt)
     await session.commit()
+    # Invalidate cached admin flag so changes are visible immediately
+    await clear_cache(is_admin, user_id)
 
 
 @cached(key_builder=lambda session: build_key())

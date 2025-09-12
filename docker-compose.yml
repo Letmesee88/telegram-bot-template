@@ -111,8 +111,8 @@ services:
     networks:
       - app
     volumes:
-      - redis-data:/bitnami/redis/data
-    command: /bin/sh -c 'if [ -n "$REDIS_PASS" ]; then redis-server --requirepass "$REDIS_PASS"; else redis-server; fi'
+      - redis-data:/data
+    command: /bin/sh -c 'if [ -n "$REDIS_PASS" ]; then redis-server --appendonly yes --requirepass "$REDIS_PASS"; else redis-server --appendonly yes; fi'
 
   migrator:
     image: bot:latest
