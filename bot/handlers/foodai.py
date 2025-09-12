@@ -765,10 +765,21 @@ def _build_preview_text(
         parts.append("")
         parts.append(_("📊 Итого:"))
         try:
-            parts.append(_("🥩 Белки: {v} г ({pct}% от нормы)").format(v=p, pct=itogo.get("p_pct") or 0))
-            parts.append(_("🥑 Жиры: {v} г ({pct}% от нормы)").format(v=f, pct=itogo.get("f_pct") or 0))
-            parts.append(_("🍞 Углеводы: {v} г ({pct}% от нормы)").format(v=c, pct=itogo.get("c_pct") or 0))
-            parts.append(_("🔥 Калории: {v} ккал ({pct}% от нормы)").format(v=int(cal), pct=itogo.get("cal_pct") or 0))
+            def _fmt(delta: float, emoji: str, unit: str, label: str) -> str:
+                if unit == "ккал":
+                    show_val = f"{int(abs(delta))}"
+                else:
+                    show_val = f"{abs(delta):.1f}"
+                if delta > 0:
+                    return f"{emoji} {label}: {show_val} {unit} до нормы"
+                if delta < 0:
+                    return f"⚠️ {emoji} {label}: +{show_val} {unit} превышено"
+                return f"{emoji} {label}: норма достигнута"
+
+            parts.append(_fmt(itogo.get("cal_pct") or 0 - 100, "🔥", "ккал", "Калории"))
+            parts.append(_fmt(itogo.get("p_pct") or 0 - 100, "🥩", "г", "Белки"))
+            parts.append(_fmt(itogo.get("f_pct") or 0 - 100, "🥑", "г", "Жиры"))
+            parts.append(_fmt(itogo.get("c_pct") or 0 - 100, "🍞", "г", "Углеводы"))
         except Exception:
             pass
 
@@ -917,23 +928,23 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
             diff_f = plan_f - fact_f
             diff_c = plan_c - fact_c
 
-            def _fmt(delta: float, emoji: str, unit: str) -> str:
+            def _fmt(delta: float, emoji: str, unit: str, label: str) -> str:
                 if unit == "ккал":
-                    val = int(abs(delta))
+                    show_val = f"{int(abs(delta))}"
                 else:
-                    val = round(abs(delta), 1)
+                    show_val = f"{abs(delta):.1f}"
                 if delta > 0:
-                    return f"{emoji} {val} {unit} до нормы"
+                    return f"{emoji} {label}: {show_val} {unit} до нормы"
                 if delta < 0:
-                    return f"⚠️ {emoji} +{val} {unit} превышено"
-                return f"{emoji} норма достигнута"
+                    return f"⚠️ {emoji} {label}: +{show_val} {unit} превышено"
+                return f"{emoji} {label}: норма достигнута"
 
             lines = [
                 _("Анализ дня:"),
-                _fmt(diff_cal, "🔥", "ккал"),
-                _fmt(diff_p, "🥩", "г"),
-                _fmt(diff_f, "🥑", "г"),
-                _fmt(diff_c, "🍞", "г"),
+                _fmt(diff_cal, "🔥", "ккал", "Калории"),
+                _fmt(diff_p, "🥩", "г", "Белки"),
+                _fmt(diff_f, "🥑", "г", "Жиры"),
+                _fmt(diff_c, "🍞", "г", "Углеводы"),
             ]
             analysis_text = "\n".join(lines)
     except Exception as e:
