@@ -20,6 +20,9 @@ services:
         condition: service_started
       migrator:
         condition: service_completed_successfully
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
 
   admin:
     build:

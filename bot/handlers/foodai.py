@@ -7,6 +7,7 @@ from html import escape as _html_escape
 
 from aiogram import F, Router, types
 from aiogram.filters import StateFilter
+from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.i18n import gettext as _
@@ -16,7 +17,7 @@ from sqlalchemy import select
 from bot.database.database import sessionmaker
 from bot.database.models import DailyIntakeModel, MealItemModel, MealModel, MealPhotoModel, OnboardingAnswerModel
 from bot.filters.foodai_enabled import FoodAIEnabledFilter
-from bot.services.foodai import analyze_photo, analyze_text
+from bot.services.foodai import analyze_photo, analyze_text, refine_meal
 from bot.core.config import settings
 from bot.analytics.types import BaseEvent, EventProperties, Plan
 from bot.services.analytics import analytics
@@ -36,6 +37,178 @@ router.message.filter(StateFilter(None))
 # Apply same constraints to callbacks to ignore old buttons during onboarding and restrict to enabled users
 router.callback_query.filter(FoodAIEnabledFilter())
 router.callback_query.filter(StateFilter(None))
+
+
+# Separate router for edit text state (does not have global StateFilter(None))
+router_edit = Router(name="foodai_edit")
+router_edit.message.filter(FoodAIEnabledFilter())
+router_edit.callback_query.filter(FoodAIEnabledFilter())
+
+
+class EditStates(StatesGroup):
+    """FSM states for FoodAI edit flow."""
+    waiting_text = State()
+
+
+# Edit-state: accept only text as instruction
+@router_edit.message(StateFilter(EditStates.waiting_text), F.text)
+async def edit_text_received(message: types.Message, state: FSMContext) -> None:
+    if not message.from_user:
+        return
+    user_id = message.from_user.id
+    data = await state.get_data()
+    meal_id = int(data.get("edit_meal_id") or 0)
+    if not meal_id:
+        await state.clear()
+        await message.answer(_("Сессия редактирования завершилась. Нажмите Редактировать ещё раз."))
+        return
+
+    # Load current meal
+    async with sessionmaker() as session:
+        meal = await session.get(MealModel, meal_id)
+        if not meal or meal.user_id != user_id:
+            await state.clear()
+            await message.answer(_("Не найдено"))
+            return
+        # Prepare base for refinement
+        base = {
+            "title": meal.title or "",
+            "calories": int(meal.calories or 0),
+            "protein_g": float(meal.protein_g or 0),
+            "fat_g": float(meal.fat_g or 0),
+            "carbs_g": float(meal.carbs_g or 0),
+            "weight_g": float(meal.weight_g or 0),
+            "items": [
+                {
+                    "name": it.name,
+                    "weight_g": float(it.weight_g) if it.weight_g is not None else None,
+                    "calories": float(it.calories) if it.calories is not None else None,
+                    "protein_g": float(it.protein_g) if it.protein_g is not None else None,
+                    "fat_g": float(it.fat_g) if it.fat_g is not None else None,
+                    "carbs_g": float(it.carbs_g) if it.carbs_g is not None else None,
+                }
+                for it in (meal.items or [])
+            ],
+            "source": meal.source or None,
+        }
+
+    instruction = (message.text or "").strip()
+
+    # Analytics: reuse existing allowed event_type
+    if analytics.logger and message.from_user:
+        analytics.fire_event(
+            BaseEvent(
+                user_id=message.from_user.id,
+                event_type="FoodAI:EditClicked",
+                event_properties=EventProperties(
+                    chat_id=message.chat.id if message.chat else None,
+                    chat_type=message.chat.type if message.chat else None,
+                    text=f"meal_id={meal_id}, len={len(instruction)}",
+                    command=None,
+                ),
+                language=message.from_user.language_code if message.from_user else None,
+                plan=Plan(branch="Edit", source="FoodAI", version="v1"),
+            )
+        )
+
+    # Call refinement service
+    try:
+        result = await refine_meal(base, instruction)
+    except Exception as e:
+        result = {"error": str(e)}
+
+    if not isinstance(result, dict) or result.get("error"):
+        await message.answer(_("Не удалось применить изменения. Попробуйте переформулировать и отправьте ещё раз."))
+        return
+
+    # Persist updated meal
+    async with sessionmaker() as session:
+        meal = await session.get(MealModel, meal_id)
+        if not meal or meal.user_id != user_id:
+            await state.clear()
+            await message.answer(_("Не найдено"))
+            return
+        meal.title = (result.get("title") or meal.title)
+        meal.calories = int(result.get("calories") or 0)
+        meal.protein_g = float(result.get("protein_g") or 0)
+        meal.fat_g = float(result.get("fat_g") or 0)
+        meal.carbs_g = float(result.get("carbs_g") or 0)
+        meal.weight_g = float(result.get("weight_g") or 0)
+        meal.status = "draft"
+        # Replace items
+        try:
+            for it in list(meal.items or []):
+                await session.delete(it)
+        except Exception:
+            pass
+        for it in (result.get("items") or []):
+            session.add(
+                MealItemModel(
+                    meal_id=meal.id,
+                    name=str(it.get("name") or "Ингредиент"),
+                    weight_g=float(it.get("weight_g") or 0) if it.get("weight_g") is not None else None,
+                    calories=float(it.get("calories") or 0) if it.get("calories") is not None else None,
+                    protein_g=float(it.get("protein_g") or 0) if it.get("protein_g") is not None else None,
+                    fat_g=float(it.get("fat_g") or 0) if it.get("fat_g") is not None else None,
+                    carbs_g=float(it.get("carbs_g") or 0) if it.get("carbs_g") is not None else None,
+                )
+            )
+        await session.commit()
+
+    # Clear state and show updated preview
+    await state.clear()
+    cal = int(result.get("calories") or 0)
+    p = float(result.get("protein_g") or 0)
+    f = float(result.get("fat_g") or 0)
+    c = float(result.get("carbs_g") or 0)
+    w = float(result.get("weight_g") or 0)
+    items = list(result.get("items") or [])
+    title = (result.get("title") or meal.title)
+    text_preview = _build_preview_text(cal, p, f, c, 0.8, weight=w, items=items, references=None, title=title, source=None)
+    await message.answer(_("👍🏼  Готово !\n📝 Изменения: {t}").format(t=instruction))
+    await message.answer(text_preview, reply_markup=_preview_kb(meal_id))
+
+
+# Edit-state: reject non-text input (photos, stickers, etc.)
+@router_edit.message(StateFilter(EditStates.waiting_text))
+async def edit_non_text(message: types.Message) -> None:
+    await message.answer(_("Напишите, пожалуйста, что заменить или добавить в блюдо. Например: добавить соус."))
+
+
+# Edit-state specific back handler
+@router_edit.callback_query(StateFilter(EditStates.waiting_text), F.data.regexp(r"^foodai:back:(\d+)$"))
+async def cb_foodai_back_edit(callback: types.CallbackQuery, state: FSMContext) -> None:
+    m = re.match(r"^foodai:back:(\d+)$", callback.data or "")
+    if not m or not callback.from_user:
+        return
+    meal_id = int(m.group(1))
+    user_id = callback.from_user.id
+    async with sessionmaker() as session:
+        meal = await session.get(MealModel, meal_id)
+        if not meal or meal.user_id != user_id:
+            await callback.answer(_("Не найдено"), show_alert=True)
+            return
+        items = []
+        try:
+            for it in (meal.items or []):
+                items.append({"name": it.name})
+        except Exception:
+            items = []
+        text = _build_preview_text(
+            int(meal.calories or 0),
+            float(meal.protein_g or 0),
+            float(meal.fat_g or 0),
+            float(meal.carbs_g or 0),
+            float(meal.confidence or 0),
+            weight=float(meal.weight_g or 0),
+            items=items,
+            references=meal.references or None,
+            title=meal.title or None,
+            source=meal.source or None,
+        )
+    await state.clear()
+    await _edit_caption_or_text(callback, text, kb=_preview_kb(meal_id))
+    await callback.answer()
 
 
 @router.message(F.photo)
@@ -798,6 +971,66 @@ def _preview_kb(meal_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def _edit_text_kb(meal_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=_("◀️ Назад"), callback_data=f"foodai:back:{meal_id}")],
+        ]
+    )
+
+
+def _build_edit_prompt_text(
+    cal: int,
+    p: float,
+    f: float,
+    c: float,
+    *,
+    weight: float | None = None,
+    items: list | None = None,
+    title: str | None = None,
+) -> str:
+    parts: list[str] = []
+    parts.append(_("✏️ Редактирование блюда"))
+    parts.append("")
+    parts.append(_("Название блюда  ( пример: Макароны с курицей и помидорами ) "))
+    if title:
+        parts.append(f"<b>{_html_escape(str(title))}</b>")
+    parts.append("")
+    parts.append(_("🔥 Калории: {cal} ккал").format(cal=int(cal)))
+    parts.append(_("🥩 Белки: {p}  г").format(p=p))
+    parts.append(_("🥑 Жиры: {f} г").format(f=f))
+    parts.append(_("🍞 Углеводы: {c} г").format(c=c))
+    if weight:
+        parts.append(_("⚖️ Вес: {w} г").format(w=weight))
+    if items:
+        parts.append("")
+        parts.append(_("🍜 Состав:"))
+        for it in (items or []):
+            try:
+                name = str(it.get("name") or _("Блюдо"))
+                w = it.get("weight_g")
+                kc = it.get("calories")
+                segs = []
+                if w:
+                    segs.append(f"{float(w):g} г")
+                if kc is not None:
+                    segs.append(f"{int(float(kc))} ккал")
+                if segs:
+                    parts.append(f"• {name} (" + ", ".join(segs) + ")")
+                else:
+                    parts.append(f"• {name}")
+            except Exception:
+                continue
+    parts.append("")
+    parts.append(_("📝 Что изменить в блюде? "))
+    parts.append(_("Напишите только изменения, например: "))
+    parts.append("• добавить кетчуп 10г")
+    parts.append("• убрать соус")
+    parts.append("• увеличить порцию в 2 раза")
+    parts.append("• заменить рыбу на индейку")
+    return "\n".join(parts)
+
+
 def _edit_kb(meal_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -817,10 +1050,22 @@ def _edit_kb(meal_id: int) -> InlineKeyboardMarkup:
 
 
 async def _edit_caption_or_text(cb: types.CallbackQuery, text: str, kb: InlineKeyboardMarkup | None = None) -> None:
+    # Try caption edit first (if message has a photo), then text edit; finally fallback to sending a new message
     try:
         await cb.message.edit_caption(caption=text, reply_markup=kb)
+        return
     except Exception:
+        pass
+    try:
         await cb.message.edit_text(text=text, reply_markup=kb)
+        return
+    except Exception:
+        pass
+    try:
+        await cb.message.answer(text, reply_markup=kb)
+    except Exception:
+        # last resort: ignore
+        pass
 
 
 @router.callback_query(F.data.regexp(r"^foodai:save:(\d+)$"))
@@ -993,7 +1238,7 @@ async def cb_foodai_delete(callback: types.CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.regexp(r"^foodai:edit:(\d+)$"))
-async def cb_foodai_edit(callback: types.CallbackQuery) -> None:
+async def cb_foodai_edit(callback: types.CallbackQuery, state: FSMContext) -> None:
     m = re.match(r"^foodai:edit:(\d+)$", callback.data or "")
     if not m or not callback.from_user:
         return
@@ -1011,17 +1256,15 @@ async def cb_foodai_edit(callback: types.CallbackQuery) -> None:
                 items.append({"name": it.name})
         except Exception:
             items = []
-        text = _build_preview_text(
+        # Build edit prompt text instead of standard preview
+        text = _build_edit_prompt_text(
             int(meal.calories or 0),
             float(meal.protein_g or 0),
             float(meal.fat_g or 0),
             float(meal.carbs_g or 0),
-            float(meal.confidence or 0),
             weight=float(meal.weight_g or 0),
             items=items,
-            references=meal.references or None,
             title=meal.title or None,
-            source=meal.source or None,
         )
 
     # Analytics: edit clicked
@@ -1041,8 +1284,18 @@ async def cb_foodai_edit(callback: types.CallbackQuery) -> None:
             )
         )
 
-    await _edit_caption_or_text(callback, text, kb=_edit_kb(meal_id))
-    await callback.answer()
+    # Enter edit FSM state and remember meal_id
+    try:
+        await state.set_state(EditStates.waiting_text)
+        await state.update_data(edit_meal_id=meal_id)
+    except Exception:
+        pass
+
+    await _edit_caption_or_text(callback, text, kb=_edit_text_kb(meal_id))
+    try:
+        await callback.answer(_("Отправьте текст изменений (например: добавить сыр 30г)"), show_alert=False)
+    except Exception:
+        await callback.answer()
 
 
 @router.callback_query(F.data.regexp(r"^foodai:back:(\d+)$"))

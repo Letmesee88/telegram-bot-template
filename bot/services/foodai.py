@@ -778,3 +778,165 @@ async def analyze_text(text: str) -> dict[str, Any]:
     except Exception:
         pass
     return {"error": "provider_unavailable"}
+
+
+# ===== Edit flow support =====
+async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
+    """Apply a simple text edit instruction to an existing meal.
+
+    Minimal stub for development: supports patterns like 'добавить <ингредиент> <N>г'.
+    Returns a full meal dict compatible with analyze_* outputs.
+    """
+    try:
+        title = str((base or {}).get("title") or "").strip()
+        items_in = list((base or {}).get("items") or [])
+        weight_g = float((base or {}).get("weight_g") or 0)
+    except Exception:
+        title, items_in, weight_g = "", [], 0.0
+
+    instr = (instruction or "").strip().lower()
+    if not instr:
+        return {"error": "empty_instruction"}
+
+    # Very simple parser: '[добавить|добавь|положить|прибавить|+] <name> <num><г|гр|грамм|мл|ml>'
+    m = re.search(r"(?:добавить|добавь|положить|прибавить|\+)?\s*([a-zа-яё\-\s]+?)\s*(\d{1,4})\s*(г|гр|грамм|мл|ml)?\b", instr, flags=re.IGNORECASE)
+    add_name: str | None = None
+    add_qty: float | None = None
+    add_is_liquid = False
+    if m:
+        add_name = (m.group(1) or "").strip().strip('- ')
+        # Strip a possible leading verb that slipped into the name (e.g., "добавь кетчуп" -> "кетчуп")
+        add_name = re.sub(r"^(?:добавить|добавь|положить|прибавить)\s+", "", add_name, flags=re.IGNORECASE)
+        try:
+            add_qty = float(m.group(2))
+        except Exception:
+            add_qty = None
+        unit = (m.group(3) or "г").lower()
+        add_is_liquid = unit in {"мл", "ml"}
+    if not add_name or not add_qty:
+        # Not supported yet
+        return {"error": "unsupported_instruction"}
+
+    # Tiny nutrition lookup (per 100 g)
+    per100 = {
+        "сыр": {"cal": 330, "p": 25.0, "f": 26.0, "c": 1.3},
+        "кетчуп": {"cal": 100, "p": 1.5, "f": 0.2, "c": 24.0},
+        "масло": {"cal": 900, "p": 0.0, "f": 100.0, "c": 0.0},
+        "оливковое масло": {"cal": 900, "p": 0.0, "f": 100.0, "c": 0.0},
+        "майонез": {"cal": 680, "p": 1.0, "f": 75.0, "c": 3.0},
+        "сметана": {"cal": 206, "p": 2.8, "f": 20.0, "c": 3.2},
+        "соус": {"cal": 150, "p": 1.0, "f": 5.0, "c": 24.0},
+    }
+    def estimate_from_name(name: str, qty_g: float) -> tuple[int, float, float, float]:
+        n = (name or "").lower()
+        hit = None
+        for k in per100.keys():
+            if k in n:
+                hit = per100[k]
+                break
+        if not hit:
+            # fallback average sauce/cheese-like add-on
+            hit = {"cal": 250, "p": 8.0, "f": 18.0, "c": 12.0}
+        factor = max(qty_g, 0.0) / 100.0
+        cal = int(round(hit["cal"] * factor))
+        p = round(hit["p"] * factor, 1)
+        f = round(hit["f"] * factor, 1)
+        c = round(hit["c"] * factor, 1)
+        return cal, p, f, c
+
+    # Convert liquids ml -> g with crude density 1.0
+    qty_g = float(add_qty or 0)
+    if add_is_liquid:
+        qty_g = qty_g * 1.0
+
+    add_cal, add_p, add_f, add_c = estimate_from_name(add_name, qty_g)
+
+    # Build new items list (append)
+    new_items: list[dict[str, Any]] = []
+    for it in items_in:
+        try:
+            new_items.append({
+                "name": str((it or {}).get("name") or "Ингредиент"),
+                "weight_g": float((it or {}).get("weight_g") or 0) if (it or {}).get("weight_g") is not None else None,
+                "calories": float((it or {}).get("calories") or 0) if (it or {}).get("calories") is not None else None,
+                "protein_g": float((it or {}).get("protein_g") or 0) if (it or {}).get("protein_g") is not None else None,
+                "fat_g": float((it or {}).get("fat_g") or 0) if (it or {}).get("fat_g") is not None else None,
+                "carbs_g": float((it or {}).get("carbs_g") or 0) if (it or {}).get("carbs_g") is not None else None,
+            })
+        except Exception:
+            continue
+    new_items.append({
+        "name": add_name,
+        "weight_g": qty_g,
+        "calories": add_cal,
+        "protein_g": add_p,
+        "fat_g": add_f,
+        "carbs_g": add_c,
+    })
+
+    # Recalculate totals (fallback to base totals if items lack macros)
+    base_cal = int((base or {}).get("calories") or 0)
+    base_p = float((base or {}).get("protein_g") or 0)
+    base_f = float((base or {}).get("fat_g") or 0)
+    base_c = float((base or {}).get("carbs_g") or 0)
+
+    # If base items carry macros, prefer summation; else add deltas
+    def sum_items(items: list[dict[str, Any]]) -> tuple[int, float, float, float, float]:
+        cal = 0
+        p = f = c = 0.0
+        total_w = 0.0
+        for it in items:
+            try:
+                if it.get("calories") is not None:
+                    cal += int(float(it.get("calories") or 0))
+                if it.get("protein_g") is not None:
+                    p += float(it.get("protein_g") or 0)
+                if it.get("fat_g") is not None:
+                    f += float(it.get("fat_g") or 0)
+                if it.get("carbs_g") is not None:
+                    c += float(it.get("carbs_g") or 0)
+                if it.get("weight_g") is not None:
+                    total_w += float(it.get("weight_g") or 0)
+            except Exception:
+                continue
+        return int(cal), round(p, 1), round(f, 1), round(c, 1), total_w
+
+    summed_cal, summed_p, summed_f, summed_c, summed_w = sum_items(new_items)
+    # Heuristic: if summation yields > 0, trust it; else add deltas to base
+    if summed_cal > 0 or (summed_p + summed_f + summed_c) > 0:
+        out_cal, out_p, out_f, out_c = summed_cal, summed_p, summed_f, summed_c
+        out_w = summed_w if summed_w > 0 else weight_g + qty_g
+    else:
+        out_cal = base_cal + add_cal
+        out_p = round(base_p + add_p, 1)
+        out_f = round(base_f + add_f, 1)
+        out_c = round(base_c + add_c, 1)
+        out_w = weight_g + qty_g
+
+    # Title tweak: append 'с <name>'
+    new_title = title or "Блюдо"
+    try:
+        n_clean = add_name.strip()
+        # avoid duplicate 'с сыром' if already present
+        if n_clean and (" с " + n_clean.lower()) not in (new_title.lower()):
+            new_title = f"{new_title} с {n_clean}"
+    except Exception:
+        pass
+
+    return {
+        "title": new_title,
+        "calories": int(out_cal),
+        "protein_g": float(out_p),
+        "fat_g": float(out_f),
+        "carbs_g": float(out_c),
+        "weight_g": float(out_w),
+        "confidence": float((base or {}).get("confidence") or 0.8),
+        "items": new_items,
+        "references": {"sources": [
+            "ФГБУН \"ФИЦ питания и биотехнологии\"",
+            "USDA FoodData Central",
+        ]},
+        "analysis_text": None,
+        "appearance": {},
+        "not_food": False,
+    }
