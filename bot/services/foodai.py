@@ -1005,8 +1005,11 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
     # change quantity to N g/ml
     m = re.search(r"(?:увеличить|уменьшить|сделать|до)\s+([a-zа-яё\-\s]+?)\s*(?:до)?\s*(\+?\-?\d{1,4})\s*(г|гр|грамм|мл|ml|л|l)\b", instr, flags=re.IGNORECASE)
     if not m:
-        # pattern: '<name> +N г'
-        m = re.search(r"([a-zа-яё\-\s]+?)\s*([\+\-]?\d{1,4})\s*(г|гр|грамм|мл|ml|л|l)\b", instr, flags=re.IGNORECASE)
+        # pattern: '<name> +N г' but avoid leading action verbs (добавить/убрать/заменить)
+        if re.match(r"\s*(?:добавить|добавь|положить|прибавить|убрать|удалить|без|минус|\-|заменить|замени|поменять)\b", instr, flags=re.IGNORECASE):
+            m = None
+        else:
+            m = re.search(r"^([a-zа-яё\-\s]+?)\s*([\+\-]?\d{1,4})\s*(г|гр|грамм|мл|ml|л|l)\b", instr, flags=re.IGNORECASE)
     if m:
         action = "change_qty"
         name = (m.group(1) or "").strip()
@@ -1070,6 +1073,8 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "carbs_g": add_c,
         })
         out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
+        # Prefer adding estimated delta to base calories to avoid undercount when base items were incomplete
+        new_cal = int(max(out_cal, base_cal + add_cal))
         # Title tweak: append 'с <name>' if absent
         new_title = title or "Блюдо"
         try:
@@ -1080,7 +1085,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             pass
         return {
             "title": new_title,
-            "calories": int(out_cal),
+            "calories": new_cal,
             "protein_g": float(out_p),
             "fat_g": float(out_f),
             "carbs_g": float(out_c),
@@ -1094,7 +1099,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "analysis_text": None,
             "appearance": {},
             "not_food": False,
-            "meta": {"action": action, "delta_cal": int(out_cal - base_cal)},
+            "meta": {"action": action, "delta_cal": int(new_cal - base_cal)},
         }
 
     # remove
@@ -1171,13 +1176,20 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             except Exception:
                 continue
         out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
+        # Compute scaled weight using base total weight if available; items list may be partial
+        try:
+            wg_base = float(weight_g or 0)
+        except Exception:
+            wg_base = 0.0
+        wg_scaled = round((wg_base if wg_base > 0 else out_w) * factor, 1)
+        wg_out = round(max(out_w, wg_scaled), 1) if (wg_base or out_w) else 0.0
         return {
             "title": title or "Блюдо",
             "calories": int(out_cal if out_cal > 0 else int(base_cal * factor)),
             "protein_g": float(out_p if out_p > 0 else round(base_p * factor, 1)),
             "fat_g": float(out_f if out_f > 0 else round(base_f * factor, 1)),
             "carbs_g": float(out_c if out_c > 0 else round(base_c * factor, 1)),
-            "weight_g": float(out_w if out_w > 0 else round(weight_g * factor, 1)),
+            "weight_g": float(wg_out),
             "confidence": float((base or {}).get("confidence") or 0.8),
             "items": items,
             "references": {"sources": [
