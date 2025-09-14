@@ -134,3 +134,24 @@ foodai_edit_duration_ms = prometheus_client.Histogram(
     "FoodAI edit flow duration in milliseconds",
     buckets=[50, 100, 200, 400, 800, 1600, 3200, 6400],
 )
+
+# ===== Edit NLU metrics =====
+# Keep labels low-cardinality
+foodai_edit_nlu_started = prometheus_client.Counter(
+    "foodai_edit_nlu_started_total",
+    "FoodAI edit NLU started",
+)
+foodai_edit_nlu_succeeded = prometheus_client.Counter(
+    "foodai_edit_nlu_succeeded_total",
+    "FoodAI edit NLU succeeded",
+)
+foodai_edit_nlu_failed = prometheus_client.Counter(
+    "foodai_edit_nlu_failed_total",
+    "FoodAI edit NLU failed",
+    ["reason"],  # provider_unavailable|parse_json|bad_action|... as coded in adapter
+)
+foodai_edit_nlu_duration_ms = prometheus_client.Histogram(
+    "foodai_edit_nlu_duration_ms",
+    "FoodAI edit NLU duration in milliseconds",
+    buckets=[50, 100, 200, 400, 800, 1600, 3200, 6400],
+)

@@ -1,4 +1,5 @@
 from aiogram import Router, types
+import os
 from aiogram.filters import CommandStart
 from aiogram.utils.i18n import gettext as _
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -6,6 +7,7 @@ from aiogram import F
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import select
 from bot.services.analytics import analytics
+from bot.core.config import settings
 from bot.database.database import sessionmaker
 from bot.database.models.onboarding_answer import OnboardingAnswerModel
 from bot.analytics.types import BaseEvent, EventProperties, Plan
@@ -49,25 +51,27 @@ async def start_handler(message: types.Message, state: FSMContext) -> None:
                 InlineKeyboardButton(text=_("Нет"), callback_data="start:no"),
             ]]
         )
-        # Analytics: log start type as Completed (synchronous for test determinism)
+        # Analytics: log start type as Completed (sync only when flag is set)
         if analytics.logger and user_id is not None:
-            try:
-                await analytics.logger.log_event(  # type: ignore[union-attr]
-                    BaseEvent(
-                        user_id=user_id,
-                        event_type="Start Session",
-                        event_properties=EventProperties(
-                            chat_id=message.chat.id if message.chat else None,
-                            chat_type=message.chat.type if message.chat else None,
-                            text=None,
-                            command="/start",
-                        ),
-                        language=message.from_user.language_code if message.from_user else None,
-                        plan=Plan(branch="Completed", source="start", version="v1"),
-                    )
-                )
-            except Exception:
-                pass
+            evt = BaseEvent(
+                user_id=user_id,
+                event_type="Start Session",
+                event_properties=EventProperties(
+                    chat_id=message.chat.id if message.chat else None,
+                    chat_type=message.chat.type if message.chat else None,
+                    text=None,
+                    command="/start",
+                ),
+                language=message.from_user.language_code if message.from_user else None,
+                plan=Plan(branch="Completed", source="start", version="v1"),
+            )
+            if settings.ANALYTICS_SYNC_START or os.getenv("PYTEST_CURRENT_TEST"):
+                try:
+                    await analytics.logger.log_event(evt)  # type: ignore[union-attr]
+                except Exception:
+                    pass
+            else:
+                analytics.fire_event(evt)
         await message.answer(text, reply_markup=kb)
         return
 
@@ -85,25 +89,27 @@ async def start_handler(message: types.Message, state: FSMContext) -> None:
         kb = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text=_("Начнем"), callback_data="onboarding_start")]]
         )
-    # Analytics: log Fresh vs InProgress start type (synchronous for test determinism)
+    # Analytics: log Fresh vs InProgress start type (sync only when flag is set)
     if analytics.logger and user_id is not None:
-        try:
-            await analytics.logger.log_event(  # type: ignore[union-attr]
-                BaseEvent(
-                    user_id=user_id,
-                    event_type="Start Session",
-                    event_properties=EventProperties(
-                        chat_id=message.chat.id if message.chat else None,
-                        chat_type=message.chat.type if message.chat else None,
-                        text=None,
-                        command="/start",
-                    ),
-                    language=message.from_user.language_code if message.from_user else None,
-                    plan=Plan(branch=("InProgress" if in_progress else "Fresh"), source="start", version="v1"),
-                )
-            )
-        except Exception:
-            pass
+        evt = BaseEvent(
+            user_id=user_id,
+            event_type="Start Session",
+            event_properties=EventProperties(
+                chat_id=message.chat.id if message.chat else None,
+                chat_type=message.chat.type if message.chat else None,
+                text=None,
+                command="/start",
+            ),
+            language=message.from_user.language_code if message.from_user else None,
+            plan=Plan(branch=("InProgress" if in_progress else "Fresh"), source="start", version="v1"),
+        )
+        if settings.ANALYTICS_SYNC_START or os.getenv("PYTEST_CURRENT_TEST"):
+            try:
+                await analytics.logger.log_event(evt)  # type: ignore[union-attr]
+            except Exception:
+                pass
+        else:
+            analytics.fire_event(evt)
     await message.answer(text, reply_markup=kb)
 
 

@@ -5,7 +5,8 @@ from time import perf_counter
 import re
 from html import escape as _html_escape
 
-from aiogram import F, Router, types
+from aiogram import Router, types, F
+from aiogram.filters import CommandStart
 from aiogram.filters import StateFilter
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -19,6 +20,7 @@ from bot.database.models import DailyIntakeModel, MealItemModel, MealModel, Meal
 from bot.filters.foodai_enabled import FoodAIEnabledFilter
 from bot.services.foodai import analyze_photo, analyze_text, refine_meal
 from bot.core.config import settings
+from bot.handlers.start import start_handler  # to forward /start from edit-state
 from bot.analytics.types import BaseEvent, EventProperties, Plan
 from bot.services.analytics import analytics
 from bot.handlers.metrics import (
@@ -55,8 +57,18 @@ class EditStates(StatesGroup):
     waiting_text = State()
 
 
-# Edit-state: accept only text as instruction
-@router_edit.message(StateFilter(EditStates.waiting_text), F.text)
+# If user sends /start while in edit-state, clear FSM and forward to normal start handler
+@router_edit.message(CommandStart())
+async def edit_catch_start(message: types.Message, state: FSMContext) -> None:
+    try:
+        await state.clear()
+    except Exception:
+        pass
+    await start_handler(message, state)
+
+
+# Edit-state: accept only plain text (exclude commands like /start)
+@router_edit.message(StateFilter(EditStates.waiting_text), F.text & (~F.text.startswith("/")))
 async def edit_text_received(message: types.Message, state: FSMContext) -> None:
     t0 = perf_counter()
     if not message.from_user:

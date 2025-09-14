@@ -75,6 +75,8 @@ def test_db_env(postgres_service) -> dict[str, str]:
         "USE_WEBHOOK": "0",
         # Disable DEBUG noise
         "DEBUG": "0",
+        # Make analytics in /start synchronous during tests to avoid race conditions
+        "ANALYTICS_SYNC_START": "1",
         # Required by settings, but not used in tests
         # Use a string that matches Telegram token pattern to avoid aiogram validation errors
         "BOT_TOKEN": "123456:TESTTESTTESTTESTTESTTESTTESTTE",

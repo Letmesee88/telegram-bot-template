@@ -84,6 +84,8 @@ class Settings(BotSettings, DBSettings, CacheSettings):
 
     AMPLITUDE_API_KEY: str  # or for example it could be POSTHOG_API_KEY
     AMPLITUDE_BASE_URL: str | None = None  # e.g., https://api.eu.amplitude.com/2/httpapi for EU region
+    # Tests can force synchronous analytics in /start to avoid race conditions
+    ANALYTICS_SYNC_START: bool = False
 
     # OpenAI / FoodAI settings
     OPENAI_API_KEY: str | None = None
@@ -94,6 +96,8 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     FOODAI_API: str = "chat"  # one of: chat, responses
     FOODAI_REASONING_EFFORT: str = "minimal"  # minimal|low|medium|high (responses API)
     FOODAI_TEXT_VERBOSITY: str = "low"        # low|medium|high (responses API)
+    # Enable LLM-based NLU for edit flow. If OPENAI_API_KEY is missing, code will fallback to local parser.
+    FOODAI_EDIT_NLU: bool = True
     FOODAI_CONFIDENCE_ESCALATE: float = 0.70
     # Confidence display thresholds (for category rendering)
     FOODAI_CONF_LOW: float = 0.60

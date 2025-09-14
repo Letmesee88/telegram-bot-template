@@ -5,6 +5,10 @@ import json
 import re
 import asyncio
 from aiohttp import ClientSession
+try:
+    from bot.services.foodai_edit_llm import interpret_edit
+except Exception:  # pragma: no cover
+    interpret_edit = None  # type: ignore
 from bot.core.config import settings
 from loguru import logger
 from bot.metrics import (
@@ -805,7 +809,8 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         title, items_in, weight_g = "", [], 0.0
         base_cal = base_p = base_f = base_c = 0
 
-    instr = (instruction or "").strip().lower()
+    instr_raw = (instruction or "").strip()
+    instr = instr_raw.lower()
     if not instr:
         return {"error": "empty_instruction", "meta": {"action": "unknown", "reason": "parse"}}
 
@@ -863,6 +868,246 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             except Exception:
                 continue
         return int(cal), round(p, 1), round(f, 1), round(c, 1), total_w
+
+    def _find_indices(items: list[dict[str, Any]], needle: str) -> list[int]:
+        res: list[int] = []
+        n = (needle or "").lower().strip()
+        def _norm(s: str) -> str:
+            s = (s or "").lower()
+            try:
+                s = s.replace("ё", "е")
+            except Exception:
+                pass
+            return s
+        def _tokens(s: str) -> list[str]:
+            try:
+                return re.findall(r"[a-zа-я]+", _norm(s))
+            except Exception:
+                return []
+        def _stem(w: str) -> str:
+            w = _norm(w)
+            while len(w) > 3 and (w[-1] in "аеёиоуыэюяьй"):
+                w = w[:-1]
+            return w
+        ntoks = [_stem(t) for t in _tokens(n)] or [n]
+        for i, it in enumerate(items):
+            try:
+                name = _norm(str(it.get("name") or ""))
+                if not name:
+                    continue
+                # direct substring
+                if n and n in name:
+                    res.append(i)
+                    continue
+                # token-based fuzzy contains via simple stems
+                cand_toks = [_stem(t) for t in _tokens(name)]
+                match = False
+                for a in ntoks:
+                    if not a:
+                        continue
+                    for b in cand_toks:
+                        if not b:
+                            continue
+                        if len(a) >= 3 and (a in b or b in a):
+                            match = True
+                            break
+                    if match:
+                        break
+                if match:
+                    res.append(i)
+            except Exception:
+                continue
+        return res
+
+    # --- LLM NLU first (optional) ---
+    if getattr(settings, "FOODAI_EDIT_NLU", False) and settings.OPENAI_API_KEY and interpret_edit is not None:
+        try:
+            # Provide compact base for NLU
+            base_for_nlu = {
+                "title": title,
+                "weight_g": weight_g,
+                "items": [{"name": it.get("name"), "weight_g": it.get("weight_g")} for it in items_in][:20],
+            }
+            nlu = await interpret_edit(base_for_nlu, instr_raw)
+        except Exception:
+            nlu = {"error": "nlu_error"}
+        if isinstance(nlu, dict) and not nlu.get("error"):
+            action = str(nlu.get("action") or "unknown")
+            # Map to deterministic apply
+            if action == "add":
+                add_name = str(nlu.get("target") or "").strip()
+                qty = float(nlu.get("qty_g") or 0)
+                unit = str(nlu.get("unit") or "g")
+                items = _clone_items(items_in)
+                qty_g, _ = _qty_to_grams(add_name, qty, unit)
+                qty_g = max(1.0, min(1000.0, qty_g))
+                cal, p, f, c = _estimate_from_name(add_name, qty_g)
+                items.append({"name": add_name, "weight_g": qty_g, "calories": cal, "protein_g": p, "fat_g": f, "carbs_g": c})
+                out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
+                new_cal = int(max(out_cal, base_cal + cal))
+                return {
+                    "title": title or "Блюдо",
+                    "calories": new_cal,
+                    "protein_g": float(out_p),
+                    "fat_g": float(out_f),
+                    "carbs_g": float(out_c),
+                    "weight_g": float(out_w if out_w > 0 else weight_g + qty_g),
+                    "confidence": float((base or {}).get("confidence") or 0.8),
+                    "items": items,
+                    "references": {"sources": [
+                        "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                        "USDA FoodData Central",
+                    ]},
+                    "analysis_text": None,
+                    "appearance": {},
+                    "not_food": False,
+                    "meta": {"action": action, "delta_cal": int(new_cal - base_cal)},
+                }
+            if action == "remove":
+                name = str(nlu.get("target") or "").strip()
+                items = _clone_items(items_in)
+                idxs = _find_indices(items, name)
+                if len(idxs) != 1:
+                    reason = "not_found" if len(idxs) == 0 else "ambiguous"
+                    return {"error": reason, "meta": {"action": action, "reason": reason}}
+                try:
+                    items.pop(idxs[0])
+                except Exception:
+                    return {"error": "other", "meta": {"action": action, "reason": "other"}}
+                out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
+                return {
+                    "title": title or "Блюдо",
+                    "calories": int(out_cal if out_cal > 0 else max(0, base_cal - 50)),
+                    "protein_g": float(out_p),
+                    "fat_g": float(out_f),
+                    "carbs_g": float(out_c),
+                    "weight_g": float(out_w if out_w > 0 else max(0.0, weight_g - 50.0)),
+                    "confidence": float((base or {}).get("confidence") or 0.8),
+                    "items": items,
+                    "references": {"sources": [
+                        "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                        "USDA FoodData Central",
+                    ]},
+                    "analysis_text": None,
+                    "appearance": {},
+                    "not_food": False,
+                    "meta": {"action": action, "delta_cal": int(out_cal - base_cal)},
+                }
+            if action == "replace":
+                old_name = str(nlu.get("target") or "").strip()
+                new_name = str(nlu.get("replacement") or "").strip()
+                qty = nlu.get("qty_g")
+                unit = nlu.get("unit")
+                items = _clone_items(items_in)
+                idxs = _find_indices(items, old_name)
+                if len(idxs) != 1:
+                    reason = "not_found" if len(idxs) == 0 else "ambiguous"
+                    return {"error": reason, "meta": {"action": action, "reason": reason}}
+                idx = idxs[0]
+                try:
+                    old_item = items.pop(idx)
+                except Exception:
+                    old_item = None
+                if qty is not None:
+                    new_qty_g, _ = _qty_to_grams(new_name, float(qty), unit)
+                else:
+                    try:
+                        new_qty_g = float((old_item or {}).get("weight_g") or 100.0)
+                    except Exception:
+                        new_qty_g = 100.0
+                new_qty_g = max(1.0, min(1000.0, new_qty_g))
+                cal, p, f, c = _estimate_from_name(new_name, new_qty_g)
+                items.append({"name": new_name, "weight_g": new_qty_g, "calories": cal, "protein_g": p, "fat_g": f, "carbs_g": c})
+                out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
+                return {
+                    "title": title or "Блюдо",
+                    "calories": int(out_cal),
+                    "protein_g": float(out_p),
+                    "fat_g": float(out_f),
+                    "carbs_g": float(out_c),
+                    "weight_g": float(out_w if out_w > 0 else weight_g),
+                    "confidence": float((base or {}).get("confidence") or 0.8),
+                    "items": items,
+                    "references": {"sources": [
+                        "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                        "USDA FoodData Central",
+                    ]},
+                    "analysis_text": None,
+                    "appearance": {},
+                    "not_food": False,
+                    "meta": {"action": action, "delta_cal": int(out_cal - base_cal)},
+                }
+            if action == "change_qty":
+                name = str(nlu.get("target") or "").strip()
+                qty = float(nlu.get("qty_g") or 0)
+                unit = str(nlu.get("unit") or "g")
+                items = _clone_items(items_in)
+                idxs = _find_indices(items, name)
+                if len(idxs) != 1:
+                    reason = "not_found" if len(idxs) == 0 else "ambiguous"
+                    return {"error": reason, "meta": {"action": action, "reason": reason}}
+                idx = idxs[0]
+                new_qty_g, _ = _qty_to_grams(name, qty, unit)
+                new_qty_g = max(1.0, min(1000.0, new_qty_g))
+                cal, p, f, c = _estimate_from_name(name, new_qty_g)
+                items[idx].update({"weight_g": new_qty_g, "calories": cal, "protein_g": p, "fat_g": f, "carbs_g": c})
+                out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
+                return {
+                    "title": title or "Блюдо",
+                    "calories": int(out_cal),
+                    "protein_g": float(out_p),
+                    "fat_g": float(out_f),
+                    "carbs_g": float(out_c),
+                    "weight_g": float(out_w if out_w > 0 else weight_g),
+                    "confidence": float((base or {}).get("confidence") or 0.8),
+                    "items": items,
+                    "references": {"sources": [
+                        "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                        "USDA FoodData Central",
+                    ]},
+                    "analysis_text": None,
+                    "appearance": {},
+                    "not_food": False,
+                    "meta": {"action": action, "delta_cal": int(out_cal - base_cal)},
+                }
+            if action == "scale":
+                factor = float(nlu.get("factor") or 1.0)
+                items = _clone_items(items_in)
+                for it in items:
+                    try:
+                        if it.get("weight_g") is not None:
+                            it["weight_g"] = round(float(it.get("weight_g") or 0) * factor, 1)
+                        n = str(it.get("name") or "")
+                        w = float(it.get("weight_g") or 0)
+                        cal, p, f, c = _estimate_from_name(n, w)
+                        it.update({"calories": cal, "protein_g": p, "fat_g": f, "carbs_g": c})
+                    except Exception:
+                        continue
+                out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
+                try:
+                    wg_base = float(weight_g or 0)
+                except Exception:
+                    wg_base = 0.0
+                wg_scaled = round((wg_base if wg_base > 0 else out_w) * factor, 1)
+                wg_out = round(max(out_w, wg_scaled), 1) if (wg_base or out_w) else 0.0
+                return {
+                    "title": title or "Блюдо",
+                    "calories": int(out_cal if out_cal > 0 else int(base_cal * factor)),
+                    "protein_g": float(out_p if out_p > 0 else round(base_p * factor, 1)),
+                    "fat_g": float(out_f if out_f > 0 else round(base_f * factor, 1)),
+                    "carbs_g": float(out_c if out_c > 0 else round(base_c * factor, 1)),
+                    "weight_g": float(wg_out),
+                    "confidence": float((base or {}).get("confidence") or 0.8),
+                    "items": items,
+                    "references": {"sources": [
+                        "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                        "USDA FoodData Central",
+                    ]},
+                    "analysis_text": None,
+                    "appearance": {},
+                    "not_food": False,
+                    "meta": {"action": action, "delta_cal": int((out_cal if out_cal > 0 else int(base_cal * factor)) - base_cal)},
+                }
 
     def _qty_to_grams(name: str, qty: float, unit: str | None) -> tuple[float, bool]:
         unit_l = (unit or "г").lower()
@@ -974,17 +1219,8 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "carbs_g": c,
         })
         out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
-        # title replacement if contains old token
-        new_title = title or "Блюдо"
-        try:
-            if old_name and old_name.lower() in new_title.lower():
-                new_title = re.sub(old_name, new_name, new_title, flags=re.IGNORECASE)
-            elif new_name and (" с " + new_name.lower()) not in new_title.lower():
-                new_title = f"{new_title} с {new_name}"
-        except Exception:
-            pass
         return {
-            "title": new_title,
+            "title": title or "Блюдо",
             "calories": int(out_cal),
             "protein_g": float(out_p),
             "fat_g": float(out_f),
@@ -1006,7 +1242,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
     m = re.search(r"(?:увеличить|уменьшить|сделать|до)\s+([a-zа-яё\-\s]+?)\s*(?:до)?\s*(\+?\-?\d{1,4})\s*(г|гр|грамм|мл|ml|л|l)\b", instr, flags=re.IGNORECASE)
     if not m:
         # pattern: '<name> +N г' but avoid leading action verbs (добавить/убрать/заменить)
-        if re.match(r"\s*(?:добавить|добавь|положить|прибавить|убрать|удалить|без|минус|\-|заменить|замени|поменять)\b", instr, flags=re.IGNORECASE):
+        if re.match(r"\s*(?:добавить|добавь|положить|прибавить|убрать|убери|удалить|удали|без|минус|\-|заменить|замени|поменять)\b", instr, flags=re.IGNORECASE):
             m = None
         else:
             m = re.search(r"^([a-zа-яё\-\s]+?)\s*([\+\-]?\d{1,4})\s*(г|гр|грамм|мл|ml|л|l)\b", instr, flags=re.IGNORECASE)
@@ -1053,7 +1289,8 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         }
 
     # add
-    m = re.search(r"(?:добавить|добавь|положить|прибавить|\+)?\s*([a-zа-яё\-\s]+?)\s*(\d{1,4})\s*(г|гр|грамм|мл|ml|л|l|шт)?\b", instr, flags=re.IGNORECASE)
+    # Anchor add at line start to avoid catching scale-like phrases; prefer explicit verbs or '+'
+    m = re.match(r"^\s*(?:добавить|добавь|положить|прибавить|\+)\s*([a-zа-яё\-\s]+?)\s*(\d{1,4})\s*(г|гр|грамм|мл|ml|л|l|шт)?\b", instr, flags=re.IGNORECASE)
     if m:
         action = "add"
         add_name = (m.group(1) or "").strip().strip('- ')
@@ -1075,16 +1312,8 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
         # Prefer adding estimated delta to base calories to avoid undercount when base items were incomplete
         new_cal = int(max(out_cal, base_cal + add_cal))
-        # Title tweak: append 'с <name>' if absent
-        new_title = title or "Блюдо"
-        try:
-            n_clean = add_name.strip()
-            if n_clean and (" с " + n_clean.lower()) not in (new_title.lower()):
-                new_title = f"{new_title} с {n_clean}"
-        except Exception:
-            pass
         return {
-            "title": new_title,
+            "title": title or "Блюдо",
             "calories": new_cal,
             "protein_g": float(out_p),
             "fat_g": float(out_f),
@@ -1103,7 +1332,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         }
 
     # remove
-    m = re.search(r"(?:убрать|удалить|без|минус|\-)\s+([a-zа-яё\-\s]+)\b", instr, flags=re.IGNORECASE)
+    m = re.search(r"(?:убрать|убери|убрал|удалить|удали|удалил|без|минус|\-)\s+([a-zа-яё\-\s]+)\b", instr, flags=re.IGNORECASE)
     if m:
         action = "remove"
         name = (m.group(1) or "").strip()
@@ -1140,7 +1369,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
     # scale portion
     # patterns: 'увеличить/уменьшить порцию на N%', '+N%', '-N%', 'в K раза', 'xK'
     def _parse_scale(t: str) -> float | None:
-        m1 = re.search(r"(увеличить|уменьшить)\s+порцию\s+на\s+(\d{1,3})%", t)
+        m1 = re.search(r"(увеличить|увеличь|уменьшить|уменьши)\s+порцию\s+на\s+(\d{1,3})%", t)
         if m1:
             sign = 1 if m1.group(1).lower().startswith("увел") else -1
             pct = float(m1.group(2))
