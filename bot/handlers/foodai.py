@@ -28,6 +28,11 @@ from bot.handlers.metrics import (
     foodai_duration_ms,
     foodai_itogo_shown,
     foodai_not_food,
+    # Edit flow
+    foodai_edit_started,
+    foodai_edit_applied,
+    foodai_edit_failed,
+    foodai_edit_duration_ms,
 )
 
 router = Router(name="foodai")
@@ -53,6 +58,7 @@ class EditStates(StatesGroup):
 # Edit-state: accept only text as instruction
 @router_edit.message(StateFilter(EditStates.waiting_text), F.text)
 async def edit_text_received(message: types.Message, state: FSMContext) -> None:
+    t0 = perf_counter()
     if not message.from_user:
         return
     user_id = message.from_user.id
@@ -94,12 +100,12 @@ async def edit_text_received(message: types.Message, state: FSMContext) -> None:
 
     instruction = (message.text or "").strip()
 
-    # Analytics: reuse existing allowed event_type
+    # Analytics: Submitted
     if analytics.logger and message.from_user:
         analytics.fire_event(
             BaseEvent(
                 user_id=message.from_user.id,
-                event_type="FoodAI:EditClicked",
+                event_type="FoodAI:EditSubmitted",
                 event_properties=EventProperties(
                     chat_id=message.chat.id if message.chat else None,
                     chat_type=message.chat.type if message.chat else None,
@@ -115,10 +121,52 @@ async def edit_text_received(message: types.Message, state: FSMContext) -> None:
     try:
         result = await refine_meal(base, instruction)
     except Exception as e:
-        result = {"error": str(e)}
+        result = {"error": str(e), "meta": {"action": "unknown", "reason": "other"}}
+
+    # Metrics and failure handling
+    meta = result.get("meta") if isinstance(result, dict) else None
+    action = (meta or {}).get("action") or "unknown"
+    reason = (meta or {}).get("reason") or ("error" if result.get("error") else None)
+    try:
+        foodai_edit_started.labels(action=action).inc()
+    except Exception:
+        pass
 
     if not isinstance(result, dict) or result.get("error"):
-        await message.answer(_("Не удалось применить изменения. Попробуйте переформулировать и отправьте ещё раз."))
+        # Metrics fail
+        try:
+            foodai_edit_failed.labels(action=action, reason=(reason or "other")).inc()
+            foodai_edit_duration_ms.observe(max(0.0, (perf_counter() - t0) * 1000.0))
+        except Exception:
+            pass
+        # Amplitude fail
+        if analytics.logger and message.from_user:
+            try:
+                analytics.fire_event(
+                    BaseEvent(
+                        user_id=message.from_user.id,
+                        event_type="FoodAI:EditFailed",
+                        event_properties=EventProperties(
+                            chat_id=message.chat.id if message.chat else None,
+                            chat_type=message.chat.type if message.chat else None,
+                            text=f"meal_id={meal_id}, action={action}, reason={reason}",
+                            command=None,
+                        ),
+                        language=message.from_user.language_code if message.from_user else None,
+                        plan=Plan(branch="Edit", source="FoodAI", version="v1"),
+                    )
+                )
+            except Exception:
+                pass
+        # User message by reason
+        err_map = {
+            "parse": _("Не понял запрос. Примеры: добавить сыр 30 г; убрать соус; заменить рыбу на индейку 100 г; увеличить порцию на 20%."),
+            "ambiguous": _("Нашёл несколько ингредиентов. Уточните, пожалуйста, какой именно."),
+            "not_found": _("Ингредиент не найден в составе. Попробуйте точнее: например, заменить кетчуп на соус 20 г."),
+            "caps": _("Слишком большая масса. Ограничение — до 1000 г/мл."),
+            "unsupported": _("Пока не поддерживаю такой запрос. Попробуйте: добавить/убрать/заменить/изменить массу/увеличить порцию."),
+        }
+        await message.answer(err_map.get(reason or "", _("Не удалось применить изменения. Попробуйте переформулировать и отправьте ещё раз.")))
         return
 
     # Persist updated meal
@@ -154,6 +202,38 @@ async def edit_text_received(message: types.Message, state: FSMContext) -> None:
                 )
             )
         await session.commit()
+
+    # Metrics success
+    try:
+        foodai_edit_applied.labels(action=action).inc()
+        foodai_edit_duration_ms.observe(max(0.0, (perf_counter() - t0) * 1000.0))
+    except Exception:
+        pass
+
+    # Amplitude success
+    if analytics.logger and message.from_user:
+        try:
+            delta_cal = None
+            try:
+                delta_cal = int((result.get("meta") or {}).get("delta_cal"))
+            except Exception:
+                delta_cal = None
+            analytics.fire_event(
+                BaseEvent(
+                    user_id=message.from_user.id,
+                    event_type="FoodAI:EditApplied",
+                    event_properties=EventProperties(
+                        chat_id=message.chat.id if message.chat else None,
+                        chat_type=message.chat.type if message.chat else None,
+                        text=f"meal_id={meal_id}, action={action}, delta_cal={delta_cal}, dur_ms={int((perf_counter()-t0)*1000)}",
+                        command=None,
+                    ),
+                    language=message.from_user.language_code if message.from_user else None,
+                    plan=Plan(branch="Edit", source="FoodAI", version="v1"),
+                )
+            )
+        except Exception:
+            pass
 
     # Clear state and show updated preview
     await state.clear()

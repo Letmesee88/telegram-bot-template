@@ -85,6 +85,21 @@ def test_db_env(postgres_service) -> dict[str, str]:
     }
     # Set env before importing app modules
     os.environ.update(env)
+    # Force-refresh runtime settings so any prior imports don't keep stale values from .env
+    try:
+        import bot.core.config as cfg  # type: ignore
+        cfg.settings = cfg.Settings()  # type: ignore[assignment]
+    except Exception:
+        pass
+    # Reset DB engine/sessionmaker singletons to pick up new settings
+    try:
+        import bot.database.database as db  # type: ignore
+        if hasattr(db, "_engine_singleton"):
+            db._engine_singleton = None  # type: ignore[attr-defined]
+        if hasattr(db, "_sessionmaker_singleton"):
+            db._sessionmaker_singleton = None  # type: ignore[attr-defined]
+    except Exception:
+        pass
     return env
 
 
