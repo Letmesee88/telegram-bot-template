@@ -919,6 +919,46 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                 continue
         return res
 
+    # --- RU morphology lite helpers (heuristics, no heavy deps) ---
+    def _normalize_name_ru(name: str) -> str:
+        s = (name or "").strip()
+        if not s:
+            return s
+        s_l = s.lower()
+        # quick known accusative -> nominative fixes
+        mapping = {
+            "рыбу": "рыба",
+            "курицу": "курица",
+            "говядину": "говядина",
+            "свинину": "свинина",
+            "индейку": "индейка",
+            "пиццу": "пицца",
+            "морковку": "морковь",
+            "капусту": "капуста",
+            "картошку": "картофель",
+            "картошечку": "картофель",
+            "колбасу": "колбаса",
+            "гречку": "гречка",
+            "кашу": "каша",
+            "рыбку": "рыба",
+        }
+        if s_l in mapping:
+            return mapping[s_l]
+        # generic -у/-ю -> -а/-я
+        if s_l.endswith("у") and len(s_l) >= 3:
+            s_l = s_l[:-1] + "а"
+        elif s_l.endswith("ю") and len(s_l) >= 3:
+            s_l = s_l[:-1] + "я"
+        # normalize spaces
+        s_l = re.sub(r"\s+", " ", s_l)
+        # capitalise product names minimally (first letter only)
+        try:
+            return s_l[0].upper() + s_l[1:]
+        except Exception:
+            return s_l
+
+    # [removed] Title appending logic is removed per product decision.
+
     # --- LLM NLU first (optional) ---
     if getattr(settings, "FOODAI_EDIT_NLU", False) and settings.OPENAI_API_KEY and interpret_edit is not None:
         try:
@@ -935,7 +975,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             action = str(nlu.get("action") or "unknown")
             # Map to deterministic apply
             if action == "add":
-                add_name = str(nlu.get("target") or "").strip()
+                add_name = _normalize_name_ru(str(nlu.get("target") or "").strip())
                 qty = float(nlu.get("qty_g") or 0)
                 unit = str(nlu.get("unit") or "g")
                 items = _clone_items(items_in)
@@ -946,7 +986,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                 out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
                 new_cal = int(max(out_cal, base_cal + cal))
                 return {
-                    "title": title or "Блюдо",
+                    "title": (title or "Блюдо"),
                     "calories": new_cal,
                     "protein_g": float(out_p),
                     "fat_g": float(out_f),
@@ -964,7 +1004,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                     "meta": {"action": action, "delta_cal": int(new_cal - base_cal)},
                 }
             if action == "remove":
-                name = str(nlu.get("target") or "").strip()
+                name = _normalize_name_ru(str(nlu.get("target") or "").strip())
                 items = _clone_items(items_in)
                 idxs = _find_indices(items, name)
                 if len(idxs) != 1:
@@ -994,8 +1034,8 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                     "meta": {"action": action, "delta_cal": int(out_cal - base_cal)},
                 }
             if action == "replace":
-                old_name = str(nlu.get("target") or "").strip()
-                new_name = str(nlu.get("replacement") or "").strip()
+                old_name = _normalize_name_ru(str(nlu.get("target") or "").strip())
+                new_name = _normalize_name_ru(str(nlu.get("replacement") or "").strip())
                 qty = nlu.get("qty_g")
                 unit = nlu.get("unit")
                 items = _clone_items(items_in)
@@ -1038,7 +1078,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                     "meta": {"action": action, "delta_cal": int(out_cal - base_cal)},
                 }
             if action == "change_qty":
-                name = str(nlu.get("target") or "").strip()
+                name = _normalize_name_ru(str(nlu.get("target") or "").strip())
                 qty = float(nlu.get("qty_g") or 0)
                 unit = str(nlu.get("unit") or "g")
                 items = _clone_items(items_in)
@@ -1182,8 +1222,8 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
     m = re.search(r"(?:заменить|замени|поменять)\s+([a-zа-яё\-\s]+?)\s+на\s+([a-zа-яё\-\s]+?)(?:\s+(\d{1,4})\s*(г|гр|грамм|мл|ml|л|l|шт))?\b", instr, flags=re.IGNORECASE)
     if m:
         action = "replace"
-        old_name = (m.group(1) or "").strip()
-        new_name = (m.group(2) or "").strip()
+        old_name = _normalize_name_ru((m.group(1) or "").strip())
+        new_name = _normalize_name_ru((m.group(2) or "").strip())
         qty = float(m.group(3)) if m.group(3) else None
         unit = (m.group(4) or None)
         items = _clone_items(items_in)
@@ -1220,7 +1260,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         })
         out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
         return {
-            "title": title or "Блюдо",
+            "title": _maybe_update_title(title, [new_name]),
             "calories": int(out_cal),
             "protein_g": float(out_p),
             "fat_g": float(out_f),
@@ -1248,7 +1288,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             m = re.search(r"^([a-zа-яё\-\s]+?)\s*([\+\-]?\d{1,4})\s*(г|гр|грамм|мл|ml|л|l)\b", instr, flags=re.IGNORECASE)
     if m:
         action = "change_qty"
-        name = (m.group(1) or "").strip()
+        name = _normalize_name_ru((m.group(1) or "").strip())
         qty = float(m.group(2))
         unit = (m.group(3) or None)
         items = _clone_items(items_in)
@@ -1270,7 +1310,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         })
         out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
         return {
-            "title": title or "Блюдо",
+            "title": _maybe_update_title(title, [name]),
             "calories": int(out_cal),
             "protein_g": float(out_p),
             "fat_g": float(out_f),
@@ -1293,7 +1333,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
     m = re.match(r"^\s*(?:добавить|добавь|положить|прибавить|\+)\s*([a-zа-яё\-\s]+?)\s*(\d{1,4})\s*(г|гр|грамм|мл|ml|л|l|шт)?\b", instr, flags=re.IGNORECASE)
     if m:
         action = "add"
-        add_name = (m.group(1) or "").strip().strip('- ')
+        add_name = _normalize_name_ru((m.group(1) or "").strip().strip('- '))
         add_name = re.sub(r"^(?:добавить|добавь|положить|прибавить)\s+", "", add_name, flags=re.IGNORECASE)
         add_qty = float(m.group(2))
         unit = (m.group(3) or None)
@@ -1313,7 +1353,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         # Prefer adding estimated delta to base calories to avoid undercount when base items were incomplete
         new_cal = int(max(out_cal, base_cal + add_cal))
         return {
-            "title": title or "Блюдо",
+            "title": (title or "Блюдо"),
             "calories": new_cal,
             "protein_g": float(out_p),
             "fat_g": float(out_f),
@@ -1332,10 +1372,10 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         }
 
     # remove
-    m = re.search(r"(?:убрать|убери|убрал|удалить|удали|удалил|без|минус|\-)\s+([a-zа-яё\-\s]+)\b", instr, flags=re.IGNORECASE)
+    m = re.search(r"(?:убрать|убери|удалить|удали|без|минус|\-)\s+([a-zа-яё\-\s]+)\b", instr, flags=re.IGNORECASE)
     if m:
         action = "remove"
-        name = (m.group(1) or "").strip()
+        name = _normalize_name_ru((m.group(1) or "").strip())
         items = _clone_items(items_in)
         idxs = _find_indices(items, name)
         if len(idxs) == 0:
