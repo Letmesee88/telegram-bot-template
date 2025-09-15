@@ -257,9 +257,9 @@ async def edit_text_received(message: types.Message, state: FSMContext) -> None:
     w = float(result.get("weight_g") or 0)
     items = list(result.get("items") or [])
     title = (result.get("title") or meal.title)
-    text_preview = _build_preview_text(cal, p, f, c, 0.8, weight=w, items=items, references=None, title=title, source=None)
-    await message.answer(_("👍🏼  Готово !\n📝 Изменения: {t}").format(t=instruction))
-    await message.answer(text_preview, reply_markup=_preview_kb(meal_id))
+    text_preview = _build_preview_text(cal, p, f, c, 0.8, weight=w, items=items, references=None, title=title, source="edit")
+    combined = _("👍🏼  Готово !") + "\n" + _("📝 Изменения: {t}").format(t=instruction) + "\n\n" + text_preview
+    await message.answer(combined, reply_markup=_preview_kb(meal_id))
 
 
 # Edit-state: reject non-text input (photos, stickers, etc.)
@@ -897,6 +897,8 @@ def _build_preview_text(
         parts.append(_("👌🏼 Анализ фото готов !"))
     elif source == "text":
         parts.append(_("📝 Анализ описания завершен!"))
+    elif source == "edit":
+        pass  # no header
     else:
         parts.append(_("Предпросмотр блюда:"))
 
@@ -1082,26 +1084,6 @@ def _build_preview_text(
     return "\n".join(parts)
 
 
-def _preview_kb(meal_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=_("✅ Сохранить"), callback_data=f"foodai:save:{meal_id}")],
-            [
-                InlineKeyboardButton(text=_("✏️ Редактировать"), callback_data=f"foodai:edit:{meal_id}"),
-                InlineKeyboardButton(text=_("🗑 Удалить"), callback_data=f"foodai:del:{meal_id}"),
-            ],
-        ]
-    )
-
-
-def _edit_text_kb(meal_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=_("◀️ Назад"), callback_data=f"foodai:back:{meal_id}")],
-        ]
-    )
-
-
 def _build_edit_prompt_text(
     cal: int,
     p: float,
@@ -1115,7 +1097,6 @@ def _build_edit_prompt_text(
     parts: list[str] = []
     parts.append(_("✏️ Редактирование блюда"))
     parts.append("")
-    parts.append(_("Название блюда  ( пример: Макароны с курицей и помидорами ) "))
     if title:
         parts.append(f"<b>{_html_escape(str(title))}</b>")
     parts.append("")
@@ -1152,6 +1133,26 @@ def _build_edit_prompt_text(
     parts.append("• увеличить порцию в 2 раза")
     parts.append("• заменить рыбу на индейку")
     return "\n".join(parts)
+
+
+def _preview_kb(meal_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=_("✅ Сохранить"), callback_data=f"foodai:save:{meal_id}")],
+            [
+                InlineKeyboardButton(text=_("✏️ Редактировать"), callback_data=f"foodai:edit:{meal_id}"),
+                InlineKeyboardButton(text=_("🗑 Удалить"), callback_data=f"foodai:del:{meal_id}"),
+            ],
+        ]
+    )
+
+
+def _edit_text_kb(meal_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=_("◀️ Назад"), callback_data=f"foodai:back:{meal_id}")],
+        ]
+    )
 
 
 def _edit_kb(meal_id: int) -> InlineKeyboardMarkup:
@@ -1320,7 +1321,7 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
 
     combined_text = saved_line if not analysis_text else f"{saved_line}\n\n{analysis_text}"
     await _edit_caption_or_text(callback, combined_text, kb=None)
-    await callback.answer(_("✅ Еда сохранена"))
+    await callback.answer()
 
 
 @router.callback_query(F.data.regexp(r"^foodai:del:(\d+)$"))
@@ -1357,7 +1358,7 @@ async def cb_foodai_delete(callback: types.CallbackQuery) -> None:
         )
 
     await _edit_caption_or_text(callback, _("🗑 Еда удалена"), kb=None)
-    await callback.answer(_("🗑 Еда удалена"))
+    await callback.answer()
 
 
 @router.callback_query(F.data.regexp(r"^foodai:edit:(\d+)$"))
@@ -1415,10 +1416,7 @@ async def cb_foodai_edit(callback: types.CallbackQuery, state: FSMContext) -> No
         pass
 
     await _edit_caption_or_text(callback, text, kb=_edit_text_kb(meal_id))
-    try:
-        await callback.answer(_("Отправьте текст изменений (например: добавить сыр 30г)"), show_alert=False)
-    except Exception:
-        await callback.answer()
+    await callback.answer()
 
 
 @router.callback_query(F.data.regexp(r"^foodai:back:(\d+)$"))
