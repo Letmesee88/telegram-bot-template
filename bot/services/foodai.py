@@ -153,21 +153,16 @@ def _lexicon_is_food_text(text: str | None) -> bool | None:
         t = " ".join(t.split())
         # one-token beverage/food whitelist (Russian forms)
         lex = {
-            "кофе",
-            "чай",
-            "вода",
-            "сок",
-            "компот",
-            "морс",
-            "квас",
-            "лимонад",
-            "молоко",
-            "кефир",
-            "какао",
-            "йогурт",
-            "суп",
-            "борщ",
-            "окрошка",
+            # напитки
+            "кофе", "чай", "вода", "сок", "компот", "морс", "квас", "лимонад", "молоко", "кефир", "какао", "йогурт",
+            # супы
+            "суп", "борщ", "окрошка",
+            # базовые продукты и блюда (одно слово)
+            "рыба", "курица", "индейка", "утка", "говядина", "свинина", "телятина",
+            "рис", "гречка", "макароны", "паста", "картофель", "картошка", "овсянка", "каша", "манка",
+            "яблоко", "банан", "хлеб", "сыр", "творог", "яйцо", "яйца", "омлет",
+            "майонез", "кетчуп", "соус", "сметана", "масло",
+            "огурец", "помидор", "томат", "перец",
         }
         # obvious non-food single objects (guard for one-token)
         non_food = {
@@ -871,7 +866,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
 
     def _find_indices(items: list[dict[str, Any]], needle: str) -> list[int]:
         res: list[int] = []
-        n = (needle or "").lower().strip()
+        n_raw = (needle or "").strip()
         def _norm(s: str) -> str:
             s = (s or "").lower()
             try:
@@ -889,32 +884,81 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             while len(w) > 3 and (w[-1] in "аеёиоуыэюяьй"):
                 w = w[:-1]
             return w
-        ntoks = [_stem(t) for t in _tokens(n)] or [n]
+        # minimal stop-words and descriptors to ignore in matching
+        stop = {
+            "жареный","жареная","жареное","жаренный","жаренные",
+            "вареный","варёный","вареная","варёная","вареное","варёное",
+            "пшеничный","овощной","говяжий","куриный","свиной","индюшиный",
+            "копченый","копчёный","гриль","домашний","магазинный",
+            "на","без","и","с","в","из","по","для","или","при",
+            "бульоне","соусе","масле","воде",
+        }
+        # lightweight token synonyms (very small set for quick-fix)
+        syn = {
+            "картошка": "картофель",
+            "картофел": "картофель",
+            "томаты": "помидор",
+            "томат": "помидор",
+            "яйца": "яйцо",
+            "яиц": "яйцо",
+            "паста": "макароны",
+            "лапша": "макароны",
+        }
+        def _map_token(t: str) -> str:
+            t0 = _norm(t)
+            return syn.get(t0, t0)
+        n = _norm(n_raw)
+        # direct substring path kept first
+        for i, it in enumerate(items):
+            try:
+                name = _norm(str(it.get("name") or ""))
+                if n and n in name:
+                    res.append(i)
+            except Exception:
+                continue
+        if res:
+            return res
+        # token-based fallback matching
+        n_toks = [_map_token(t) for t in _tokens(n_raw) if _map_token(t) not in stop]
+        n_stems = [_stem(t) for t in n_toks if t]
         for i, it in enumerate(items):
             try:
                 name = _norm(str(it.get("name") or ""))
                 if not name:
                     continue
-                # direct substring
-                if n and n in name:
+                cand_toks = [_map_token(t) for t in _tokens(name) if _map_token(t) not in stop]
+                cand_stems = [_stem(t) for t in cand_toks if t]
+                if not n_stems:
+                    continue
+                # rule 1: every needle stem matches some candidate stem by inclusion
+                all_hit = True
+                for a in n_stems:
+                    hit = False
+                    for b in cand_stems:
+                        if not a or not b:
+                            continue
+                        if (a == b) or (len(a) >= 3 and (a in b or b in a)):
+                            hit = True
+                            break
+                    if not hit:
+                        all_hit = False
+                        break
+                if all_hit:
                     res.append(i)
                     continue
-                # token-based fuzzy contains via simple stems
-                cand_toks = [_stem(t) for t in _tokens(name)]
-                match = False
-                for a in ntoks:
-                    if not a:
-                        continue
-                    for b in cand_toks:
-                        if not b:
-                            continue
-                        if len(a) >= 3 and (a in b or b in a):
-                            match = True
-                            break
-                    if match:
-                        break
-                if match:
-                    res.append(i)
+                # rule 2: Jaccard-like overlap on stems
+                if cand_stems:
+                    sa = set(n_stems)
+                    sb = set(cand_stems)
+                    inter = 0
+                    for a in sa:
+                        for b in sb:
+                            if (a == b) or (len(a) >= 3 and (a in b or b in a)):
+                                inter += 1
+                                break
+                    denom = max(1, len(sa | sb))
+                    if (inter / denom) >= 0.7:
+                        res.append(i)
             except Exception:
                 continue
         return res
@@ -1407,13 +1451,45 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         new_name = _normalize_name_ru((m.group(2) or "").strip())
         qty = float(m.group(3)) if m.group(3) else None
         unit = (m.group(4) or None)
+        try:
+            logger.info("FoodAI:edit | action=replace | parsed old='{}' new='{}' qty={} unit={}", old_name, new_name, qty, unit)
+        except Exception:
+            pass
         items = _clone_items(items_in)
         idxs = _find_indices(items, old_name)
         if len(idxs) == 0:
+            try:
+                logger.info("FoodAI:edit | replace | match=0 | old='{}'", old_name)
+            except Exception:
+                pass
             return {"error": "not_found", "meta": {"action": action, "reason": "not_found"}}
         if len(idxs) > 1:
+            try:
+                logger.info("FoodAI:edit | replace | match>1 | idxs={} | old='{}'", idxs, old_name)
+            except Exception:
+                pass
             return {"error": "ambiguous", "meta": {"action": action, "reason": "ambiguous"}}
         idx = idxs[0]
+        # Foodness gate for new item in replace
+        try:
+            is_food_flag: bool | None = None
+            lex_hit = _lexicon_is_food_text(new_name)
+            if lex_hit is True:
+                is_food_flag = True
+            else:
+                is_food_flag = await _foodness_text(new_name)
+            try:
+                logger.info("FoodAI:edit | replace | foodness new='{}' -> {}", new_name, is_food_flag)
+            except Exception:
+                pass
+        except Exception:
+            is_food_flag = None
+        if is_food_flag is False or is_food_flag is None:
+            try:
+                logger.info("FoodAI:edit | replace | rejected_not_food | new='{}'", new_name)
+            except Exception:
+                pass
+            return {"error": "not_food", "meta": {"action": action, "reason": "not_food"}}
         # remove old
         try:
             old_item = items.pop(idx)
@@ -1440,8 +1516,12 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "carbs_g": c,
         })
         out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
+        try:
+            logger.info("FoodAI:edit | replace | ok | old='{}' new='{}' | new_qty_g={} | delta_cal={}", old_name, new_name, new_qty_g, int(out_cal - base_cal))
+        except Exception:
+            pass
         return {
-            "title": _maybe_update_title(title, [new_name]),
+            "title": (title or "Блюдо"),
             "calories": int(out_cal),
             "protein_g": float(out_p),
             "fat_g": float(out_f),
@@ -1491,7 +1571,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         })
         out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
         return {
-            "title": _maybe_update_title(title, [name]),
+            "title": (title or "Блюдо"),
             "calories": int(out_cal),
             "protein_g": float(out_p),
             "fat_g": float(out_f),
@@ -1518,6 +1598,19 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         add_name = re.sub(r"^(?:добавить|добавь|положить|прибавить)\s+", "", add_name, flags=re.IGNORECASE)
         add_qty = float(m.group(2))
         unit = (m.group(3) or None)
+        # Foodness gate for add
+        try:
+            is_food_flag: bool | None = None
+            # quick lexical whitelist; if not decisive, ask LLM classifier
+            lex_hit = _lexicon_is_food_text(add_name)
+            if lex_hit is True:
+                is_food_flag = True
+            else:
+                is_food_flag = await _foodness_text(add_name)
+        except Exception:
+            is_food_flag = None
+        if is_food_flag is False or is_food_flag is None:
+            return {"error": "not_food", "meta": {"action": action, "reason": "not_food"}}
         qty_g, _is_liq = _qty_to_grams(add_name, add_qty, unit)
         qty_g = max(1.0, min(1000.0, qty_g))
         add_cal, add_p, add_f, add_c = _estimate_from_name(add_name, qty_g)
