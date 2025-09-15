@@ -941,28 +941,58 @@ def _build_preview_text(
             w = (it or {}).get("weight_g")
             kc = (it or {}).get("calories")
             is_liquid = bool((it or {}).get("is_liquid"))
+            app = (it or {}).get("appearance") if isinstance(it, dict) else None
             if w or kc is not None:
                 segs = []
-                if w:
+                if w is not None:
                     try:
                         val_g = float(w)
-                        unit = "г"
-                        show_val = f"{val_g:g}"
-                        # Convert to ml if liquid
-                        if is_liquid:
-                            # pick density by name prefix if available
-                            d = None
-                            key = name.lower().strip()
-                            for k in density.keys():
-                                if key.startswith(k):
-                                    d = density[k]
-                                    break
-                            if not d:
-                                d = 1.0
-                            ml = val_g / d
-                            unit = "мл"
-                            show_val = f"{ml:.0f}"
-                        segs.append(f"{show_val} {unit}")
+                        # Prefer explicit 'appearance' from service if present
+                        if isinstance(app, dict) and app.get("unit") in {"ml", "l", "шт"}:
+                            u = str(app.get("unit"))
+                            qty = app.get("qty")
+                            approx_g = float(app.get("approx_g") or val_g)
+                            # Render original units and keep grams as approx
+                            if u == "ml":
+                                try:
+                                    q = float(qty)
+                                    q_show = f"{int(q)}" if abs(q - int(q)) < 1e-6 else f"{q:g}"
+                                except Exception:
+                                    q_show = str(qty)
+                                segs.append(f"{q_show} мл (≈{approx_g:.0f} г)")
+                                is_liquid = True
+                            elif u == "l":
+                                try:
+                                    q = float(qty)
+                                    q_show = f"{q:g}"
+                                except Exception:
+                                    q_show = str(qty)
+                                segs.append(f"{q_show} л (≈{approx_g:.0f} г)")
+                                is_liquid = True
+                            elif u == "шт":
+                                try:
+                                    q = float(qty)
+                                    q_show = f"{int(q)}" if abs(q - int(q)) < 1e-6 else f"{q:g}"
+                                except Exception:
+                                    q_show = str(qty)
+                                segs.append(f"{q_show} шт (≈{approx_g:.0f} г)")
+                        else:
+                            unit = "г"
+                            show_val = f"{val_g:g}"
+                            # Fallback: convert to ml if flagged liquid
+                            if is_liquid:
+                                d = None
+                                key = name.lower().strip()
+                                for k in density.keys():
+                                    if key.startswith(k):
+                                        d = density[k]
+                                        break
+                                if not d:
+                                    d = 1.0
+                                ml = val_g / d
+                                unit = "мл"
+                                show_val = f"{ml:.0f}"
+                            segs.append(f"{show_val} {unit}")
                     except Exception:
                         segs.append(str(w))
                 if kc is not None:

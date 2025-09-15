@@ -823,9 +823,21 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
     }
     pcs = {  # rough grams per piece
         "яйцо": 50,
+        "яйц": 50,  # match 'яйца', 'яйца вареные' etc.
         "ломтик хлеба": 30,
         "сырок": 40,
         "яблоко": 180,
+        "банан": 120,
+        "помидор черри": 15,
+        "томат черри": 15,
+        "черри": 15,
+        "помидор": 120,
+        "томат": 120,
+        "огурец": 120,
+        "лук": 100,
+        "зубчик чеснока": 5,
+        "булочка": 50,
+        "батон": 30,
     }
 
     def _clone_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -976,6 +988,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "говядину": "говядина",
             "свинину": "свинина",
             "индейку": "индейка",
+            "утку": "утка",
             "пиццу": "пицца",
             "морковку": "морковь",
             "капусту": "капуста",
@@ -984,10 +997,9 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "колбасу": "колбаса",
             "гречку": "гречка",
             "кашу": "каша",
+            "манку": "манка",
             "рыбку": "рыба",
         }
-        if s_l in mapping:
-            return mapping[s_l]
         # generic -у/-ю -> -а/-я
         if s_l.endswith("у") and len(s_l) >= 3:
             s_l = s_l[:-1] + "а"
@@ -1076,7 +1088,8 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                 if p < 0:
                     factor_pre = 1.0 + (p / 100.0)
                 else:
-                    factor_pre = (1.0 - (p / 100.0)) if dec else (1.0 + (p / 100.0) if (inc or p > 0) else None)
+                    is_dec = re.search(r"\b(уменьш|сократ|меньш)\w*", text_l) is not None
+                    factor_pre = 1.0 - (p / 100.0) if is_dec else 1.0 + (p / 100.0)
         if factor_pre is not None:
             try:
                 factor_pre = max(0.25, min(3.0, float(factor_pre)))
@@ -1228,12 +1241,54 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                         new_qty_g = float((old_item or {}).get("weight_g") or 100.0)
                     except Exception:
                         new_qty_g = 100.0
+                # caps
                 new_qty_g = max(1.0, min(1000.0, new_qty_g))
                 cal, p, f, c = _estimate_from_name(new_name, new_qty_g)
-                items.append({"name": new_name, "weight_g": new_qty_g, "calories": cal, "protein_g": p, "fat_g": f, "carbs_g": c})
+                _item_out = {
+                    "name": new_name,
+                    "weight_g": new_qty_g,
+                    "calories": cal,
+                    "protein_g": p,
+                    "fat_g": f,
+                    "carbs_g": c,
+                }
+                # Preserve original unit for UI if user specified qty+unit
+                try:
+                    if qty is not None and unit is not None:
+                        u = (str(unit) or "").lower()
+                        app = None
+                        if u in {"мл", "ml"}:
+                            d = 1.0
+                            key = (new_name or "").lower()
+                            for k, val in densities.items():
+                                if k in key:
+                                    d = val
+                                    break
+                            app = {"unit": "ml", "qty": float(qty), "density": float(d), "approx_g": float(new_qty_g)}
+                            _item_out["is_liquid"] = True
+                        elif u in {"л", "l"}:
+                            app = {"unit": "l", "qty": float(qty), "density": 1.0, "approx_g": float(new_qty_g)}
+                            _item_out["is_liquid"] = True
+                        elif u in {"шт", "pc", "pcs"}:
+                            app = {"unit": "шт", "qty": float(qty), "approx_g": float(new_qty_g)}
+                        if app:
+                            _item_out["appearance"] = app
+                except Exception:
+                    pass
+                try:
+                    # If converter told us it's liquid — mark it
+                    if qty is not None and '_is_liq' in locals() and bool(_is_liq):
+                        _item_out["is_liquid"] = True
+                except Exception:
+                    pass
+                items.append(_item_out)
                 out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
+                try:
+                    logger.info("FoodAI:edit | replace | ok | old='{}' new='{}' | new_qty_g={} | delta_cal={}", old_name, new_name, new_qty_g, int(out_cal - base_cal))
+                except Exception:
+                    pass
                 return {
-                    "title": title or "Блюдо",
+                    "title": (title or "Блюдо"),
                     "calories": int(out_cal),
                     "protein_g": float(out_p),
                     "fat_g": float(out_f),
@@ -1252,18 +1307,24 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                 }
             if action == "change_qty":
                 name = _normalize_name_ru(str(nlu.get("target") or "").strip())
-                qty = float(nlu.get("qty_g") or 0)
-                unit = str(nlu.get("unit") or "g")
+                qty = nlu.get("qty_g")
+                unit = nlu.get("unit")
                 items = _clone_items(items_in)
                 idxs = _find_indices(items, name)
                 if len(idxs) != 1:
                     reason = "not_found" if len(idxs) == 0 else "ambiguous"
                     return {"error": reason, "meta": {"action": action, "reason": reason}}
                 idx = idxs[0]
-                new_qty_g, _ = _qty_to_grams(name, qty, unit)
+                new_qty_g, _ = _qty_to_grams(name, float(qty), unit)
                 new_qty_g = max(1.0, min(1000.0, new_qty_g))
                 cal, p, f, c = _estimate_from_name(name, new_qty_g)
-                items[idx].update({"weight_g": new_qty_g, "calories": cal, "protein_g": p, "fat_g": f, "carbs_g": c})
+                items[idx].update({
+                    "weight_g": new_qty_g,
+                    "calories": cal,
+                    "protein_g": p,
+                    "fat_g": f,
+                    "carbs_g": c,
+                })
                 out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
                 return {
                     "title": title or "Блюдо",
@@ -1305,7 +1366,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                         # 2) percent pattern like +30%, -30%, 'на 30%'
                         mp = re.search(r"([+\-−–]?\d{1,3})\s*%", text_l)
                         if mp:
-                            p = float(mp.group(1).replace("−", "-").replace("–", "-") or "0")
+                            p = float((mp.group(1) or "0").replace("−", "-").replace("–", "-"))
                             if p < 0:
                                 factor = 1.0 + (p / 100.0)
                             else:
@@ -1355,6 +1416,10 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                         continue
                 out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
                 wg_out = round(out_w, 1)
+                try:
+                    logger.info("FoodAI:scale | path=nlu | instr='{}' | factor={} | out_w={}", instr_raw, factor, wg_out)
+                except Exception:
+                    pass
                 return {
                     "title": title or "Блюдо",
                     "calories": int(out_cal if out_cal > 0 else int(round(base_cal * factor))),
@@ -1412,6 +1477,24 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "майонез": {"cal": 680, "p": 1.0, "f": 75.0, "c": 3.0},
             "сметана": {"cal": 206, "p": 2.8, "f": 20.0, "c": 3.2},
             "соус": {"cal": 150, "p": 1.0, "f": 5.0, "c": 24.0},
+            # eggs (boiled, average): ~155 kcal, 13P/11F/1.1C per 100 g
+            "яйц": {"cal": 155, "p": 13.0, "f": 11.0, "c": 1.1},
+            # common foods (approximate, per 100 g)
+            "банан": {"cal": 89, "p": 1.1, "f": 0.3, "c": 22.8},
+            "помидор": {"cal": 18, "p": 0.9, "f": 0.2, "c": 3.9},
+            "томат": {"cal": 18, "p": 0.9, "f": 0.2, "c": 3.9},
+            "огур": {"cal": 16, "p": 0.8, "f": 0.1, "c": 3.6},
+            "лук": {"cal": 40, "p": 1.1, "f": 0.1, "c": 9.3},
+            "чеснок": {"cal": 149, "p": 6.4, "f": 0.5, "c": 33.0},
+            "картоф": {"cal": 87, "p": 1.9, "f": 0.1, "c": 20.1},
+            "морков": {"cal": 41, "p": 0.9, "f": 0.2, "c": 10.0},
+            "яблок": {"cal": 52, "p": 0.3, "f": 0.2, "c": 14.0},
+            "хлеб": {"cal": 265, "p": 9.0, "f": 3.2, "c": 49.0},
+            # cooked cereals/pasta typical values
+            "рис": {"cal": 130, "p": 2.7, "f": 0.3, "c": 28.0},
+            "греч": {"cal": 110, "p": 3.6, "f": 1.7, "c": 20.0},
+            "макарон": {"cal": 158, "p": 5.8, "f": 0.9, "c": 30.0},
+            "паста": {"cal": 158, "p": 5.8, "f": 0.9, "c": 30.0},
         }
         n = (name or "").lower()
         hit = None
@@ -1490,31 +1573,56 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             except Exception:
                 pass
             return {"error": "not_food", "meta": {"action": action, "reason": "not_food"}}
-        # remove old
-        try:
-            old_item = items.pop(idx)
-        except Exception:
-            old_item = None
         # decide new qty
         new_qty_g: float
         if qty is not None:
-            new_qty_g, _ = _qty_to_grams(new_name, qty, unit)
+            new_qty_g, _is_liq = _qty_to_grams(new_name, qty, unit)
         else:
             try:
-                new_qty_g = float((old_item or {}).get("weight_g") or 100.0)
+                new_qty_g = float((items[idx] or {}).get("weight_g") or 100.0)
             except Exception:
                 new_qty_g = 100.0
         # caps
         new_qty_g = max(1.0, min(1000.0, new_qty_g))
         cal, p, f, c = _estimate_from_name(new_name, new_qty_g)
-        items.append({
+        _item_out = {
             "name": new_name,
             "weight_g": new_qty_g,
             "calories": cal,
             "protein_g": p,
             "fat_g": f,
             "carbs_g": c,
-        })
+        }
+        # Preserve original unit for UI if user specified qty+unit
+        try:
+            if qty is not None and unit is not None:
+                u = (str(unit) or "").lower()
+                app = None
+                if u in {"мл", "ml"}:
+                    d = 1.0
+                    key = (new_name or "").lower()
+                    for k, val in densities.items():
+                        if k in key:
+                            d = val
+                            break
+                    app = {"unit": "ml", "qty": float(qty), "density": float(d), "approx_g": float(new_qty_g)}
+                    _item_out["is_liquid"] = True
+                elif u in {"л", "l"}:
+                    app = {"unit": "l", "qty": float(qty), "density": 1.0, "approx_g": float(new_qty_g)}
+                    _item_out["is_liquid"] = True
+                elif u in {"шт", "pc", "pcs"}:
+                    app = {"unit": "шт", "qty": float(qty), "approx_g": float(new_qty_g)}
+                if app:
+                    _item_out["appearance"] = app
+        except Exception:
+            pass
+        try:
+            # If converter told us it's liquid — mark it
+            if qty is not None and '_is_liq' in locals() and bool(_is_liq):
+                _item_out["is_liquid"] = True
+        except Exception:
+            pass
+        items[idx] = _item_out
         out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
         try:
             logger.info("FoodAI:edit | replace | ok | old='{}' new='{}' | new_qty_g={} | delta_cal={}", old_name, new_name, new_qty_g, int(out_cal - base_cal))
@@ -1562,16 +1670,47 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         new_qty_g, _ = _qty_to_grams(name, qty, unit)
         new_qty_g = max(1.0, min(1000.0, new_qty_g))
         cal, p, f, c = _estimate_from_name(name, new_qty_g)
-        items[idx].update({
+        _item_out = {
+            "name": name,
             "weight_g": new_qty_g,
             "calories": cal,
             "protein_g": p,
             "fat_g": f,
             "carbs_g": c,
-        })
+        }
+        # Preserve original unit for UI if user specified qty+unit
+        try:
+            if unit is not None:
+                u = (str(unit) or "").lower()
+                app = None
+                if u in {"мл", "ml"}:
+                    d = 1.0
+                    key = (name or "").lower()
+                    for k, val in densities.items():
+                        if k in key:
+                            d = val
+                            break
+                    app = {"unit": "ml", "qty": float(qty), "density": float(d), "approx_g": float(new_qty_g)}
+                    _item_out["is_liquid"] = True
+                elif u in {"л", "l"}:
+                    app = {"unit": "l", "qty": float(qty), "density": 1.0, "approx_g": float(new_qty_g)}
+                    _item_out["is_liquid"] = True
+                elif u in {"шт", "pc", "pcs"}:
+                    app = {"unit": "шт", "qty": float(qty), "approx_g": float(new_qty_g)}
+                if app:
+                    _item_out["appearance"] = app
+        except Exception:
+            pass
+        try:
+            # If converter told us it's liquid — mark it
+            if unit is not None and '_is_liq' in locals() and bool(_is_liq):
+                _item_out["is_liquid"] = True
+        except Exception:
+            pass
+        items[idx] = _item_out
         out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
         return {
-            "title": (title or "Блюдо"),
+            "title": title or "Блюдо",
             "calories": int(out_cal),
             "protein_g": float(out_p),
             "fat_g": float(out_f),
@@ -1615,14 +1754,44 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         qty_g = max(1.0, min(1000.0, qty_g))
         add_cal, add_p, add_f, add_c = _estimate_from_name(add_name, qty_g)
         items = _clone_items(items_in)
-        items.append({
+        _item_out = {
             "name": add_name,
             "weight_g": qty_g,
             "calories": add_cal,
             "protein_g": add_p,
             "fat_g": add_f,
             "carbs_g": add_c,
-        })
+        }
+        # Preserve original unit for UI if user specified qty+unit
+        try:
+            if unit is not None:
+                u = (str(unit) or "").lower()
+                app = None
+                if u in {"мл", "ml"}:
+                    d = 1.0
+                    key = (add_name or "").lower()
+                    for k, val in densities.items():
+                        if k in key:
+                            d = val
+                            break
+                    app = {"unit": "ml", "qty": float(add_qty), "density": float(d), "approx_g": float(qty_g)}
+                    _item_out["is_liquid"] = True
+                elif u in {"л", "l"}:
+                    app = {"unit": "l", "qty": float(add_qty), "density": 1.0, "approx_g": float(qty_g)}
+                    _item_out["is_liquid"] = True
+                elif u in {"шт", "pc", "pcs"}:
+                    app = {"unit": "шт", "qty": float(add_qty), "approx_g": float(qty_g)}
+                if app:
+                    _item_out["appearance"] = app
+        except Exception:
+            pass
+        try:
+            # If converter told us it's liquid — mark it
+            if unit is not None and '_is_liq' in locals() and bool(_is_liq):
+                _item_out["is_liquid"] = True
+        except Exception:
+            pass
+        items.append(_item_out)
         out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
         # Prefer adding estimated delta to base calories to avoid undercount when base items were incomplete
         new_cal = int(max(out_cal, base_cal + add_cal))
@@ -1728,7 +1897,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         wg_out = round(max(out_w, wg_scaled), 1) if (wg_base or out_w) else 0.0
         return {
             "title": title or "Блюдо",
-            "calories": int(out_cal if out_cal > 0 else int(base_cal * factor)),
+            "calories": int(out_cal if out_cal > 0 else int(round(base_cal * factor))),
             "protein_g": float(out_p if out_p > 0 else round(base_p * factor, 1)),
             "fat_g": float(out_f if out_f > 0 else round(base_f * factor, 1)),
             "carbs_g": float(out_c if out_c > 0 else round(base_c * factor, 1)),
@@ -1742,7 +1911,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "analysis_text": None,
             "appearance": {},
             "not_food": False,
-            "meta": {"action": action, "delta_cal": int((out_cal if out_cal > 0 else int(base_cal * factor)) - base_cal)},
+            "meta": {"action": action, "delta_cal": int((out_cal if out_cal > 0 else int(round(base_cal * factor))) - base_cal)},
         }
 
     # scale (times or percent) — fallback when NLU didn't trigger
