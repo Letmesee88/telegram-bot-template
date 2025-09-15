@@ -959,6 +959,135 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
 
     # [removed] Title appending logic is removed per product decision.
 
+    # --- Pre-parse: deterministic scale (times/percent) ---
+    try:
+        text_l = (instr_raw or "").lower()
+        factor_pre: float | None = None
+        dec = re.search(r"\b(уменьш|сократ|меньш|сниз|пониз|убав)\w*", text_l) is not None
+        inc = re.search(r"\bувелич\w*", text_l) is not None
+
+        # 1) 'в K раз(а)'
+        mt = re.search(r"\bв\s*(\d+(?:[\.,]\d+)?)\s*раз[а]?\b", text_l)
+        if mt and factor_pre is None:
+            k = float(mt.group(1).replace(",", "."))
+            factor_pre = (1.0 / k) if dec else (k if inc or not dec else None)
+
+        # 1.1) 'в полтора раза'
+        if factor_pre is None:
+            if re.search(r"\bв\s+полтора\s+раз[а]?\b", text_l):
+                k = 1.5
+                factor_pre = (1.0 / k) if dec else k
+
+        # 1.2) 'x2' / 'х2' без 'раза'
+        if factor_pre is None:
+            mx = re.search(r"(?:\bx|\bх)\s*(\d+(?:[\.,]\d+)?)\b", text_l)
+            if mx:
+                k = float(mx.group(1).replace(",", "."))
+                factor_pre = (1.0 / k) if dec else (k if inc or not dec else None)
+
+        # 1.3) слова: 'вдвое/втрое/вчетверо/впятеро/вшестеро/вдесятеро'
+        if factor_pre is None:
+            words_map = {
+                "вдвое": 2.0,
+                "втрое": 3.0,
+                "вчетверо": 4.0,
+                "впятеро": 5.0,
+                "вшестеро": 6.0,
+                "вдесятеро": 10.0,
+            }
+            for w, k in words_map.items():
+                if re.search(rf"\b{w}\b", text_l):
+                    factor_pre = (1.0 / k) if dec else (k if inc or not dec else None)
+                    break
+
+        # 1.4) 'наполовину' и 'на <долю>'
+        if factor_pre is None:
+            if re.search(r"\bнаполовину\b", text_l):
+                # по умолчанию трактуем как 0.5; при явном увеличении — 1.5
+                factor_pre = 0.5 if (dec or not inc) else 1.5
+        if factor_pre is None:
+            mf = re.search(r"\bна\s+(половину|треть|четверть|пятую|десятую)\b", text_l)
+            if mf:
+                frac_map = {
+                    "половину": 1/2,
+                    "треть": 1/3,
+                    "четверть": 1/4,
+                    "пятую": 1/5,
+                    "десятую": 1/10,
+                }
+                f = float(frac_map.get(mf.group(1), 0.0))
+                if f > 0:
+                    if dec:
+                        factor_pre = 1.0 - f
+                    elif inc:
+                        factor_pre = 1.0 + f
+                    else:
+                        factor_pre = None  # без явного направления не гадаем
+
+        # 2) Проценты: '+30%', '-30%', юникод '−'/'–', и 'на 30%'
+        if factor_pre is None:
+            mp = re.search(r"([+\-−–]?\d{1,3})\s*%", text_l)
+            if mp:
+                p = float((mp.group(1) or "0").replace("−", "-").replace("–", "-"))
+                if p < 0:
+                    factor_pre = 1.0 + (p / 100.0)
+                else:
+                    factor_pre = (1.0 - (p / 100.0)) if dec else (1.0 + (p / 100.0) if (inc or p > 0) else None)
+        if factor_pre is not None:
+            try:
+                factor_pre = max(0.25, min(3.0, float(factor_pre)))
+            except Exception:
+                factor_pre = 1.0
+            items = _clone_items(items_in)
+            for it in items:
+                try:
+                    old_w = float(it.get("weight_g") or 0)
+                    if it.get("weight_g") is not None:
+                        it["weight_g"] = round(old_w * factor_pre, 1)
+                    # scale macros if present; otherwise estimate anew
+                    has_macros = (
+                        it.get("calories") is not None and it.get("protein_g") is not None
+                        and it.get("fat_g") is not None and it.get("carbs_g") is not None
+                    )
+                    if has_macros:
+                        it["calories"] = int(round(float(it.get("calories") or 0) * factor_pre))
+                        it["protein_g"] = round(float(it.get("protein_g") or 0) * factor_pre, 1)
+                        it["fat_g"] = round(float(it.get("fat_g") or 0) * factor_pre, 1)
+                        it["carbs_g"] = round(float(it.get("carbs_g") or 0) * factor_pre, 1)
+                    else:
+                        n = str(it.get("name") or "")
+                        w = float(it.get("weight_g") or 0)
+                        cal, p, f, c = _estimate_from_name(n, w)
+                        it.update({"calories": cal, "protein_g": p, "fat_g": f, "carbs_g": c})
+                except Exception:
+                    continue
+            out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
+            wg_out = round(out_w, 1)
+            try:
+                logger.info("FoodAI:scale | path=pre | instr='{}' | factor_pre={}", instr_raw, factor_pre)
+            except Exception:
+                pass
+            return {
+                "title": title or "Блюдо",
+                "calories": int(out_cal if out_cal > 0 else int(round(base_cal * factor_pre))),
+                "protein_g": float(out_p if out_p > 0 else round(base_p * factor_pre, 1)),
+                "fat_g": float(out_f if out_f > 0 else round(base_f * factor_pre, 1)),
+                "carbs_g": float(out_c if out_c > 0 else round(base_c * factor_pre, 1)),
+                "weight_g": float(wg_out),
+                "confidence": float((base or {}).get("confidence") or 0.8),
+                "items": items,
+                "references": {"sources": [
+                    "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                    "USDA FoodData Central",
+                ]},
+                "analysis_text": None,
+                "appearance": {},
+                "not_food": False,
+                "meta": {"action": "scale", "delta_cal": int((out_cal if out_cal > 0 else int(round(base_cal * factor_pre))) - base_cal)},
+            }
+    except Exception:
+        pass
+
     # --- LLM NLU first (optional) ---
     if getattr(settings, "FOODAI_EDIT_NLU", False) and settings.OPENAI_API_KEY and interpret_edit is not None:
         try:
@@ -1112,27 +1241,79 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                 }
             if action == "scale":
                 factor = float(nlu.get("factor") or 1.0)
+                # Try to override factor based on explicit phrasing
+                try:
+                    text_l = (instr_raw or "").lower()
+                    # 1) 'в K раз(а)' pattern
+                    mt = re.search(r"(?:\bв|\bx|\bх)\s*(\d+(?:[\.,]\d+)?)\s*раз[а]?\b", text_l)
+                    if mt:
+                        k = float(mt.group(1).replace(",", "."))
+                        if re.search(r"\b(уменьш|сократ|меньш)\w*", text_l):
+                            factor = (1.0 / k) if k > 0 else 1.0
+                        elif re.search(r"\bувелич\w*", text_l):
+                            factor = k
+                        # else keep LLM factor
+                        try:
+                            logger.info("FoodAI:scale | path=nlu | override=times | k={} | factor_final={}", k, factor)
+                        except Exception:
+                            pass
+                    else:
+                        # 2) percent pattern like +30%, -30%, 'на 30%'
+                        mp = re.search(r"([+\-−–]?\d{1,3})\s*%", text_l)
+                        if mp:
+                            p = float(mp.group(1).replace("−", "-").replace("–", "-") or "0")
+                            if p < 0:
+                                factor = 1.0 + (p / 100.0)
+                            else:
+                                is_dec = re.search(r"\b(уменьш|сократ|меньш)\w*", text_l) is not None
+                                factor = 1.0 - (p / 100.0) if is_dec else 1.0 + (p / 100.0)
+                            try:
+                                logger.info("FoodAI:scale | path=nlu | override=percent | p={} | factor_final={}", p, factor)
+                            except Exception:
+                                pass
+                    # 3) If user explicitly asked to decrease and factor>1 -> interpret as divide (safety)
+                    if re.search(r"\b(уменьш|сократ|меньш)\w*", text_l) and factor > 1.0:
+                        factor = 1.0 / factor
+                except Exception:
+                    pass
+                # Clamp to reasonable bounds
+                try:
+                    factor = max(0.25, min(3.0, float(factor)))
+                except Exception:
+                    factor = 1.0
+                # Debug log
+                try:
+                    logger.info("FoodAI:scale | path=nlu | instr='{}' | factor_final={}", instr_raw, factor)
+                except Exception:
+                    pass
                 items = _clone_items(items_in)
                 for it in items:
                     try:
+                        old_w = float(it.get("weight_g") or 0)
                         if it.get("weight_g") is not None:
-                            it["weight_g"] = round(float(it.get("weight_g") or 0) * factor, 1)
-                        n = str(it.get("name") or "")
-                        w = float(it.get("weight_g") or 0)
-                        cal, p, f, c = _estimate_from_name(n, w)
-                        it.update({"calories": cal, "protein_g": p, "fat_g": f, "carbs_g": c})
+                            it["weight_g"] = round(old_w * factor, 1)
+                        # If item already has macros — scale them directly; otherwise estimate
+                        has_macros = (
+                            it.get("calories") is not None and it.get("protein_g") is not None
+                            and it.get("fat_g") is not None and it.get("carbs_g") is not None
+                        )
+                        if has_macros:
+                            it["calories"] = int(round(float(it.get("calories") or 0) * factor))
+                            it["protein_g"] = round(float(it.get("protein_g") or 0) * factor, 1)
+                            it["fat_g"] = round(float(it.get("fat_g") or 0) * factor, 1)
+                            it["carbs_g"] = round(float(it.get("carbs_g") or 0) * factor, 1)
+                        else:
+                            n = str(it.get("name") or "")
+                            w = float(it.get("weight_g") or 0)
+                            cal, p, f, c = _estimate_from_name(n, w)
+                            it.update({"calories": cal, "protein_g": p, "fat_g": f, "carbs_g": c})
                     except Exception:
                         continue
                 out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
-                try:
-                    wg_base = float(weight_g or 0)
-                except Exception:
-                    wg_base = 0.0
-                wg_scaled = round((wg_base if wg_base > 0 else out_w) * factor, 1)
-                wg_out = round(max(out_w, wg_scaled), 1) if (wg_base or out_w) else 0.0
+                wg_out = round(out_w, 1)
                 return {
                     "title": title or "Блюдо",
-                    "calories": int(out_cal if out_cal > 0 else int(base_cal * factor)),
+                    "calories": int(out_cal if out_cal > 0 else int(round(base_cal * factor))),
                     "protein_g": float(out_p if out_p > 0 else round(base_p * factor, 1)),
                     "fat_g": float(out_f if out_f > 0 else round(base_f * factor, 1)),
                     "carbs_g": float(out_c if out_c > 0 else round(base_c * factor, 1)),
@@ -1146,7 +1327,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                     "analysis_text": None,
                     "appearance": {},
                     "not_food": False,
-                    "meta": {"action": action, "delta_cal": int((out_cal if out_cal > 0 else int(base_cal * factor)) - base_cal)},
+                    "meta": {"action": action, "delta_cal": int((out_cal if out_cal > 0 else int(round(base_cal * factor))) - base_cal)},
                 }
 
     def _qty_to_grams(name: str, qty: float, unit: str | None) -> tuple[float, bool]:
@@ -1469,6 +1650,76 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "appearance": {},
             "not_food": False,
             "meta": {"action": action, "delta_cal": int((out_cal if out_cal > 0 else int(base_cal * factor)) - base_cal)},
+        }
+
+    # scale (times or percent) — fallback when NLU didn't trigger
+    m = re.search(r"\b(увеличить|увеличь|уменьшить|уменьши|сократить|сократи)\s*(?:порцию\s*)?(?:в|x|х)\s*(\d+(?:[\.,]\d+)?)\s*раз[а]?\b", instr, flags=re.IGNORECASE)
+    factor = None
+    if m:
+        verb = (m.group(1) or "").lower()
+        n = float((m.group(2) or "1").replace(",", "."))
+        factor = n if ("увелич" in verb) else (1.0 / n if n > 0 else 1.0)
+    else:
+        mp = re.search(r"\b(увеличить|увеличь|уменьшить|уменьши|сократить|сократи|больше|меньше)\b[^%\d]*([+\-−–]?\d{1,3})\s*%", instr, flags=re.IGNORECASE)
+        if mp:
+            verb = (mp.group(1) or "").lower()
+            p = float((mp.group(2) or "0").replace("−", "-").replace("–", "-"))
+            if p < 0:
+                # explicit negative percentage like -30%
+                factor = 1.0 + (p / 100.0)
+            else:
+                is_dec = any(k in verb for k in ["уменьш", "сократ", "меньш"])  # decrease
+                factor = 1.0 - (p / 100.0) if is_dec else 1.0 + (p / 100.0)
+    if factor is not None:
+        try:
+            factor = max(0.25, min(3.0, float(factor)))
+        except Exception:
+            factor = 1.0
+        # Debug log
+        try:
+            logger.info("FoodAI:scale | path=regex | instr='{}' | factor_final={}", instr_raw, factor)
+        except Exception:
+            pass
+        items = _clone_items(items_in)
+        for it in items:
+            try:
+                old_w = float(it.get("weight_g") or 0)
+                if it.get("weight_g") is not None:
+                    it["weight_g"] = round(old_w * factor, 1)
+                has_macros = (
+                    it.get("calories") is not None and it.get("protein_g") is not None
+                    and it.get("fat_g") is not None and it.get("carbs_g") is not None
+                )
+                if has_macros:
+                    it["calories"] = int(round(float(it.get("calories") or 0) * factor))
+                    it["protein_g"] = round(float(it.get("protein_g") or 0) * factor, 1)
+                    it["fat_g"] = round(float(it.get("fat_g") or 0) * factor, 1)
+                    it["carbs_g"] = round(float(it.get("carbs_g") or 0) * factor, 1)
+                else:
+                    n = str(it.get("name") or "")
+                    w = float(it.get("weight_g") or 0)
+                    cal, p, f, c = _estimate_from_name(n, w)
+                    it.update({"calories": cal, "protein_g": p, "fat_g": f, "carbs_g": c})
+            except Exception:
+                continue
+        out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
+        return {
+            "title": title or "Блюдо",
+            "calories": int(out_cal if out_cal > 0 else int(round(base_cal * factor))),
+            "protein_g": float(out_p if out_p > 0 else round(base_p * factor, 1)),
+            "fat_g": float(out_f if out_f > 0 else round(base_f * factor, 1)),
+            "carbs_g": float(out_c if out_c > 0 else round(base_c * factor, 1)),
+            "weight_g": float(round(out_w, 1)),
+            "confidence": float((base or {}).get("confidence") or 0.8),
+            "items": items,
+            "references": {"sources": [
+                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                "USDA FoodData Central",
+            ]},
+            "analysis_text": None,
+            "appearance": {},
+            "not_food": False,
+            "meta": {"action": "scale", "delta_cal": int((out_cal if out_cal > 0 else int(round(base_cal * factor))) - base_cal)},
         }
 
     # Fallback: unsupported
