@@ -25,6 +25,7 @@ from bot.services.plan import (
     _infer_activity_level as infer_activity_level,
     SPEED_PERCENT_BY_WEIGHT,
 )
+from bot.services.llm_activity import classify_activity
 from bot.handlers import start as start_module
 
 router = Router()
@@ -89,8 +90,43 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
         await state.clear()
         return
 
-    # Определим уровень активности, сохраним в data_json
-    level: ActivityLevel = payload.activity_level or infer_activity_level(payload.activity_text)
+    # Определим уровень активности через LLM (с таймаутом/фолбэком) и применим к расчёту плана
+    level: ActivityLevel
+    llm_obj = None
+    llm_used = False
+    try:
+        llm_obj = await classify_activity(payload.activity_text, lang_hint=getattr(message.from_user, 'language_code', None))
+        if llm_obj and isinstance(getattr(llm_obj, 'level', None), str):
+            lvl = (llm_obj.level or '').strip().lower()
+            conf = float(getattr(llm_obj, 'confidence', 0.0) or 0.0)
+            if lvl in {"sedentary", "light", "moderate", "active", "athlete"} and conf >= 0.5:
+                # базовый мэппинг
+                level = ActivityLevel(lvl)
+                # консервативный даунгрейд athlete без явной высокой нагрузки
+                if level == ActivityLevel.athlete:
+                    try:
+                        wpw = int((getattr(llm_obj, 'features', {}) or {}).get('workouts_per_week') or 0)
+                    except Exception:
+                        wpw = 0
+                    if wpw < 6:
+                        level = ActivityLevel.active
+                llm_used = True
+            else:
+                level = infer_activity_level(payload.activity_text)
+        else:
+            level = infer_activity_level(payload.activity_text)
+    except Exception as e:
+        logger.warning("onboarding.activity.llm_failed | user_id={} | err={}", user_id, e)
+        level = infer_activity_level(payload.activity_text)
+
+    # гарантируем, что расчёт плана использует определённый уровень
+    try:
+        payload = payload.model_copy(update={"activity_level": level})
+    except Exception:
+        try:
+            payload.activity_level = level  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
     plan = calculate_daily_plan(payload)
 
@@ -103,6 +139,17 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
 
             data_json = payload.model_dump(mode="json")
             data_json["activity_level"] = level.value
+            if llm_used and llm_obj is not None:
+                try:
+                    data_json["activity_llm"] = {
+                        "level": getattr(llm_obj, 'level', None),
+                        "confidence": getattr(llm_obj, 'confidence', None),
+                        "features": getattr(llm_obj, 'features', {}) or {},
+                        "rationale": getattr(llm_obj, 'rationale', None),
+                        "version": getattr(llm_obj, 'version', 'v1'),
+                    }
+                except Exception:
+                    pass
 
             if existing:
                 existing.data = data_json

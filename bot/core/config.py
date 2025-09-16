@@ -111,6 +111,10 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     # auto|always|off — auto: validate and rewrite only if needed; always: always rewrite; off: never rewrite
     FOODAI_ANALYSIS_REWRITE: str = "auto"
     FOODAI_ANALYSIS_REWRITE_TIMEOUT: int = 8
+    # Activity LLM classification
+    ACTIVITY_LLM_ENABLED: bool = True
+    ACTIVITY_LLM_MODEL: str | None = "gpt-4o-mini"
+    ACTIVITY_LLM_TIMEOUT_SEC: float = 2.5
 
 
 settings = Settings()
