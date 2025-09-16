@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from aiogram import F, Router
+import re
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -25,7 +26,7 @@ from bot.services.plan import (
     _infer_activity_level as infer_activity_level,
     SPEED_PERCENT_BY_WEIGHT,
 )
-from bot.services.llm_activity import classify_activity
+from bot.services.llm_activity import classify_activity_cached
 from bot.handlers import start as start_module
 
 router = Router()
@@ -95,20 +96,31 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
     llm_obj = None
     llm_used = False
     try:
-        llm_obj = await classify_activity(payload.activity_text, lang_hint=getattr(message.from_user, 'language_code', None))
+        llm_obj = await classify_activity_cached(user_id, payload.activity_text, lang_hint=getattr(message.from_user, 'language_code', None))
         if llm_obj and isinstance(getattr(llm_obj, 'level', None), str):
             lvl = (llm_obj.level or '').strip().lower()
             conf = float(getattr(llm_obj, 'confidence', 0.0) or 0.0)
-            if lvl in {"sedentary", "light", "moderate", "active", "athlete"} and conf >= 0.5:
+            if lvl in {"sedentary", "light", "moderate", "active", "athlete"} and conf >= 0.6:
                 # базовый мэппинг
                 level = ActivityLevel(lvl)
                 # консервативный даунгрейд athlete без явной высокой нагрузки
                 if level == ActivityLevel.athlete:
+                    features = (getattr(llm_obj, 'features', {}) or {})
+                    wpw_raw = features.get('workouts_per_week')
+                    wpw_num = None
                     try:
-                        wpw = int((getattr(llm_obj, 'features', {}) or {}).get('workouts_per_week') or 0)
+                        if isinstance(wpw_raw, (int, float)):
+                            wpw_num = int(wpw_raw)
+                        elif isinstance(wpw_raw, str):
+                            s = wpw_raw.strip()
+                            # extract first integer (supports "5–6", "5-6", "6+", "6 раз")
+                            m = re.search(r"(\d+)", s)
+                            if m:
+                                wpw_num = int(m.group(1))
                     except Exception:
-                        wpw = 0
-                    if wpw < 6:
+                        wpw_num = None
+                    # Даунгрейд только если удалось извлечь число и оно < 6
+                    if wpw_num is not None and wpw_num < 6:
                         level = ActivityLevel.active
                 llm_used = True
             else:

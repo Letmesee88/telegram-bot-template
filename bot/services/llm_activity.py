@@ -6,11 +6,13 @@ import re
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Optional
+import hashlib
 
 import aiohttp
 from loguru import logger
 
 from bot.core.config import settings
+from bot.cache.redis import cached
 
 
 LEVELS = {"sedentary", "light", "moderate", "active", "athlete"}
@@ -106,10 +108,12 @@ async def classify_activity(text: str, *, lang_hint: Optional[str] = None) -> Op
             async with sess.post(url, headers=headers, json=payload) as resp:
                 if resp.status != 200:
                     txt = await resp.text()
+                    txt_hash = hashlib.sha256(txt.encode("utf-8", errors="ignore")).hexdigest() if txt else None
                     logger.warning(
-                        "activity_llm_http_error | status={} | body={}",
+                        "activity_llm_http_error | status={} | body_len={} | body_sha256={}",
                         resp.status,
-                        txt[:300],
+                        len(txt or ""),
+                        txt_hash,
                     )
                     return None
                 data = await resp.json()
@@ -125,7 +129,8 @@ async def classify_activity(text: str, *, lang_hint: Optional[str] = None) -> Op
         content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
         obj = _coerce_json(content)
         if not isinstance(obj, dict):
-            logger.warning("activity_llm_bad_json | content={}...", content[:200])
+            c_hash = hashlib.sha256(content.encode("utf-8", errors="ignore")).hexdigest() if content else None
+            logger.warning("activity_llm_bad_json | content_len={} | content_sha256={}", len(content or ""), c_hash)
             return None
         level = str(obj.get("level") or "").strip().lower()
         confidence = float(obj.get("confidence") or 0.0)
@@ -145,3 +150,15 @@ async def classify_activity(text: str, *, lang_hint: Optional[str] = None) -> Op
     except Exception as e:
         logger.exception("activity_llm_parse_fail | err={}", e)
         return None
+
+
+def _build_activity_cache_key(user_id: int, text: str, lang_hint: Optional[str] = None) -> str:
+    """Redis key builder: (user_id, sha256(text))."""
+    h = hashlib.sha256((text or "").encode("utf-8", errors="ignore")).hexdigest()
+    return f"user={user_id}:t={h}"
+
+
+@cached(ttl=86400, namespace="llm_activity", key_builder=_build_activity_cache_key)
+async def classify_activity_cached(user_id: int, text: str, *, lang_hint: Optional[str] = None) -> Optional[ActivityLLMResult]:
+    """Cached wrapper for classify_activity. Caches both successes and failures for 24h."""
+    return await classify_activity(text, lang_hint=lang_hint)
