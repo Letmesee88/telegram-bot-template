@@ -111,6 +111,22 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     # auto|always|off — auto: validate and rewrite only if needed; always: always rewrite; off: never rewrite
     FOODAI_ANALYSIS_REWRITE: str = "auto"
     FOODAI_ANALYSIS_REWRITE_TIMEOUT: int = 8
+
+    # Adjustment (onboarding final corrections) LLM settings
+    ADJUST_LLM_ENABLED: bool = True
+    ADJUST_LLM_MODEL: str | None = "gpt-4o-mini"
+    ADJUST_LLM_TIMEOUT_SEC: float = 2.5
+    ADJUST_LLM_CONF_MIN: float = 0.6
+
+    # Adjustment explanation rephrasing (hybrid UX)
+    ADJUST_REPHRASE_ENABLED: bool = False
+    # neutral|friendly|clinical — controls tone only; numbers/units must remain EXACTLY the same
+    ADJUST_REPHRASE_TONE: str = "neutral"
+    # Small timeout, we fall back to deterministic text on timeout
+    ADJUST_REPHRASE_TIMEOUT_SEC: float = 1.8
+    # Rephrase only if explanation is long enough to benefit
+    ADJUST_REPHRASE_LENGTH_MIN: int = 220
+
     # Activity LLM classification
     ACTIVITY_LLM_ENABLED: bool = True
     ACTIVITY_LLM_MODEL: str | None = "gpt-4o-mini"

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from aiogram import F, Router
+from aiogram.enums import ChatAction
+
 import re
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -20,13 +23,20 @@ from bot.services.analytics import analytics
 
 from bot.database.database import sessionmaker
 from bot.database.models import OnboardingAnswerModel, UserModel
-from bot.schemas.onboarding import ActivityLevel, Gender, Goal, OnboardingData, Speed
+from bot.schemas.onboarding import ActivityLevel, Gender, Goal, OnboardingData, Speed, DailyPlan
 from bot.services.plan import (
     calculate_daily_plan,
     _infer_activity_level as infer_activity_level,
     SPEED_PERCENT_BY_WEIGHT,
 )
 from bot.services.llm_activity import classify_activity_cached
+from bot.services.adjust import (
+    parse_adjustment_cached,
+    apply_adjustment,
+    parse_adjustment_heuristic,
+    rephrase_explanation_cached,
+)
+from bot.core.config import settings
 from bot.handlers import start as start_module
 
 router = Router()
@@ -178,6 +188,7 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
                 )
                 session.add(record)
             await session.commit()
+            logger.info("adjust.saved | user_id={} | adjustments_count={}", user_id, len(data_json.get("adjustments") or []))
     except Exception as e:
         logger.exception("onboarding.finalize.db_error | user_id={} | error={}", payload.user_id, e)
         await message.answer(_("Не удалось сохранить данные. Попробуй ещё раз или позже: /start"))
@@ -185,7 +196,8 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
 
     # Сформировать финальный текст согласно ТЗ
     lines: list[str] = []
-    lines.append(_("Твой индивидуальный план готов!"))
+    lines.append("<b>" + _("Твой индивидуальный план готов!") + "</b>")
+    lines.append("")
 
     if payload.goal != Goal.maintain:
         # ETA и скорость
@@ -705,6 +717,234 @@ async def cb_final_back(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(OnboardingStates.adjust)
 async def adjust_apply(message: Message, state: FSMContext) -> None:
-    # Имитация корректировок: сообщим и покажем план повторно
-    await message.answer(_("Твой план скорректирован!"))
-    await _finalize_and_show(message, state, message.from_user.id)
+    user_id = message.from_user.id
+    text = (message.text or "").strip()
+    # Immediate UX feedback while we process
+    try:
+        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+    except Exception:
+        pass
+    await message.answer(_("✨ Изучаю ваши пожелания и обновляю план..."))
+    logger.info(
+        "adjust.enter | user_id={} | text_len={} | state=OnboardingStates.adjust",
+        user_id,
+        len(text),
+    )
+
+    # 1) Получаем последнюю запись онбординга
+    try:
+        async with sessionmaker() as session:
+            existing = await session.scalar(
+                select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id)
+            )
+            if not existing:
+                await message.answer(_("Не нашёл данные онбординга. Попробуй начать заново: /start"))
+                return
+
+            data_json = dict(existing.data or {})
+            dp_json = dict(existing.daily_plan or {})
+            logger.info(
+                "adjust.payload_loaded | user_id={} | has_base_plan={} | has_daily_plan={}",
+                user_id,
+                bool(data_json.get("base_plan")),
+                bool(dp_json),
+            )
+
+            # 2) Восстановим объекты для вычислений
+            try:
+                base_plan_dict = data_json.get("base_plan") or dp_json
+                base_plan = DailyPlan.model_validate(base_plan_dict)
+            except Exception:
+                # Фолбэк: соберём base_plan из current
+                base_plan = DailyPlan.model_validate(dp_json)
+                data_json["base_plan"] = base_plan.model_dump(mode="json")
+
+            try:
+                payload = OnboardingData.model_validate(data_json)
+            except Exception as e:
+                logger.warning("adjust.payload_invalid | user_id={} | err={}", user_id, e)
+                await message.answer(_("Данные онбординга повреждены. Попробуй заново: /start"))
+                return
+
+            # 3) Парсинг корректировки через LLM (с кешем)
+            parsed = await parse_adjustment_cached(
+                user_id, text, lang_hint=getattr(message.from_user, 'language_code', None)
+            )
+            if not parsed:
+                # Heuristic fallback for top intents (offline, RU)
+                h = parse_adjustment_heuristic(text)
+                if h:
+                    logger.info("adjust.heuristic_used | user_id={} | intents={} | text_len={}", user_id, h.intents, len(text))
+                    parsed = h
+                else:
+                    await message.answer(
+                        _("Не до конца понял запрос. Сформулируй одной фразой, например: \n• 'уберите углеводы' \n• 'добавь 200 ккал' \n• 'мало двигаюсь — поставь низкую активность'"))
+                    return
+            else:
+                logger.info(
+                    "adjust.parsed | user_id={} | intents={} | activity_override={} | calories={} | macros={} | conf={}",
+                    user_id,
+                    getattr(parsed, 'intents', None),
+                    getattr(parsed, 'activity_override', None),
+                    getattr(parsed, 'calories', None),
+                    getattr(parsed, 'macros', None),
+                    getattr(parsed, 'confidence', None),
+                )
+
+            # 4) Применим детерминированные правила
+            new_plan, explanation, summary = apply_adjustment(base_plan, payload, parsed)
+            logger.info(
+                "adjust.applied | user_id={} | calories={} | p/f/c={}/{}/{}",
+                user_id,
+                new_plan.calories,
+                new_plan.protein_g,
+                new_plan.fat_g,
+                new_plan.carbs_g,
+            )
+
+            # Сформируем персональную заметку (без чисел), чтобы текст был менее шаблонным
+            personal_line: str | None = None
+            try:
+                note = getattr(parsed, 'rationale', None)
+                intents = list(getattr(parsed, 'intents', []) or [])
+                if isinstance(note, str) and note.strip():
+                    personal_line = _("Учёл запрос: ") + note.strip()
+                else:
+                    intent_map = {
+                        'low_fodmap_candidate': _("уменьшить FODMAP-продукты"),
+                        'lactose_free': _("избегать лактозы"),
+                        'gluten_free': _("без глютена"),
+                        'sugar_free': _("ограничить сахар"),
+                        'keto': _("кето-схему"),
+                        'low_carb': _("снизить углеводы"),
+                        'high_protein': _("акцент на белок"),
+                        'raise_calories': _("увеличить калорийность"),
+                        'lower_calories': _("снизить калорийность"),
+                        'activity_down': _("понизить активность"),
+                        'activity_up': _("повысить активность"),
+                        'reduce_protein': _("снизить белок"),
+                        'reduce_fat': _("снизить жиры"),
+                        'increase_fat': _("повысить жиры"),
+                        'custom_macros': _("кастомные макросы"),
+                    }
+                    phrases = [intent_map[i] for i in intents if i in intent_map]
+                    if phrases:
+                        personal_line = _("Учёл запрос: ") + ", ".join(phrases)
+            except Exception:
+                personal_line = None
+
+            # 4.1) Гибрид (асинхронно): перефразировать объяснение в фоне и, если успеет, отредактировать сообщение
+            should_try_rephrase = (
+                settings.ADJUST_REPHRASE_ENABLED
+                and explanation
+                and len(explanation) >= int(getattr(settings, "ADJUST_REPHRASE_LENGTH_MIN", 220) or 220)
+            )
+
+            # 5) Сохраним
+            adjustments = list(data_json.get("adjustments") or [])
+            adjustments.append({
+                "ts": getattr(message, 'date', None).isoformat() if getattr(message, 'date', None) else None,
+                "text_raw": text,
+                "parsed": {
+                    "intents": getattr(parsed, 'intents', None),
+                    "activity_override": getattr(parsed, 'activity_override', None),
+                    "calories": getattr(parsed, 'calories', None),
+                    "macros": getattr(parsed, 'macros', None),
+                    "dietary_restrictions": getattr(parsed, 'dietary_restrictions', None),
+                    "confidence": getattr(parsed, 'confidence', None),
+                    "version": getattr(parsed, 'version', None),
+                },
+                "applied": summary,
+            })
+            data_json["adjustments"] = adjustments
+
+            existing.data = data_json
+            existing.daily_plan = new_plan.model_dump(mode="json")
+            existing.calories = new_plan.calories
+
+            await session.commit()
+
+    except Exception as e:
+        logger.exception("adjust.apply_failed | user_id={} | err={}", user_id, e)
+        await message.answer(_("Не удалось применить корректировку. Попробуй ещё раз позже."))
+        return
+
+    # 6) Рендер ответа
+    lines: list[str] = []
+    lines.append("<b>" + _("Твой план скорректирован!") + "</b>")
+    lines.append("")
+    if payload.goal != Goal.maintain:
+        # ETA и скорость
+        if new_plan.eta_date is not None and payload.goal_weight_kg is not None:
+            delta = abs(payload.weight_kg - payload.goal_weight_kg)
+            formatted_date = new_plan.eta_date.strftime('%d.%m.%Y')
+            if payload.goal == Goal.lose:
+                lines.append(f"Ты сбросишь {round(delta, 1)} кг к {formatted_date}")
+            elif payload.goal == Goal.gain:
+                lines.append(f"Ты наберешь {round(delta, 1)} кг к {formatted_date}")
+        lines.append(f"{_('Скорость')}: {new_plan.weekly_rate_kg} {_('кг в неделю')}")
+    lines.append("")
+    lines.append("<b>" + _("Обновленная дневная норма:") + "</b>")
+    lines.append(f"🔥 {_('Калории')}: {new_plan.calories} {_('ккал')}")
+    lines.append(f"🥩 {_('Белки')}: {new_plan.protein_g} {_('г')}")
+    lines.append(f"🥑 {_('Жиры')}: {new_plan.fat_g} {_('г')}")
+    lines.append(f"🍞 {_('Углеводы')}: {new_plan.carbs_g} {_('г')}")
+    lines.append("")
+    if 'personal_line' in locals() and personal_line:
+        lines.append(f"<i>{personal_line}</i>")
+    lines.append(explanation)
+    lines.append("")
+    lines.append(_("Оставим так или нужна еще корректировка?"))
+
+    kb = _ikb([
+        [("Всё отлично!", "final:ok")],
+        [("Хочу скорректировать", "final:adjust")],
+    ])
+
+    # Отправим исходный (детерминированный) ответ сразу
+    sent_msg = await message.answer("\n".join(lines), reply_markup=kb)
+
+    # Если включено — запустим перефраз в фоне и при успехе обновим текст сообщения
+    if 'should_try_rephrase' in locals() and should_try_rephrase:
+        async def _rephrase_and_edit() -> None:
+            try:
+                rewritten = await rephrase_explanation_cached(explanation, settings.ADJUST_REPHRASE_TONE or "neutral")
+                if not rewritten:
+                    logger.info("adjust.rephrase.fallback | user_id={}", user_id)
+                    return
+                # Сформировать обновлённый текст с перефразом
+                new_lines: list[str] = []
+                new_lines.append("<b>" + _("Твой план скорректирован!") + "</b>")
+                new_lines.append("")
+                if payload.goal != Goal.maintain:
+                    if new_plan.eta_date is not None and payload.goal_weight_kg is not None:
+                        delta = abs(payload.weight_kg - payload.goal_weight_kg)
+                        formatted_date = new_plan.eta_date.strftime('%d.%m.%Y')
+                        if payload.goal == Goal.lose:
+                            new_lines.append(f"Ты сбросишь {round(delta, 1)} кг к {formatted_date}")
+                        elif payload.goal == Goal.gain:
+                            new_lines.append(f"Ты наберешь {round(delta, 1)} кг к {formatted_date}")
+                    new_lines.append(f"{_('Скорость')}: {new_plan.weekly_rate_kg} {_('кг в неделю')}")
+                new_lines.append("")
+                new_lines.append("<b>" + _("Обновленная дневная норма:") + "</b>")
+                new_lines.append(f"🔥 { _('Калории') }: {new_plan.calories} { _('ккал') }")
+                new_lines.append(f"🥩 { _('Белки') }: {new_plan.protein_g} { _('г') }")
+                new_lines.append(f"🥑 { _('Жиры') }: {new_plan.fat_g} { _('г') }")
+                new_lines.append(f"🍞 { _('Углеводы') }: {new_plan.carbs_g} { _('г') }")
+                new_lines.append("")
+                if 'personal_line' in locals() and personal_line:
+                    new_lines.append(f"<i>{personal_line}</i>")
+                new_lines.append(rewritten)
+                new_lines.append("")
+                new_lines.append(_("Оставим так или нужна еще корректировка?"))
+                try:
+                    await sent_msg.edit_text("\n".join(new_lines), reply_markup=kb)
+                    logger.info("adjust.rephrase.applied | user_id={} | len={}", user_id, len(rewritten))
+                except Exception as e:
+                    logger.warning("adjust.rephrase.edit_failed | user_id={} | err={}", user_id, e)
+            except Exception as e:
+                logger.warning("adjust.rephrase.error | user_id={} | err={}", user_id, e)
+
+        asyncio.create_task(_rephrase_and_edit())
+
+    await state.set_state(OnboardingStates.review)
