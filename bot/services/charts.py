@@ -1,6 +1,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional, Tuple, List
@@ -278,6 +279,27 @@ def _chart_config_from_projection(p: Projection) -> dict:
             "datalabels": {"display": False},
         })
 
+    # Compute symmetric Y-range around the target so the dashed line is centered
+    y_min = None
+    y_max = None
+    if p.mode == "kg" and p.target_value is not None and p.values:
+        start_y = p.values[0]
+        target_y = p.target_value
+        delta = abs(start_y - target_y)
+        # optional margin can be added here if needed
+        y_min = math.floor(target_y - delta)
+        y_max = math.ceil(target_y + delta)
+
+    # Build Y axis config with optional symmetric bounds
+    y_axis = {
+        "ticks": {"color": axis, "stepSize": (1.0 if p.mode == "kg" else None)},
+        "grid": {"color": grid},
+        "title": {"display": True, "text": ("Вес (кг)" if p.mode == "kg" else "Вес (%)"), "color": axis, "font": {"size": 16}},
+    }
+    if y_min is not None:
+        y_axis["min"] = y_min
+        y_axis["max"] = y_max
+
     options = {
         "responsive": False,
         "plugins": {
@@ -287,7 +309,7 @@ def _chart_config_from_projection(p: Projection) -> dict:
         },
         "scales": {
             "x": {"ticks": {"color": axis}, "grid": {"color": grid}, "title": {"display": True, "text": "Дата", "color": axis, "font": {"size": 16}}},
-            "y": {"ticks": {"color": axis}, "grid": {"color": grid}, "title": {"display": True, "text": ("Вес (кг)" if p.mode == "kg" else "Вес (%)"), "color": axis, "font": {"size": 16}}},
+            "y": y_axis,
         },
     }
 
