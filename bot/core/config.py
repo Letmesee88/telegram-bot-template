@@ -143,6 +143,8 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     CHARTS_FILL_MAIN: bool = True   # fill area under main curve
     CHARTS_SHOW_MARKERS: bool = True  # show start/goal markers
     CHARTS_USE_DATALABELS: bool = True  # show value labels on markers via plugin
+    # Extra breathing room for Y axis around midpoint (kg mode only)
+    CHARTS_Y_MARGIN_KG: float = 1.0
 
     # Color theme (override defaults below to match competitor)
     CHARTS_COLOR_BG: str | None = "#5368FF"          # canvas background

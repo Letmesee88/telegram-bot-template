@@ -223,7 +223,7 @@ def _chart_config_from_projection(p: Projection) -> dict:
                 "borderRadius": 4,
                 "padding": {"left": 8, "right": 8, "top": 3, "bottom": 3},
                 "font": {"weight": "700", "size": 16},
-                "formatter": "function(v,ctx){var yTitle=ctx.chart.config.options.scales.y.title.text||'';var s=''+Math.round(v); if(yTitle.indexOf('%')>=0){s+='%';} return s;}"
+                "formatter": "function(v,ctx){var yTitle=ctx.chart.config.options.scales.y.title.text||'';var s=''+v; if(yTitle.indexOf('%')>=0){s+='%';} return s;}"
             }
         })
     if p.band_low and p.band_high:
@@ -285,10 +285,13 @@ def _chart_config_from_projection(p: Projection) -> dict:
     if p.mode == "kg" and p.target_value is not None and p.values:
         start_y = p.values[0]
         target_y = p.target_value
-        delta = abs(start_y - target_y)
-        # optional margin can be added here if needed
-        y_min = math.floor(target_y - delta)
-        y_max = math.ceil(target_y + delta)
+        # Center around midpoint between start and goal, add breathing margin
+        margin = float(getattr(settings, "CHARTS_Y_MARGIN_KG", 1.0))
+        center = (start_y + target_y) / 2.0
+        half_range = abs(start_y - target_y) / 2.0
+        extent = half_range + margin
+        y_min = math.floor(center - extent)
+        y_max = math.ceil(center + extent)
 
     # Build Y axis config with optional symmetric bounds
     y_axis = {
