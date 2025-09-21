@@ -14,6 +14,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     FSInputFile,
+    BufferedInputFile,
 )
 from aiogram.utils.i18n import gettext as _
 from loguru import logger
@@ -38,6 +39,9 @@ from bot.services.adjust import (
 )
 from bot.core.config import settings
 from bot.handlers import start as start_module
+from bot.services.charts import get_plan_chart_png
+from datetime import date
+import hashlib
 
 router = Router()
 
@@ -193,6 +197,31 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
         logger.exception("onboarding.finalize.db_error | user_id={} | error={}", payload.user_id, e)
         await message.answer(_("Не удалось сохранить данные. Попробуй ещё раз или позже: /start"))
         return
+
+    # Попробуем отправить персональный график перед текстом (фолбэк — просто пропустить)
+    try:
+        if settings.CHARTS_ENABLED:
+            start_w = float(payload.weight_kg)
+            goal_w = float(payload.goal_weight_kg) if payload.goal_weight_kg is not None else None
+            weekly = float(getattr(plan, 'weekly_rate_kg', 0.0) or 0.0)
+            start_dt = getattr(message, 'date', None)
+            start_d = start_dt.date() if start_dt else date.today()
+            eta = getattr(plan, 'eta_date', None)
+            logger.info("charts.try_send | phase=finalize | user_id={} | weekly={} | eta={}", payload.user_id, weekly, eta)
+            key_str = f"{start_w}:{goal_w}:{weekly}:{start_d.isoformat()}:{eta.isoformat() if eta else ''}:{settings.CHARTS_PRIVACY_MODE}:{settings.CHARTS_BAND_FRAC}"
+            ph = hashlib.sha256(key_str.encode('utf-8')).hexdigest()[:16]
+            png = await get_plan_chart_png(payload.user_id, ph,
+                                           start_weight=start_w,
+                                           goal_weight=goal_w,
+                                           weekly_rate=weekly,
+                                           start_date=start_d,
+                                           eta_date=eta)
+            if png:
+                logger.info("charts.photo_ready | phase=finalize | bytes={}", len(png))
+                await message.answer_photo(BufferedInputFile(png, filename="goal_plan.png"))
+                logger.info("charts.photo_sent | phase=finalize | user_id={}", payload.user_id)
+    except Exception as e:
+        logger.warning("charts.send_failed | user_id={} | err={}", payload.user_id, e)
 
     # Сформировать финальный текст согласно ТЗ
     lines: list[str] = []
@@ -868,6 +897,31 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
         logger.exception("adjust.apply_failed | user_id={} | err={}", user_id, e)
         await message.answer(_("Не удалось применить корректировку. Попробуй ещё раз позже."))
         return
+
+    # Попробуем отправить обновленный график (если изменилась траектория)
+    try:
+        if settings.CHARTS_ENABLED:
+            start_w = float(payload.weight_kg)
+            goal_w = float(payload.goal_weight_kg) if payload.goal_weight_kg is not None else None
+            weekly = float(getattr(new_plan, 'weekly_rate_kg', 0.0) or 0.0)
+            start_dt = getattr(message, 'date', None)
+            start_d = start_dt.date() if start_dt else date.today()
+            eta = getattr(new_plan, 'eta_date', None)
+            logger.info("charts.try_send | phase=adjust | user_id={} | weekly={} | eta={}", user_id, weekly, eta)
+            key_str = f"{start_w}:{goal_w}:{weekly}:{start_d.isoformat()}:{eta.isoformat() if eta else ''}:{settings.CHARTS_PRIVACY_MODE}:{settings.CHARTS_BAND_FRAC}:adjust"
+            ph = hashlib.sha256(key_str.encode('utf-8')).hexdigest()[:16]
+            png = await get_plan_chart_png(user_id, ph,
+                                           start_weight=start_w,
+                                           goal_weight=goal_w,
+                                           weekly_rate=weekly,
+                                           start_date=start_d,
+                                           eta_date=eta)
+            if png:
+                logger.info("charts.photo_ready | phase=adjust | bytes={}", len(png))
+                await message.answer_photo(BufferedInputFile(png, filename="goal_plan.png"))
+                logger.info("charts.photo_sent | phase=adjust | user_id={}", user_id)
+    except Exception as e:
+        logger.warning("charts.send_failed | user_id={} | err={}", user_id, e)
 
     # 6) Рендер ответа
     lines: list[str] = []

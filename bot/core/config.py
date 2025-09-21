@@ -132,5 +132,32 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     ACTIVITY_LLM_MODEL: str | None = "gpt-4o-mini"
     ACTIVITY_LLM_TIMEOUT_SEC: float = 2.5
 
+    # Charts / goal projection rendering
+    CHARTS_ENABLED: bool = True
+    CHARTS_PROVIDER: str = "quickchart"  # quickchart|off (reserve for future: plotly)
+    CHARTS_PRIVACY_MODE: str = "kg"  # percent|kg
+    CHARTS_BAND_FRAC: float = 0.0  # +/- 20% of weekly rate
+    # Curve and style
+    CHARTS_EASE: str = "ease_out"  # linear|ease_out
+    CHARTS_EASE_POWER: float = 2.5  # strength of ease-out (>=1.0)
+    CHARTS_FILL_MAIN: bool = True   # fill area under main curve
+    CHARTS_SHOW_MARKERS: bool = True  # show start/goal markers
+    CHARTS_USE_DATALABELS: bool = True  # show value labels on markers via plugin
+
+    # Color theme (override defaults below to match competitor)
+    CHARTS_COLOR_BG: str | None = "#5368FF"          # canvas background
+    CHARTS_COLOR_GRID: str | None = "#FFFFFF30"      # grid lines
+    CHARTS_COLOR_AXIS: str | None = "#FFFFFF"        # axes/labels
+    CHARTS_COLOR_LINE: str | None = "#00E676"        # main line (green)
+    CHARTS_COLOR_BAND: str | None = None             # not used when band=0
+    CHARTS_COLOR_LABEL_BG: str | None = "#FFFFFF"    # label chip background
+    CHARTS_COLOR_LABEL_FG: str | None = "#1E293B"    # label chip text
+
+    # QuickChart config
+    QUICKCHART_URL: str = "https://quickchart.io/chart"
+    QUICKCHART_WIDTH: int = 1200
+    QUICKCHART_HEIGHT: int = 600
+    QUICKCHART_TIMEOUT_SEC: float = 5
+
 
 settings = Settings()
