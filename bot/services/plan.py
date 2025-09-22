@@ -3,6 +3,7 @@ from __future__ import annotations
 from math import floor
 from typing import Tuple, Optional
 from datetime import date, timedelta
+import re
 
 from loguru import logger
 
@@ -56,18 +57,51 @@ def _infer_activity_level(text: str) -> ActivityLevel:
     """Very simple heuristic from free-form text to activity level.
     Minimal level is sedentary per TZ.
     """
-    t = text.lower()
-    # Strongest first
+    t = (text or "").lower()
+
+    # Strongest first: explicit athlete signals
     if any(k in t for k in ["соревн", "атлет", "проф", "ежедневные тренировки", "2 раза в день"]):
         return ActivityLevel.athlete
-    if any(k in t for k in ["каждый день", "ежедневно трен", "6 раз в неделю", "интенсивные трен", "кроссфит"]):
+
+    # Extract workouts per week like "5 раз в неделю", "4 раза/нед", supports ranges "5–6"
+    wpw = None
+    m = re.search(r"(\d+)[\s\-–]*?(?:раз|раза)[^\n]{0,12}?(?:недел[ьяи]|нед)", t)
+    if m:
+        try:
+            wpw = int(m.group(1))
+        except Exception:
+            wpw = None
+    # Treat "каждый день" as >=6/нед
+    if wpw is None and ("каждый день" in t or "ежедневно" in t):
+        wpw = 6
+
+    # Martial arts / high-intensity sports signals
+    combat = any(k in t for k in [
+        "единоборств", "единоборства", "борьб", "бокс", "кикбокс", "тайский бокс", "муай тай", "дdddd", "джиу", "самбо", "каратэ", "mma"
+    ])
+
+    # Active tier by frequency
+    if isinstance(wpw, int):
+        if wpw >= 6:
+            return ActivityLevel.active
+        if wpw >= 4:
+            return ActivityLevel.active
+        if wpw >= 3:
+            return ActivityLevel.moderate
+        if wpw >= 1:
+            return ActivityLevel.light
+
+    # Keyword-based fallbacks
+    if any(k in t for k in ["интенсивные трен", "кроссфит"]):
         return ActivityLevel.active
-    if any(k in t for k in ["3", "3 раза", "зал", "силов", "бег", "кардио", "вел", "плаван", "футбол", "спортзал"]):
-        return ActivityLevel.moderate
-    if any(k in t for k in ["1-2", "1–2", "1 раз", "2 раза", "йога", "пилатес", "прогулк", "шаг", "пешком", "ходьб"]):
+    if any(k in t for k in ["зал", "силов", "бег", "кардио", "вел", "плаван", "футбол", "спортзал", "танц"]):
+        # If combat sports mentioned without frequency, lean to moderate
+        return ActivityLevel.moderate if (combat or "бег" in t or "зал" in t) else ActivityLevel.light
+    if any(k in t for k in ["йога", "пилатес", "прогулк", "шаг", "пешком", "ходьб"]):
         return ActivityLevel.light
     if any(k in t for k in ["сидяч", "офис", "компьютер", "мало двигаюсь", "без активности"]):
         return ActivityLevel.sedentary
+
     # Default minimal
     return ActivityLevel.sedentary
 
