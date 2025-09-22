@@ -127,6 +127,35 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     # Rephrase only if explanation is long enough to benefit
     ADJUST_REPHRASE_LENGTH_MIN: int = 220
 
+    # Adjustment engine mode:
+    # - deterministic: LLM только классифицирует намерения, все числа считает код
+    # - hybrid: LLM может подсказывать числа, но мы валидируем и пересчитываем по правилам
+    ADJUST_ENGINE_MODE: str = "hybrid"  # deterministic|hybrid
+
+    # Градуировка силы изменения (используется в hybrid-режиме)
+    # Калории: проценты уменьшения/увеличения
+    ADJUST_STRENGTH_CAL_PERCENT_SLIGHT: float = 5.0
+    ADJUST_STRENGTH_CAL_PERCENT_MODERATE: float = 10.0
+    ADJUST_STRENGTH_CAL_PERCENT_STRONG: float = 15.0
+
+    # Углеводы (целевые граммы для low_carb по степени)
+    ADJUST_STRENGTH_CARBS_G_SLIGHT: int = 120
+    ADJUST_STRENGTH_CARBS_G_MODERATE: int = 80
+    ADJUST_STRENGTH_CARBS_G_STRONG: int = 60
+
+    # Жиры (дельта в граммах по степени; минимум жиров всё равно соблюдается)
+    ADJUST_STRENGTH_FAT_DELTA_G_SLIGHT: int = 10
+    ADJUST_STRENGTH_FAT_DELTA_G_MODERATE: int = 20
+    ADJUST_STRENGTH_FAT_DELTA_G_STRONG: int = 30
+
+    # Белок (целевые г/кг по степени; будут зажаты в безопасный диапазон 1.2..2.4 г/кг)
+    ADJUST_STRENGTH_PROTEIN_GKG_SLIGHT: float = 1.6
+    ADJUST_STRENGTH_PROTEIN_GKG_MODERATE: float = 1.8
+    ADJUST_STRENGTH_PROTEIN_GKG_STRONG: float = 2.0
+
+    # Принимать ли кастомные макросы без указания единиц ("г")
+    ADJUST_ACCEPT_CUSTOM_MACROS_WITHOUT_UNITS: bool = False
+
     # Activity LLM classification
     ACTIVITY_LLM_ENABLED: bool = True
     ACTIVITY_LLM_MODEL: str | None = "gpt-4o-mini"

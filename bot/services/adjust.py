@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional, Tuple
 
 import aiohttp
 from loguru import logger
-import re
 
 from bot.cache.redis import cached
 from bot.core.config import settings
@@ -22,6 +22,118 @@ from bot.services.plan import (
     GAIN_MIN_SURPLUS,
     GAIN_MAX_SURPLUS,
 )
+
+
+def _has_explicit_keto(text: str) -> bool:
+    s = (text or "").lower()
+    return "кето" in s or "keto" in s
+
+
+def _has_percent(text: str) -> bool:
+    return "%" in (text or "")
+
+
+def _has_kcal(text: str) -> bool:
+    s = (text or "").lower()
+    return bool(re.search(r"\b(кк?ал|ккал|kcal|калории)\b", s))
+
+
+def _has_grams_any(text: str) -> bool:
+    s = (text or "").lower()
+    return bool(re.search(r"\b(г|g)\b", s))
+
+
+def _infer_strength(text: str) -> str:
+    """Return one of 'slight','moderate','strong' based on wording.
+    Default is 'moderate'."""
+    s = (text or "").lower()
+    if re.search(r"\b(чуть|слегка|понемногу|немного)\b", s):
+        return "slight"
+    if re.search(r"\b(сильно|максимально|очень|по-максимуму)\b", s):
+        return "strong"
+    # intensifier: every day → push at least moderate
+    if re.search(r"кажд(ый|ое)\s+день", s):
+        return "moderate"
+    return "moderate"
+
+
+def _apply_strength_defaults(parsed: 'ParsedAdjustment', *, text: str) -> 'ParsedAdjustment':
+    """Fill parsed.calories/macros with deterministic numbers derived from strength
+    when user did not provide explicit units in the text (Mode B)."""
+    if (settings.ADJUST_ENGINE_MODE or "").lower() != "hybrid":
+        return parsed
+
+    strength = _infer_strength(text)
+    # Map strength to numbers from settings
+    cal_map = {
+        "slight": settings.ADJUST_STRENGTH_CAL_PERCENT_SLIGHT,
+        "moderate": settings.ADJUST_STRENGTH_CAL_PERCENT_MODERATE,
+        "strong": settings.ADJUST_STRENGTH_CAL_PERCENT_STRONG,
+    }
+    carbs_map = {
+        "slight": settings.ADJUST_STRENGTH_CARBS_G_SLIGHT,
+        "moderate": settings.ADJUST_STRENGTH_CARBS_G_MODERATE,
+        "strong": settings.ADJUST_STRENGTH_CARBS_G_STRONG,
+    }
+
+    # 1) Calories: if calories intent present but no explicit units in text → convert to percent by strength
+    if parsed.calories:
+        mode = (parsed.calories.get("mode") or "").lower()
+        if mode not in {"absolute", "percent", "delta"}:
+            mode = ""
+        if not (_has_percent(text) or _has_kcal(text)):
+            # Determine direction from intents
+            intents = set(parsed.intents or [])
+            if "lower_calories" in intents:
+                parsed.calories = {"mode": "percent", "value": -float(cal_map[strength])}
+            elif "raise_calories" in intents:
+                parsed.calories = {"mode": "percent", "value": +float(cal_map[strength])}
+            else:
+                parsed.calories = None
+
+    # 2) Macros scheme: keto only if explicit; low_carb baseline carbs by strength when no grams given
+    if parsed.macros and isinstance(parsed.macros, dict):
+        scheme = parsed.macros.get("scheme")
+        cst = parsed.macros.get("custom_target_g")
+        # keto gating
+        if scheme == "keto" and not _has_explicit_keto(text):
+            scheme = "low_carb"
+        # low_carb: set carbs target by strength ONLY if user didn't specify grams explicitly in text
+        if scheme == "low_carb" and not _has_grams_any(text):
+            cst = (cst or {})
+            cst["carbs_g"] = int(carbs_map[strength])
+        parsed.macros = {"scheme": scheme, "custom_target_g": cst}
+    return parsed
+
+
+def _expand_conversational_heuristics(text: str, pa: Optional['ParsedAdjustment']) -> Optional['ParsedAdjustment']:
+    """Augment intents based on simple RU phrases (pizza/sweets/fast food -> low_carb, etc.)."""
+    s = (text or "").lower()
+    intents = list(pa.intents) if pa else []
+    macros = dict(pa.macros) if (pa and pa.macros) else None
+    # High refined carbs signs
+    if re.search(r"(пицц|сладк|выпечк|булоч|паст[аы]|макарон|лапш|сахар|фастфуд)", s):
+        if not macros:
+            macros = {"scheme": "low_carb", "custom_target_g": None}
+        elif not macros.get("scheme"):
+            macros["scheme"] = "low_carb"
+        if "low_carb" not in intents:
+            intents.append("low_carb")
+    # Sedentary signals
+    if re.search(r"(ничего\s+не\s+делаю|ничерта\s+не\s+делаю|сиж\w*\s+на\s+диван|почти\s+не\s+двигаюсь|заплыва\w*\s+жиром)", s):
+        if "activity_down" not in intents:
+            intents.append("activity_down")
+        # hint activity override to sedentary
+        act_override = "sedentary"
+    else:
+        act_override = pa.activity_override if pa else None
+
+    if not pa:
+        return ParsedAdjustment(intents=intents, activity_override=act_override, calories=None, macros=macros, dietary_restrictions=[], confidence=1.0, rationale=None, version="heuristic-v1")
+    pa.intents = intents
+    pa.activity_override = act_override or pa.activity_override
+    pa.macros = macros or pa.macros
+    return pa
 
 
 @dataclass
@@ -347,6 +459,22 @@ def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: Parsed
     if parsed.macros:
         scheme = parsed.macros.get("scheme")
         custom = parsed.macros.get("custom_target_g")
+
+    # Mode B: partial custom — keep unspecified macros from current plan; carbs as remainder when None
+    if scheme == "custom" and isinstance(custom, dict):
+        if custom.get("protein_g") is None:
+            custom["protein_g"] = int(base_plan.protein_g)
+        if custom.get("fat_g") is None:
+            custom["fat_g"] = int(base_plan.fat_g)
+        # if carbs missing -> keep None to allocate remainder below in _recompute_macros
+
+    # Low-carb by strength may set only carbs_g; keep other macros from current plan to avoid jumps
+    if scheme == "low_carb" and isinstance(custom, dict) and custom.get("carbs_g") is not None:
+        if custom.get("protein_g") is None:
+            custom["protein_g"] = int(base_plan.protein_g)
+        if custom.get("fat_g") is None:
+            custom["fat_g"] = int(base_plan.fat_g)
+
     protein_g, fat_g, carbs_g, used_scheme = _recompute_macros(cal_target, data.weight_kg, scheme, custom)
 
     # 4) weekly rate (rough) and eta keep from plan0 when possible
@@ -562,12 +690,17 @@ def _cache_key(user_id: int, text: str, lang_hint: Optional[str] = None) -> str:
     return f"user={user_id}:t={h}"
 
 
-@cached(ttl=86400, namespace="adjust_llm_v2", key_builder=_cache_key)
+@cached(ttl=86400, namespace="adjust_llm_v3", key_builder=_cache_key)
 async def parse_adjustment_cached(user_id: int, text: str, *, lang_hint: Optional[str]) -> Optional[ParsedAdjustment]:
     # Prefer LLM; if it fails/returns None, fallback to heuristic so user always gets a result.
     res = await _llm_parse_adjustment(text, lang_hint=lang_hint)
     if res is None:
         res = parse_adjustment_heuristic(text)
+    # Expand with conversational heuristics regardless of LLM
+    if res is not None:
+        res = _expand_conversational_heuristics(text, res)
+        # Mode B post-processing (gating keto, strength defaults)
+        res = _apply_strength_defaults(res, text=text)
     return res
 
 
