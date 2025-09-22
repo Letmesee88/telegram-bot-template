@@ -34,7 +34,7 @@ SPEED_PERCENT_BY_WEIGHT = {
 MAX_LOSS_RATE = 0.01  # 1% weight/week
 MAX_GAIN_RATE = 0.005  # 0.5% weight/week
 MAX_DEFICIT_ABS = 1000  # kcal/day
-MAX_DEFICIT_FRAC = 0.25  # 25% of TDEE
+MAX_DEFICIT_FRAC = 0.30  # 30% of TDEE
 GAIN_MIN_SURPLUS = 200  # kcal/day
 GAIN_MAX_SURPLUS = 500  # kcal/day
 

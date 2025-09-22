@@ -159,7 +159,7 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     # Activity LLM classification
     ACTIVITY_LLM_ENABLED: bool = True
     ACTIVITY_LLM_MODEL: str | None = "gpt-4o-mini"
-    ACTIVITY_LLM_TIMEOUT_SEC: float = 2.5
+    ACTIVITY_LLM_TIMEOUT_SEC: float = 5.0
 
     # Charts / goal projection rendering
     CHARTS_ENABLED: bool = True

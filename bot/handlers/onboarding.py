@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from time import perf_counter
 from aiogram import F, Router
 from aiogram.enums import ChatAction
 
@@ -105,45 +106,46 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
         await state.clear()
         return
 
-    # Определим уровень активности через LLM (с таймаутом/фолбэком) и применим к расчёту плана
+    # Определим уровень активности. Если ранее зафиксировали в FSM — используем его и не вызываем LLM повторно
     level: ActivityLevel
     llm_obj = None
     llm_used = False
-    try:
-        llm_obj = await classify_activity_cached(user_id, payload.activity_text, lang_hint=getattr(message.from_user, 'language_code', None))
-        if llm_obj and isinstance(getattr(llm_obj, 'level', None), str):
-            lvl = (llm_obj.level or '').strip().lower()
-            conf = float(getattr(llm_obj, 'confidence', 0.0) or 0.0)
-            if lvl in {"sedentary", "light", "moderate", "active", "athlete"} and conf >= 0.6:
-                # базовый мэппинг
-                level = ActivityLevel(lvl)
-                # консервативный даунгрейд athlete без явной высокой нагрузки
-                if level == ActivityLevel.athlete:
-                    features = (getattr(llm_obj, 'features', {}) or {})
-                    wpw_raw = features.get('workouts_per_week')
-                    wpw_num = None
-                    try:
-                        if isinstance(wpw_raw, (int, float)):
-                            wpw_num = int(wpw_raw)
-                        elif isinstance(wpw_raw, str):
-                            s = wpw_raw.strip()
-                            # extract first integer (supports "5–6", "5-6", "6+", "6 раз")
-                            m = re.search(r"(\d+)", s)
-                            if m:
-                                wpw_num = int(m.group(1))
-                    except Exception:
+    pre_level_raw = data.get("activity_level")
+    if isinstance(pre_level_raw, str) and pre_level_raw in {"sedentary","light","moderate","active","athlete"}:
+        level = ActivityLevel(pre_level_raw)
+    else:
+        try:
+            llm_obj = await classify_activity_cached(user_id, payload.activity_text, lang_hint=getattr(message.from_user, 'language_code', None))
+            if llm_obj and isinstance(getattr(llm_obj, 'level', None), str):
+                lvl = (llm_obj.level or '').strip().lower()
+                conf = float(getattr(llm_obj, 'confidence', 0.0) or 0.0)
+                if lvl in {"sedentary", "light", "moderate", "active", "athlete"} and conf >= 0.6:
+                    level = ActivityLevel(lvl)
+                    if level == ActivityLevel.athlete:
+                        features = (getattr(llm_obj, 'features', {}) or {})
+                        wpw_raw = features.get('workouts_per_week')
                         wpw_num = None
-                    # Даунгрейд только если удалось извлечь число и оно < 6
-                    if wpw_num is not None and wpw_num < 6:
-                        level = ActivityLevel.active
-                llm_used = True
+                        try:
+                            if isinstance(wpw_raw, (int, float)):
+                                wpw_num = int(wpw_raw)
+                            elif isinstance(wpw_raw, str):
+                                s = wpw_raw.strip()
+                                # extract first integer (supports "5–6", "5-6", "6+", "6 раз")
+                                m = re.search(r"(\d+)", s)
+                                if m:
+                                    wpw_num = int(m.group(1))
+                        except Exception:
+                            wpw_num = None
+                        if wpw_num is not None and wpw_num < 6:
+                            level = ActivityLevel.active
+                    llm_used = True
+                else:
+                    level = infer_activity_level(payload.activity_text)
             else:
                 level = infer_activity_level(payload.activity_text)
-        else:
+        except Exception as e:
+            logger.warning("onboarding.activity.llm_failed | user_id={} | err={}", user_id, e)
             level = infer_activity_level(payload.activity_text)
-    except Exception as e:
-        logger.warning("onboarding.activity.llm_failed | user_id={} | err={}", user_id, e)
-        level = infer_activity_level(payload.activity_text)
 
     # гарантируем, что расчёт плана использует определённый уровень
     try:
@@ -558,8 +560,60 @@ async def height_retry(message: Message) -> None:
 
 @router.message(OnboardingStates.activity, F.text.len() >= 10)
 async def activity_set(message: Message, state: FSMContext) -> None:
-    await state.update_data(activity_text=message.text.strip())
-    await message.answer(_("Анализирую уровень активности... ⏳"))
+    # Сохраняем текст и сразу классифицируем активность (LLM с таймаутом и фолбэком)
+    text_raw = (message.text or "").strip()
+    await state.update_data(activity_text=text_raw)
+
+    # Сообщение пользователю и гарантия минимальной задержки 0.3с
+    await message.answer(_("✨ Анализирую уровень активности..."))
+    t0 = perf_counter()
+
+    # Попытка LLM → даунгрейд правил athlete → фолбэк эвристика
+    level: ActivityLevel
+    try:
+        llm_obj = await classify_activity_cached(
+            getattr(message.from_user, 'id', 0),
+            text_raw,
+            lang_hint=getattr(message.from_user, 'language_code', None),
+        )
+        if llm_obj and isinstance(getattr(llm_obj, 'level', None), str):
+            lvl = (llm_obj.level or '').strip().lower()
+            conf = float(getattr(llm_obj, 'confidence', 0.0) or 0.0)
+            if lvl in {"sedentary", "light", "moderate", "active", "athlete"} and conf >= 0.6:
+                level = ActivityLevel(lvl)
+                if level == ActivityLevel.athlete:
+                    features = (getattr(llm_obj, 'features', {}) or {})
+                    wpw_raw = features.get('workouts_per_week')
+                    wpw_num = None
+                    try:
+                        if isinstance(wpw_raw, (int, float)):
+                            wpw_num = int(wpw_raw)
+                        elif isinstance(wpw_raw, str):
+                            s = wpw_raw.strip()
+                            m = re.search(r"(\d+)", s)
+                            if m:
+                                wpw_num = int(m.group(1))
+                    except Exception:
+                        wpw_num = None
+                    if wpw_num is not None and wpw_num < 6:
+                        level = ActivityLevel.active
+            else:
+                level = infer_activity_level(text_raw)
+        else:
+            level = infer_activity_level(text_raw)
+    except Exception as e:
+        logger.warning("activity.inline.llm_failed | user_id={} | err={}", getattr(message.from_user, 'id', None), e)
+        level = infer_activity_level(text_raw)
+
+    # Сохраняем определённый уровень в FSM
+    await state.update_data(activity_level=level.value)
+
+    # Гарантируем минимальную задержку 0.3с (если LLM ответил быстрее)
+    dt = perf_counter() - t0
+    if dt < 0.3:
+        await asyncio.sleep(0.3 - dt)
+
+    # Переходим к выбору цели
     await state.set_state(OnboardingStates.goal)
 
     # Показ целей с inline-кнопками
