@@ -155,3 +155,32 @@ foodai_edit_nlu_duration_ms = prometheus_client.Histogram(
     "FoodAI edit NLU duration in milliseconds",
     buckets=[50, 100, 200, 400, 800, 1600, 3200, 6400],
 )
+
+# ===== Vision escalation metrics =====
+# Keep label sets LOW cardinality. Models are finite and reasons are a small fixed set.
+foodai_escalation_attempts = prometheus_client.Counter(
+    "foodai_escalation_attempts_total",
+    "FoodAI vision escalation attempts (per step)",
+    ["from_model", "to_model", "reason"],  # reason: attempt
+)
+foodai_escalation_success = prometheus_client.Counter(
+    "foodai_escalation_success_total",
+    "FoodAI vision escalation chain succeeded (final stop)",
+    ["from_model", "to_model", "reason"],  # reason: final
+)
+foodai_escalation_failed = prometheus_client.Counter(
+    "foodai_escalation_failed_total",
+    "FoodAI vision escalation chain failed or exhausted",
+    ["from_model", "to_model", "reason"],  # reason: steps_exhausted|weak|provider_error|timeout
+)
+foodai_escalation_attempt_dur_ms = prometheus_client.Histogram(
+    "foodai_escalation_attempt_dur_ms",
+    "FoodAI vision escalation attempt duration in milliseconds",
+    ["model", "detail"],
+    buckets=[50, 100, 200, 400, 800, 1600, 3200, 6400],
+)
+foodai_escalation_total_dur_ms = prometheus_client.Histogram(
+    "foodai_escalation_total_dur_ms",
+    "FoodAI vision escalation total chain duration in milliseconds",
+    buckets=[50, 100, 200, 400, 800, 1600, 3200, 6400],
+)

@@ -372,6 +372,27 @@ async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
                 plan=Plan(branch="Analyze", source="FoodAI", version="v1"),
             )
         )
+        # Vision escalation started (feature flag based)
+        try:
+            if getattr(settings, "FOODAI_VISION_ESCALATION_ENABLED", False):
+                chain = str(getattr(settings, "FOODAI_VISION_ESCALATION_CHAIN", "") or "")
+                order = str(getattr(settings, "FOODAI_VISION_DETAIL_ORDER", "low>high") or "low>high")
+                analytics.fire_event(
+                    BaseEvent(
+                        user_id=message.from_user.id,
+                        event_type="FoodAI:VisionEscalationStarted",
+                        event_properties=EventProperties(
+                            chat_id=message.chat.id if message.chat else None,
+                            chat_type=message.chat.type if message.chat else None,
+                            text=f"chain={chain}, detail_order={order}",
+                            command=None,
+                        ),
+                        language=message.from_user.language_code if message.from_user else None,
+                        plan=Plan(branch="Analyze", source="FoodAI", version="v1"),
+                    )
+                )
+        except Exception:
+            pass
 
     # Step 2: analyze via service
     t0 = perf_counter()
@@ -545,6 +566,35 @@ async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
 
     # Analytics: preview shown for photo
     if analytics.logger and message.from_user:
+        # Vision escalation completed (if meta provided by service)
+        try:
+            esc = None
+            try:
+                esc = (result.get("meta") or {}).get("escalation") if isinstance(result, dict) else None
+            except Exception:
+                esc = None
+            if esc:
+                chain = esc.get("chain")
+                final_model = esc.get("final_model")
+                steps = esc.get("steps")
+                reason = esc.get("stopped_reason")
+                total_ms = esc.get("total_ms")
+                analytics.fire_event(
+                    BaseEvent(
+                        user_id=message.from_user.id,
+                        event_type="FoodAI:VisionEscalationCompleted",
+                        event_properties=EventProperties(
+                            chat_id=message.chat.id if message.chat else None,
+                            chat_type=message.chat.type if message.chat else None,
+                            text=f"chain={chain}, final_model={final_model}, steps={steps}, reason={reason}, total_ms={total_ms}",
+                            command=None,
+                        ),
+                        language=message.from_user.language_code if message.from_user else None,
+                        plan=Plan(branch="Analyze", source="FoodAI", version="v1"),
+                    )
+                )
+        except Exception:
+            pass
         # Photo analyze succeeded (duration + confidence)
         try:
             dur_ms = int((perf_counter() - t0) * 1000)

@@ -4,6 +4,7 @@ from typing import Any
 import json
 import re
 import asyncio
+import time
 from aiohttp import ClientSession
 try:
     from bot.services.foodai_edit_llm import interpret_edit
@@ -19,6 +20,11 @@ from bot.metrics import (
     foodai_provider_error,
     foodai_file_url_missing,
     foodai_lexicon_is_food,
+    foodai_escalation_attempts,
+    foodai_escalation_success,
+    foodai_escalation_failed,
+    foodai_escalation_attempt_dur_ms,
+    foodai_escalation_total_dur_ms,
 )
 
 
@@ -433,12 +439,12 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
             )
             vision_model = getattr(settings, "FOODAI_VISION_MODEL", None) or settings.FOODAI_DEFAULT_MODEL
 
-            async def _build_and_call(detail: str) -> dict[str, Any] | None:
+            async def _build_and_call(detail: str, model_id: str) -> dict[str, Any] | None:
                 # Force Chat API for images for better compatibility
                 api = "chat"
                 if api == "responses":
                     payload = {
-                        "model": vision_model,
+                        "model": model_id,
                         "instructions": system,
                         "reasoning": {"effort": settings.FOODAI_REASONING_EFFORT},
                         "text": {"verbosity": settings.FOODAI_TEXT_VERBOSITY},
@@ -455,7 +461,7 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                     content_local = await _openai_request("responses", payload)
                 else:
                     payload = {
-                        "model": vision_model,
+                        "model": model_id,
                         "temperature": 0.2,
                         "messages": [
                             {"role": "system", "content": system},
@@ -480,8 +486,199 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                     return parsed_local
                 return None
 
+            # Escalation chain (env-driven) — try models and detail levels in order
+            try:
+                escalation_enabled = bool(getattr(settings, "FOODAI_VISION_ESCALATION_ENABLED", True))
+            except Exception:
+                escalation_enabled = True
+            if escalation_enabled:
+                _chain_t0 = time.perf_counter()
+                try:
+                    chain_raw = str(getattr(settings, "FOODAI_VISION_ESCALATION_CHAIN", "") or "").strip()
+                    model_chain = [m.strip() for m in chain_raw.split(">") if m and m.strip()]
+                except Exception:
+                    model_chain = []
+                if not model_chain:
+                    model_chain = [vision_model]
+                # optional fallback to 4o-mini if 5-series unavailable
+                try:
+                    if bool(getattr(settings, "FOODAI_ALLOW_FALLBACK_TO_4O_MINI", True)) and "gpt-4o-mini" not in model_chain:
+                        model_chain.append("gpt-4o-mini")
+                except Exception:
+                    pass
+                try:
+                    order = str(getattr(settings, "FOODAI_VISION_DETAIL_ORDER", "low>high") or "low>high").split(">")
+                    detail_seq = [d.strip().lower() for d in order if d and d.strip().lower() in {"low", "high", "auto"}] or ["low", "high"]
+                except Exception:
+                    detail_seq = ["low", "high"]
+
+                def _is_weak(res: dict[str, Any]) -> bool:
+                    try:
+                        conf_th = float(getattr(settings, "FOODAI_ESCALATE_CONF", getattr(settings, "FOODAI_CONFIDENCE_ESCALATE", 0.7)))
+                    except Exception:
+                        conf_th = 0.7
+                    try:
+                        conf = float(res.get("confidence") or 0)
+                    except Exception:
+                        conf = 0.0
+                    zero_guard = bool(getattr(settings, "FOODAI_ESCALATE_ZERO_FIELDS", True))
+                    items_min = int(getattr(settings, "FOODAI_ESCALATE_ITEMS_MIN", 3) or 3)
+                    try:
+                        has_zero = int(res.get("calories") or 0) == 0 or float(res.get("protein_g") or 0) == 0 or float(res.get("fat_g") or 0) == 0 or float(res.get("carbs_g") or 0) == 0 or float(res.get("weight_g") or 0) == 0
+                    except Exception:
+                        has_zero = False
+                    try:
+                        many_items = len(list(res.get("items") or [])) >= items_min
+                    except Exception:
+                        many_items = False
+                    if conf < conf_th:
+                        return True
+                    if zero_guard and has_zero:
+                        return True
+                    if many_items and conf < max(0.75, conf_th):
+                        return True
+                    return False
+
+                steps = 0
+                max_steps = int(getattr(settings, "FOODAI_VISION_MAX_STEPS", 2) or 2)
+                best: dict[str, Any] | None = None
+                detail_seq_norm = [
+                    _norm_detail(d) for d in detail_seq
+                ]
+                for midx, mid in enumerate(model_chain):
+                    for det in detail_seq:
+                        steps += 1
+                        _attempt_t0 = time.perf_counter()
+                        parsed_try = await _build_and_call(_norm_detail(det), mid)
+                        # attempt metrics
+                        try:
+                            foodai_escalation_attempts.labels(
+                                from_model=(model_chain[midx - 1] if midx > 0 else "start"),
+                                to_model=mid,
+                                reason="attempt",
+                            ).inc()
+                        except Exception:
+                            pass
+                        try:
+                            foodai_escalation_attempt_dur_ms.labels(model=mid, detail=_norm_detail(det)).observe(
+                                (time.perf_counter() - _attempt_t0) * 1000.0
+                            )
+                        except Exception:
+                            pass
+                        if parsed_try:
+                            best = parsed_try
+                            last_step = (midx == len(model_chain) - 1 and det == detail_seq[-1])
+                            should_stop = (not _is_weak(parsed_try)) or last_step or (steps >= max_steps)
+                            if should_stop:
+                                # Optional rewrite + sanitize
+                                try:
+                                    mode = (getattr(settings, "FOODAI_ANALYSIS_REWRITE", "auto") or "auto").lower()
+                                except Exception:
+                                    mode = "auto"
+                                do_rewrite = mode == "always"
+                                reason = ""
+                                if mode == "auto":
+                                    do_rewrite, reason = _needs_rewrite(parsed_try.get("analysis_text"), parsed_try.get("items"))
+                                if do_rewrite:
+                                    try:
+                                        new_txt = await _compose_analysis_text(parsed_try.get("items"), parsed_try.get("appearance") or {}, parsed_try.get("confidence"))
+                                        if new_txt:
+                                            parsed_try["analysis_text"] = new_txt
+                                            foodai_analysis_text_rewrite.labels(reason=reason or "auto").inc()
+                                        else:
+                                            foodai_analysis_text_rewrite.labels(reason or "error").inc()
+                                    except Exception:
+                                        try:
+                                            foodai_analysis_text_rewrite.labels("error").inc()
+                                        except Exception:
+                                            pass
+                                try:
+                                    if parsed_try.get("analysis_text"):
+                                        txt = _sanitize_first_sentence(parsed_try.get("items"), str(parsed_try.get("analysis_text") or ""))
+                                        if txt:
+                                            if len(txt) > 420:
+                                                txt = txt[:417].rstrip() + "…"
+                                            parsed_try["analysis_text"] = txt
+                                except Exception:
+                                    pass
+                                # chain stop metrics
+                                try:
+                                    total_ms = (time.perf_counter() - _chain_t0) * 1000.0
+                                    foodai_escalation_total_dur_ms.observe(total_ms)
+                                except Exception:
+                                    pass
+                                # attach escalation meta for UX analytics
+                                try:
+                                    esc = {
+                                        "enabled": True,
+                                        "chain": model_chain,
+                                        "detail_order": detail_seq_norm,
+                                        "steps": steps,
+                                        "final_model": mid,
+                                        "stopped_reason": ("strong" if not _is_weak(parsed_try) else ("steps_exhausted" if (steps >= max_steps or last_step) else "weak")),
+                                        "total_ms": int(total_ms),
+                                    }
+                                    m = parsed_try.get("meta") or {}
+                                    m["escalation"] = esc
+                                    parsed_try["meta"] = m
+                                except Exception:
+                                    pass
+                                try:
+                                    if not _is_weak(parsed_try):
+                                        foodai_escalation_success.labels(
+                                            from_model=(model_chain[midx - 1] if midx > 0 else "start"),
+                                            to_model=mid,
+                                            reason="strong",
+                                        ).inc()
+                                    else:
+                                        reason_lbl = "steps_exhausted" if (steps >= max_steps or last_step) else "weak"
+                                        foodai_escalation_failed.labels(
+                                            from_model=(model_chain[midx - 1] if midx > 0 else "start"),
+                                            to_model=mid,
+                                            reason=reason_lbl,
+                                        ).inc()
+                                except Exception:
+                                    pass
+                                return parsed_try
+                        if steps >= max_steps:
+                            break
+                    if steps >= max_steps:
+                        break
+                if best:
+                    # exhausted chain, returning best available (weak)
+                    try:
+                        total_ms = (time.perf_counter() - _chain_t0) * 1000.0
+                        foodai_escalation_total_dur_ms.observe(total_ms)
+                    except Exception:
+                        pass
+                    try:
+                        foodai_escalation_failed.labels(
+                            from_model=(model_chain[-2] if len(model_chain) >= 2 else "start"),
+                            to_model=(model_chain[-1] if len(model_chain) >= 1 else "none"),
+                            reason="exhausted",
+                        ).inc()
+                    except Exception:
+                        pass
+                    # attach escalation meta
+                    try:
+                        esc = {
+                            "enabled": True,
+                            "chain": model_chain,
+                            "detail_order": detail_seq_norm,
+                            "steps": steps,
+                            "final_model": model_chain[-1],
+                            "stopped_reason": "exhausted",
+                            "total_ms": int(total_ms),
+                        }
+                        m = best.get("meta") or {}
+                        m["escalation"] = esc
+                        best["meta"] = m
+                    except Exception:
+                        pass
+                    return best
+
             initial_detail = _norm_detail(getattr(settings, "FOODAI_IMAGE_DETAIL", "low"))
-            parsed = await _build_and_call(initial_detail)
+            parsed = await _build_and_call(initial_detail, vision_model)
             if parsed:
                 conf = float(parsed.get("confidence") or 0)
                 need_retry = (
@@ -490,8 +687,14 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                     and conf < float(getattr(settings, "FOODAI_CONFIDENCE_ESCALATE", 0.7))
                 )
                 if need_retry:
-                    parsed_hi = await _build_and_call("high")
+                    parsed_hi = await _build_and_call("high", vision_model)
                     if parsed_hi:
+                        try:
+                            m = parsed_hi.get("meta") or {}
+                            m["escalation"] = {"enabled": False}
+                            parsed_hi["meta"] = m
+                        except Exception:
+                            pass
                         return parsed_hi
                 # Optional rewrite of analysis_text
                 try:
@@ -526,12 +729,24 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                             parsed["analysis_text"] = txt
                 except Exception:
                     pass
+                try:
+                    m = parsed.get("meta") or {}
+                    m["escalation"] = {"enabled": False}
+                    parsed["meta"] = m
+                except Exception:
+                    pass
                 return parsed
             else:
                 # parsing failed — try a single high-detail retry if enabled
                 if bool(getattr(settings, "FOODAI_IMAGE_DETAIL_HIGH_RETRY", True)) and initial_detail != "high":
-                    parsed_hi = await _build_and_call("high")
+                    parsed_hi = await _build_and_call("high", vision_model)
                     if parsed_hi:
+                        try:
+                            m = parsed_hi.get("meta") or {}
+                            m["escalation"] = {"enabled": False}
+                            parsed_hi["meta"] = m
+                        except Exception:
+                            pass
                         return parsed_hi
         # If we are here and parsing still failed — return provider error (no stub)
         try:
@@ -709,6 +924,7 @@ async def analyze_text(text: str) -> dict[str, Any]:
                 "instructions": system,
                 "reasoning": {"effort": settings.FOODAI_REASONING_EFFORT},
                 "text": {"verbosity": settings.FOODAI_TEXT_VERBOSITY},
+                "max_output_tokens": 700,
                 "input": [
                     {
                         "role": "user",
@@ -719,10 +935,23 @@ async def analyze_text(text: str) -> dict[str, Any]:
                 ],
             }
             content = await _openai_request("responses", payload)
+            # Fallback to Chat API if Responses API failed
+            if not content and bool(getattr(settings, "FOODAI_TEXT_FALLBACK_TO_CHAT", True)):
+                payload_chat = {
+                    "model": settings.FOODAI_DEFAULT_MODEL,
+                    "temperature": 0.2,
+                    "max_tokens": 600,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": f"{text}\n\nReturn JSON only."},
+                    ],
+                }
+                content = await _openai_request("chat", payload_chat)
         else:
             payload = {
                 "model": settings.FOODAI_DEFAULT_MODEL,
                 "temperature": 0.2,
+                "max_tokens": 600,
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": text},

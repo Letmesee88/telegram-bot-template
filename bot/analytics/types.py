@@ -35,6 +35,9 @@ EventType = Literal[
     "FoodAI:TextAnalyzeStarted",
     "FoodAI:TextAnalyzeSucceeded",
     "FoodAI:TextAnalyzeFailed",
+    # Vision escalation (UX instrumentation)
+    "FoodAI:VisionEscalationStarted",
+    "FoodAI:VisionEscalationCompleted",
     # Onboarding
     "Onboarding:Resume",
     "Onboarding:Restart",

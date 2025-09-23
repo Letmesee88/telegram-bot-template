@@ -92,7 +92,7 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     OPENAI_BASE_URL: str | None = None  # optional, e.g. custom proxy/Azure endpoint
     FOODAI_PROVIDER: str = "stub"  # one of: stub, openai
     FOODAI_DEFAULT_MODEL: str = "gpt-5-mini"
-    FOODAI_EDIT_MODEL: str = "gpt-5"
+    FOODAI_EDIT_MODEL: str = "gpt-5-mini"
     FOODAI_API: str = "chat"  # one of: chat, responses
     FOODAI_REASONING_EFFORT: str = "minimal"  # minimal|low|medium|high (responses API)
     FOODAI_TEXT_VERBOSITY: str = "low"        # low|medium|high (responses API)
@@ -106,11 +106,28 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     # Vision controls
     FOODAI_IMAGE_DETAIL: str = "low"  # low|high|auto
     FOODAI_IMAGE_DETAIL_HIGH_RETRY: bool = True  # retry photo analysis with detail=high if confidence below threshold
-    FOODAI_VISION_MODEL: str = "gpt-4o-mini"  # preferred model for image analysis (falls back to FOODAI_DEFAULT_MODEL)
+    FOODAI_VISION_MODEL: str = "gpt-5-mini"  # preferred model for image analysis (falls back to FOODAI_DEFAULT_MODEL)
     # Analysis text rewrite controls
     # auto|always|off — auto: validate and rewrite only if needed; always: always rewrite; off: never rewrite
     FOODAI_ANALYSIS_REWRITE: str = "auto"
     FOODAI_ANALYSIS_REWRITE_TIMEOUT: int = 8
+
+    # Vision model escalation (feature-flagged)
+    # Chain of models to try in order, split by '>' (e.g., "gpt-5-mini>gpt-5").
+    FOODAI_VISION_ESCALATION_ENABLED: bool = True
+    FOODAI_VISION_ESCALATION_CHAIN: str | None = "gpt-5-mini>gpt-5"
+    # Escalation triggers and limits
+    FOODAI_ESCALATE_CONF: float = 0.70
+    FOODAI_ESCALATE_ITEMS_MIN: int = 3
+    FOODAI_ESCALATE_ZERO_FIELDS: bool = True
+    FOODAI_ESCALATE_ON_PROVIDER_ERROR: bool = True
+    FOODAI_VISION_TOTAL_TIMEOUT: int = 25
+    FOODAI_VISION_MAX_STEPS: int = 2
+    FOODAI_VISION_DETAIL_ORDER: str = "low>high"
+    # Fallbacks and UX flags
+    FOODAI_ALLOW_FALLBACK_TO_4O_MINI: bool = True
+    FOODAI_TEXT_FALLBACK_TO_CHAT: bool = True
+    FOODAI_SHOW_LOW_CONF_HINT: bool = False
 
     # Adjustment (onboarding final corrections) LLM settings
     ADJUST_LLM_ENABLED: bool = True
