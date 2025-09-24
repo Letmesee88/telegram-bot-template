@@ -59,6 +59,13 @@ class EventProperties(BaseModel):
     text: str | None = None
     command: str | None = None
     payment_method: PaymentMethod | None = None
+    # Vision escalation structured fields for Amplitude segmentation
+    esc_chain: str | None = None
+    esc_detail_order: str | None = None
+    esc_final_model: str | None = None
+    esc_steps: int | None = None
+    esc_reason: str | None = None
+    esc_total_ms: int | None = None
 
 
 class Plan(BaseModel):

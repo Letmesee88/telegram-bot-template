@@ -112,6 +112,15 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     FOODAI_ANALYSIS_REWRITE: str = "auto"
     FOODAI_ANALYSIS_REWRITE_TIMEOUT: int = 8
 
+    # If True, photo precheck (foodness) failure aborts analysis with provider_unavailable.
+    # If False (default), failure is treated as inconclusive and analysis proceeds.
+    FOODAI_PRECHECK_STRICT: bool = False
+
+    # Use Responses API for GPT-5 series models (e.g., gpt-5, gpt-5-mini) when analyzing photos.
+    # When False (default), fall back to Chat API for stability; code may still try Responses behind
+    # a per-attempt fallback if explicitly enabled at runtime.
+    FOODAI_USE_RESPONSES_FOR_5: bool = False
+
     # Vision model escalation (feature-flagged)
     # Chain of models to try in order, split by '>' (e.g., "gpt-5-mini>gpt-5").
     FOODAI_VISION_ESCALATION_ENABLED: bool = True

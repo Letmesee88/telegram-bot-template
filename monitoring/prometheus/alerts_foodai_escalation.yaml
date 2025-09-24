@@ -1,0 +1,44 @@
+groups:
+  - name: foodai-escalation
+    interval: 30s
+    rules:
+      # High failure ratio of escalation chain
+      - alert: FoodAI_EscalationHighFailureRatio
+        expr: |
+          (sum(rate(foodai_escalation_failed_total[5m])))
+            /
+          (sum(rate(foodai_escalation_attempts_total[5m])) + 1e-9)
+          > 0.30
+        for: 10m
+        labels:
+          severity: warning
+          service: foodai
+        annotations:
+          summary: "FoodAI escalation high failure ratio (>30% for 10m)"
+          description: |
+            Failed/Attempts ratio crossed 30%.
+            Investigate reasons: weak, steps_exhausted, timeout, provider_error.
+
+      # Spike of escalations to GPT-5 (cost control)
+      - alert: FoodAI_EscalationSpikeToGPT5
+        expr: |
+          rate(foodai_escalation_attempts_total{to_model="gpt-5"}[5m]) > 0.20
+        for: 10m
+        labels:
+          severity: warning
+          service: foodai
+        annotations:
+          summary: "FoodAI escalation spike to gpt-5"
+          description: "Escalation attempts to gpt-5 exceed 0.2 req/s over 10m. Check cost & model availability."
+
+      # p95 chain latency above SLO (12s)
+      - alert: FoodAI_EscalationP95LatencyHigh
+        expr: |
+          histogram_quantile(0.95, sum(rate(foodai_escalation_total_dur_ms_bucket[5m])) by (le)) > 12000
+        for: 10m
+        labels:
+          severity: warning
+          service: foodai
+        annotations:
+          summary: "FoodAI escalation p95 latency > 12s"
+          description: "p95 of escalation chain duration is above target for 10 minutes. Consider reducing steps or enabling stricter time budget."

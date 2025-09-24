@@ -98,14 +98,27 @@ async def _openai_request(kind: str, payload: dict[str, Any]) -> str | None:
         "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }
+    t0 = time.time()
+    model = str(payload.get("model") or "")
     try:
         async with ClientSession() as sess:
             async with sess.post(url, headers=headers, data=json.dumps(payload), timeout=settings.FOODAI_TIMEOUT) as r:
                 if r.status >= 400:
-                    text = await r.text()
-                    raise RuntimeError(f"OpenAI HTTP {r.status}: {text}")
+                    body = await r.text()
+                    try:
+                        logger.error("OpenAI error | kind={} | endpoint={} | model={} | status={} | body={}",
+                                     kind, endpoint, model, r.status, (body or "")[:512])
+                    except Exception:
+                        pass
+                    return None
                 data = await r.json()
-    except Exception:
+    except Exception as e:
+        dt = int((time.time() - t0) * 1000)
+        try:
+            logger.exception("OpenAI exception | kind={} | endpoint={} | model={} | dur_ms={} | err={}",
+                             kind, endpoint, model, dt, repr(e))
+        except Exception:
+            pass
         return None
 
     # Extract assistant text
@@ -335,7 +348,7 @@ async def _compose_analysis_text(items: list | None, appearance: dict | None, co
     pkg_hint = "в упаковке" if is_packaged else "без упаковки, на тарелке"
     system = (
         "Ты — ИИ-нутрициолог. Сформулируй один абзац (350–420 символов) на русском, без markdown. "
-        "Начни первое предложение со слов: 'На фото ...' и перечисли 2–3 основных компонента дословно из списка. "
+        "Начни первое предложение со слов: 'На фото …' и перечисли 2–3 основных компонента дословно из списка. "
         "Опиши вид: " + pkg_hint + ". Объясни, как оценивалась порция (" + method_hint + "). "
         "Обязательно включи точную фразу: \"" + MUST_PHRASE + "\". "
         "Запрещено использовать слова с корнями 'выгляд' и 'похож' в первом предложении. Без брендов, если их нет."
@@ -345,16 +358,28 @@ async def _compose_analysis_text(items: list | None, appearance: dict | None, co
         + f"Уверенность: {int(float(confidence or 0)*100)}%. "
         + ("Тарелка видна." if plate_visible else "Тарелка не видна.")
     )
+    # Use a fast/stable model for rewrite to avoid latency/cost spikes
+    # Use GPT-5-mini via Responses for rewrite (fast/stable)
+    rewrite_model = "gpt-5-mini"
     payload = {
-        "model": settings.FOODAI_DEFAULT_MODEL,
-        "temperature": 0.4,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
+        "model": rewrite_model,
+        "instructions": system,
+        "reasoning": {"effort": settings.FOODAI_REASONING_EFFORT},
+        "text": {"verbosity": settings.FOODAI_TEXT_VERBOSITY},
+        "max_output_tokens": 500,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": user},
+                ],
+            }
         ],
     }
     try:
-        content = await _openai_request("chat", payload)
+        # Enforce a local, smaller timeout budget for rewrite step
+        rw_timeout = int(getattr(settings, "FOODAI_ANALYSIS_REWRITE_TIMEOUT", 8) or 8)
+        content = await asyncio.wait_for(_openai_request("responses", payload), timeout=rw_timeout)
         if not content:
             return None
         txt = content.strip().replace("\n", " ")
@@ -419,11 +444,17 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                     "not_food": True,
                 }
             if is_food is None:
+                # Precheck failed (HTTP/JSON/Other). By default, do NOT abort; proceed with analysis.
                 try:
-                    foodai_provider_error.labels(source="photo", error="precheck_failed").inc()
+                    foodai_precheck_error.labels(source="photo", reason="precheck_failed").inc()
                 except Exception:
                     pass
-                return {"error": "provider_unavailable"}
+                try:
+                    strict = bool(getattr(settings, "FOODAI_PRECHECK_STRICT", False))
+                except Exception:
+                    strict = False
+                if strict:
+                    return {"error": "provider_unavailable"}
             system = (
                 "You are a nutrition analyst. Given an image, estimate total calories, protein_g, fat_g, carbs_g, "
                 "and weight_g for the pictured dish. Return ONLY a compact JSON with keys: \n"
@@ -437,44 +468,61 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                 "(2) names 2–3 visually identified main components, (3) explains how portion size was estimated (e.g., by plate size ~24 cm and ingredient count/volume); "
                 "include the exact sentence: \"Использованы справочные данные ФИЦ питания и USDA.\" Return JSON only, without explanations."
             )
-            vision_model = getattr(settings, "FOODAI_VISION_MODEL", None) or settings.FOODAI_DEFAULT_MODEL
 
             async def _build_and_call(detail: str, model_id: str) -> dict[str, Any] | None:
-                # Force Chat API for images for better compatibility
-                api = "chat"
-                if api == "responses":
-                    payload = {
+                is_gpt5 = str(model_id).startswith("gpt-5")
+                use_responses = False
+                try:
+                    use_responses = bool(getattr(settings, "FOODAI_USE_RESPONSES_FOR_5", False)) and is_gpt5
+                except Exception:
+                    use_responses = is_gpt5 and False
+
+                # Helper: Chat payload call
+                async def _call_chat() -> str | None:
+                    payload_chat = {
                         "model": model_id,
-                        "instructions": system,
-                        "reasoning": {"effort": settings.FOODAI_REASONING_EFFORT},
-                        "text": {"verbosity": settings.FOODAI_TEXT_VERBOSITY},
-                        "input": [
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "input_text", "text": "Estimate nutrition for this dish and return JSON only."},
-                                    {"type": "input_image", "image_url": {"url": file_url}, "detail": detail},
-                                ],
-                            }
-                        ],
-                    }
-                    content_local = await _openai_request("responses", payload)
-                else:
-                    payload = {
-                        "model": model_id,
-                        "temperature": 0.2,
+                        "temperature": (0 if str(model_id).startswith("gpt-4o") else 1),
                         "messages": [
                             {"role": "system", "content": system},
                             {
                                 "role": "user",
                                 "content": [
-                                    {"type": "text", "text": "Estimate nutrition for this dish and return JSON only."},
+                                    {"type": "text", "text": "Estimate nutrition for this dish and return json only."},
                                     {"type": "image_url", "image_url": {"url": file_url, "detail": detail}},
                                 ],
                             },
                         ],
                     }
-                    content_local = await _openai_request("chat", payload)
+                    return await _openai_request("chat", payload_chat)
+
+                # Helper: Responses payload call
+                async def _call_responses() -> str | None:
+                    payload_resp = {
+                        "model": model_id,
+                        "instructions": system,
+                        "reasoning": {"effort": settings.FOODAI_REASONING_EFFORT},
+                        "text": {"verbosity": settings.FOODAI_TEXT_VERBOSITY, "format": {"type": "json_object"}},
+                        "max_output_tokens": 800,
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "input_text", "text": "Estimate nutrition for this dish and return json only."},
+                                    {"type": "input_image", "image_url": file_url},
+                                ],
+                            }
+                        ],
+                    }
+                    return await _openai_request("responses", payload_resp)
+
+                content_local: str | None = None
+                if use_responses:
+                    # Use Responses only (no Chat fallback)
+                    content_local = await _call_responses()
+                else:
+                    # Use Responses only (no Chat fallback)
+                    content_local = await _call_responses()
+
                 if content_local:
                     parsed_local = _normalize_openai_json(content_local)
                     # treat empty {} as failure to trigger fallback/retry
@@ -607,6 +655,19 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                                     foodai_escalation_total_dur_ms.observe(total_ms)
                                 except Exception:
                                     pass
+                                # Log final model used for this photo analysis (for debugging/UX visibility)
+                                try:
+                                    logger.info(
+                                        "foodai.final | model={} | detail={} | steps={} | total_ms={} | conf={} | items={}",
+                                        mid,
+                                        _norm_detail(det),
+                                        steps,
+                                        int(total_ms),
+                                        parsed_try.get("confidence"),
+                                        len(list(parsed_try.get("items") or [])),
+                                    )
+                                except Exception:
+                                    pass
                                 # attach escalation meta for UX analytics
                                 try:
                                     esc = {
@@ -678,6 +739,7 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                     return best
 
             initial_detail = _norm_detail(getattr(settings, "FOODAI_IMAGE_DETAIL", "low"))
+            vision_model = getattr(settings, "FOODAI_VISION_MODEL", None) or settings.FOODAI_DEFAULT_MODEL
             parsed = await _build_and_call(initial_detail, vision_model)
             if parsed:
                 conf = float(parsed.get("confidence") or 0)
@@ -769,20 +831,27 @@ async def _foodness_photo(file_url: str) -> bool | None:
     vision_model = getattr(settings, "FOODAI_VISION_MODEL", None) or settings.FOODAI_DEFAULT_MODEL
     payload = {
         "model": vision_model,
-        "temperature": 0,
-        "messages": [
-            {"role": "system", "content": system},
+        "instructions": system,
+        "reasoning": {"effort": settings.FOODAI_REASONING_EFFORT},
+        "text": {"verbosity": settings.FOODAI_TEXT_VERBOSITY, "format": {"type": "json_object"}},
+        "max_output_tokens": 50,
+        "input": [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Does this image contain food or drink?"},
-                    {"type": "image_url", "image_url": {"url": file_url}},
+                    {"type": "input_text", "text": "Does this image contain food or drink? Return strict json only."},
+                    {"type": "input_image", "image_url": file_url},
                 ],
-            },
+            }
         ],
     }
     try:
-        content = await _openai_request("chat", payload)
+        # Local timeout for precheck to avoid waiting full FOODAI_TIMEOUT
+        try:
+            precheck_timeout = int(getattr(settings, "FOODAI_PRECHECK_TIMEOUT", 8) or 8)
+        except Exception:
+            precheck_timeout = 8
+        content = await asyncio.wait_for(_openai_request("responses", payload), timeout=precheck_timeout)
         if not content:
             try:
                 foodai_precheck_error.labels(source="photo", reason="http").inc()
@@ -827,7 +896,7 @@ async def _foodness_text(text: str) -> bool | None:
     primary_model = getattr(settings, "FOODAI_DEFAULT_MODEL", None) or getattr(settings, "FOODAI_VISION_MODEL", None)
     payload = {
         "model": primary_model,
-        "temperature": 0,
+        "temperature": 1,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": (text or "")[:500]},
@@ -907,8 +976,7 @@ async def analyze_text(text: str) -> dict[str, Any]:
         system = (
             "You are a nutrition analyst. Given a short dish description, estimate total calories, protein_g, "
             "fat_g, carbs_g and weight_g. Return ONLY JSON with keys: title(string), calories(int), protein_g(float), fat_g(float), "
-            "carbs_g(float), weight_g(float), confidence(float 0..1), items(list of {name, calories, protein_g, fat_g, carbs_g, weight_g, is_liquid:boolean}), "
-            "references({sources: [string]}), analysis_text(string), appearance({is_packaged: boolean, plate_visible: boolean, plate_diameter_cm: int|null}), not_food(boolean).\n"
+            "carbs_g(float), weight_g(float), confidence(float 0..1), items(list of {name, calories, protein_g, fat_g, carbs_g, weight_g, is_liquid:boolean}), references({sources: [string]}), analysis_text(string), appearance({is_packaged: boolean, plate_visible: boolean, plate_diameter_cm: int|null}), not_food(boolean).\n"
             "Important: Answer in Russian language. Field 'title' must be in Russian. Ingredient names (items[].name) must be in Russian. "
             "Always set references.sources to exactly [\"ФГБУН \\\"ФИЦ питания и биотехнологии\\\"\", \"USDA FoodData Central\"]. "
             "If the description clearly does not refer to food or drinks, set not_food=true and keep items minimal. "
@@ -939,7 +1007,7 @@ async def analyze_text(text: str) -> dict[str, Any]:
             if not content and bool(getattr(settings, "FOODAI_TEXT_FALLBACK_TO_CHAT", True)):
                 payload_chat = {
                     "model": settings.FOODAI_DEFAULT_MODEL,
-                    "temperature": 0.2,
+                    "temperature": 1,
                     "max_tokens": 600,
                     "messages": [
                         {"role": "system", "content": system},
@@ -950,7 +1018,7 @@ async def analyze_text(text: str) -> dict[str, Any]:
         else:
             payload = {
                 "model": settings.FOODAI_DEFAULT_MODEL,
-                "temperature": 0.2,
+                "temperature": 1,
                 "max_tokens": 600,
                 "messages": [
                     {"role": "system", "content": system},
@@ -995,6 +1063,7 @@ async def analyze_text(text: str) -> dict[str, Any]:
                         if parsed.get("analysis_text"):
                             txt = _sanitize_first_sentence(parsed.get("items"), str(parsed.get("analysis_text") or ""))
                             if txt:
+                                # re-cap length after sanitation
                                 if len(txt) > 420:
                                     txt = txt[:417].rstrip() + "…"
                                 parsed["analysis_text"] = txt
@@ -1749,7 +1818,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "ржан": {"cal": 210, "p": 5.0, "f": 1.3, "c": 44.0},  # хлеб ржаной
             "лаваш": {"cal": 260, "p": 8.0, "f": 1.2, "c": 52.0},
             "сахар": {"cal": 387, "p": 0.0, "f": 0.0, "c": 100.0},
-            "арахис": {"cal": 588, "p": 25.0, "f": 50.0, "c": 20.0},  # паста
+            "арахис": {"cal": 588, "p": 21.0, "f": 50.0, "c": 20.0},  # паста
             "шоколад": {"cal": 546, "p": 4.9, "f": 31.0, "c": 61.0},
             # meats/fish (cooked/lean generalizations)
             "курин груд": {"cal": 165, "p": 31.0, "f": 3.6, "c": 0.0},
@@ -1817,10 +1886,6 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         new_name = _normalize_name_ru((m.group(2) or "").strip())
         qty = float(m.group(3)) if m.group(3) else None
         unit = (m.group(4) or None)
-        try:
-            logger.info("FoodAI:edit | action=replace | parsed old='{}' new='{}' qty={} unit={}", old_name, new_name, qty, unit)
-        except Exception:
-            pass
         items = _clone_items(items_in)
         idxs = _find_indices(items, old_name)
         if len(idxs) == 0:
@@ -1839,15 +1904,12 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         # Foodness gate for new item in replace
         try:
             is_food_flag: bool | None = None
+            # quick lexical whitelist; if not decisive, ask LLM classifier
             lex_hit = _lexicon_is_food_text(new_name)
             if lex_hit is True:
                 is_food_flag = True
             else:
                 is_food_flag = await _foodness_text(new_name)
-            try:
-                logger.info("FoodAI:edit | replace | foodness new='{}' -> {}", new_name, is_food_flag)
-            except Exception:
-                pass
         except Exception:
             is_food_flag = None
         if is_food_flag is False or is_food_flag is None:
@@ -2161,8 +2223,9 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         items = _clone_items(items_in)
         for it in items:
             try:
+                old_w = float(it.get("weight_g") or 0)
                 if it.get("weight_g") is not None:
-                    it["weight_g"] = round(float(it.get("weight_g") or 0) * factor, 1)
+                    it["weight_g"] = round(old_w * factor, 1)
                 # re-estimate macros roughly by name
                 name = str(it.get("name") or "")
                 w = float(it.get("weight_g") or 0)

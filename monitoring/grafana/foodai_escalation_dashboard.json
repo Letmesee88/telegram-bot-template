@@ -1,0 +1,90 @@
+{
+  "id": null,
+  "uid": "foodai-escalation",
+  "title": "FoodAI Vision Escalation",
+  "tags": ["foodai", "escalation", "vision"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {
+          "text": "Prometheus",
+          "value": "Prometheus"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Escalation Attempts by to_model (rate/5m)",
+      "id": 1,
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "expr": "rate(foodai_escalation_attempts_total[5m])",
+          "legendFormat": "{{to_model}}",
+          "refId": "A"
+        }
+      ],
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Escalation Success by reason (rate/5m)",
+      "id": 2,
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "expr": "rate(foodai_escalation_success_total[5m])",
+          "legendFormat": "success: {{reason}}",
+          "refId": "A"
+        }
+      ],
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Escalation Failed by reason (rate/5m)",
+      "id": 3,
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "expr": "rate(foodai_escalation_failed_total[5m])",
+          "legendFormat": "failed: {{reason}}",
+          "refId": "A"
+        }
+      ],
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Escalation Chain Duration p95/p99 (ms)",
+      "id": 4,
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(foodai_escalation_total_dur_ms_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(foodai_escalation_total_dur_ms_bucket[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "B"
+        }
+      ],
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    }
+  ]
+}
