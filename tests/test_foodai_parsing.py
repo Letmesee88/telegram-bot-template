@@ -117,3 +117,59 @@ async def test_openai_request_uses_output_array(monkeypatch):
     content = await _openai_request("responses", payload)
     assert content is not None
     assert json.loads(content) == {"is_food": True}
+
+
+# -------------------------
+# Additional full-case tests for _normalize_openai_json
+# -------------------------
+
+def test_normalize_full_foodai_result_multiple_items_and_refs():
+    raw = json.dumps({
+        "title": "гречка с курицей",
+        "calories": 520,
+        "protein_g": 35.0,
+        "fat_g": 16.0,
+        "carbs_g": 60.0,
+        "weight_g": 450,
+        "confidence": 0.88,
+        "items": [
+            {"name": "гречка", "calories": 300, "protein_g": 12, "fat_g": 4, "carbs_g": 56, "weight_g": 300, "is_liquid": False},
+            {"name": "курица", "calories": 220, "protein_g": 23, "fat_g": 12, "carbs_g": 4, "weight_g": 150, "is_liquid": False},
+        ],
+        "references": {"sources": ["ФГБУН \"ФИЦ питания и биотехнологии\"", "USDA FoodData Central"]},
+        "analysis_text": "На фото гречка и курица. Текст для проверки длины и безопасного парсинга.",
+        "appearance": {"is_packaged": False, "plate_visible": True, "plate_diameter_cm": 24},
+        "not_food": False,
+    })
+    out = _normalize_openai_json(raw)
+    assert out is not None
+    assert out["title"].startswith("гречка")
+    assert out["calories"] == 520
+    assert isinstance(out["items"], list) and len(out["items"]) == 2
+    # plate_diameter_cm must be int
+    assert isinstance(out["appearance"].get("plate_diameter_cm"), int)
+    # references.sources must be exactly 2 and exact strings
+    refs = out["references"].get("sources")
+    assert isinstance(refs, list) and len(refs) == 2
+    assert refs[0] == "ФГБУН \"ФИЦ питания и биотехнологии\""
+    assert refs[1] == "USDA FoodData Central"
+
+
+def test_normalize_plate_diameter_non_numeric_sets_none():
+    raw = json.dumps({
+        "title": "салат",
+        "calories": 150,
+        "protein_g": 5,
+        "fat_g": 7,
+        "carbs_g": 14,
+        "weight_g": 200,
+        "confidence": 0.7,
+        "items": [],
+        "references": {"sources": ["ФГБУН \"ФИЦ питания и биотехнологии\"", "USDA FoodData Central"]},
+        "analysis_text": "",
+        "appearance": {"is_packaged": False, "plate_visible": False, "plate_diameter_cm": "NaN"},
+        "not_food": False,
+    })
+    out = _normalize_openai_json(raw)
+    assert out is not None
+    assert out["appearance"].get("plate_diameter_cm") is None
