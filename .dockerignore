@@ -4,6 +4,7 @@
 # exclusion
 !/bot/
 !/migrations/
+!/tests/
 
 !/alembic.ini
 !/pyproject.toml
