@@ -501,7 +501,86 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                         "model": model_id,
                         "instructions": system,
                         "reasoning": {"effort": settings.FOODAI_REASONING_EFFORT},
-                        "text": {"verbosity": settings.FOODAI_TEXT_VERBOSITY, "format": {"type": "json_object"}},
+                        "text": {
+                            "verbosity": settings.FOODAI_TEXT_VERBOSITY,
+                            "format": {
+                                "type": "json_schema",
+                                "name": "foodai_result",
+                                "strict": True,
+                                "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "title": {"type": ["string", "null"]},
+                                            "calories": {"type": "integer", "minimum": 0},
+                                            "protein_g": {"type": "number", "minimum": 0},
+                                            "fat_g": {"type": "number", "minimum": 0},
+                                            "carbs_g": {"type": "number", "minimum": 0},
+                                            "weight_g": {"type": "number", "minimum": 0},
+                                            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                                            "items": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "name": {"type": "string"},
+                                                        "calories": {"type": "integer", "minimum": 0},
+                                                        "protein_g": {"type": "number", "minimum": 0},
+                                                        "fat_g": {"type": "number", "minimum": 0},
+                                                        "carbs_g": {"type": "number", "minimum": 0},
+                                                        "weight_g": {"type": "number", "minimum": 0},
+                                                        "is_liquid": {"type": "boolean"}
+                                                    },
+                                                    "required": [
+                                                        "name",
+                                                        "calories",
+                                                        "protein_g",
+                                                        "fat_g",
+                                                        "carbs_g",
+                                                        "weight_g",
+                                                        "is_liquid"
+                                                    ],
+                                                    "additionalProperties": False
+                                                }
+                                            },
+                                            "references": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "sources": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+                                                },
+                                                "required": ["sources"],
+                                                "additionalProperties": False
+                                            },
+                                            "analysis_text": {"type": ["string", "null"]},
+                                            "appearance": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "is_packaged": {"type": "boolean"},
+                                                    "plate_visible": {"type": "boolean"},
+                                                    "plate_diameter_cm": {"type": ["integer", "null"], "minimum": 0}
+                                                },
+                                                "required": ["is_packaged", "plate_visible", "plate_diameter_cm"],
+                                                "additionalProperties": False
+                                            },
+                                            "not_food": {"type": "boolean"}
+                                        },
+                                        "required": [
+                                            "title",
+                                            "calories",
+                                            "protein_g",
+                                            "fat_g",
+                                            "carbs_g",
+                                            "weight_g",
+                                            "confidence",
+                                            "items",
+                                            "references",
+                                            "analysis_text",
+                                            "appearance",
+                                            "not_food"
+                                        ],
+                                        "additionalProperties": False
+                                    }
+                            }
+                        },
                         "max_output_tokens": 800,
                         "input": [
                             {
@@ -833,13 +912,26 @@ async def _foodness_photo(file_url: str) -> bool | None:
         "model": vision_model,
         "instructions": system,
         "reasoning": {"effort": settings.FOODAI_REASONING_EFFORT},
-        "text": {"verbosity": settings.FOODAI_TEXT_VERBOSITY, "format": {"type": "json_object"}},
+        "text": {
+            "verbosity": settings.FOODAI_TEXT_VERBOSITY,
+            "format": {
+                "type": "json_schema",
+                "name": "foodness",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {"is_food": {"type": "boolean"}},
+                    "required": ["is_food"],
+                    "additionalProperties": False
+                }
+            }
+        },
         "max_output_tokens": 50,
         "input": [
             {
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": "Does this image contain food or drink? Return strict json only."},
+                    {"type": "input_text", "text": "Does this image contain food or drink?"},
                     {"type": "input_image", "image_url": file_url},
                 ],
             }
