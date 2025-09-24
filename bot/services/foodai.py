@@ -1517,7 +1517,21 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                 except Exception:
                     continue
             out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
-            wg_out = round(out_w, 1)
+            # Scale total meal weight from base weight as ground truth; ensure it is not
+            # lower than the sum of scaled item weights. This keeps UX consistent when
+            # base weight != sum(items.weight_g).
+            try:
+                base_w = float(weight_g or 0.0)
+            except Exception:
+                base_w = 0.0
+            try:
+                base_scaled_w = round(base_w * float(factor_pre), 1)
+            except Exception:
+                base_scaled_w = 0.0
+            wg_items_scaled = round(out_w, 1)
+            wg_out = base_scaled_w if base_scaled_w > 0 else wg_items_scaled
+            if wg_items_scaled > wg_out:
+                wg_out = wg_items_scaled
             try:
                 logger.info("FoodAI:scale | path=pre | instr='{}' | factor_pre={}", instr_raw, factor_pre)
             except Exception:
