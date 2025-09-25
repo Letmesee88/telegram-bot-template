@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
 
 if TYPE_CHECKING:
     from sqlalchemy.engine.url import URL
@@ -86,6 +87,48 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     AMPLITUDE_BASE_URL: str | None = None  # e.g., https://api.eu.amplitude.com/2/httpapi for EU region
     # Tests can force synchronous analytics in /start to avoid race conditions
     ANALYTICS_SYNC_START: bool = False
+
+    # List of Telegram user IDs who must have admin rights.
+    # Accepts JSON list (preferred) or comma-separated string in .env
+    # Examples:
+    #   ADMIN_USER_IDS=[141872590,123456789]
+    #   ADMIN_USER_IDS=141872590,123456789
+    ADMIN_USER_IDS: list[int] = []
+
+    # Robust parsing for CSV/JSON env values
+    @field_validator("ADMIN_USER_IDS", mode="before")
+    @classmethod
+    def _parse_admin_ids(cls, v):  # type: ignore[no-untyped-def]
+        if v is None or v == "":
+            return []
+        if isinstance(v, list):
+            return [int(x) for x in v]
+        if isinstance(v, (set, tuple)):
+            return [int(x) for x in list(v)]
+        if isinstance(v, (int,)):
+            return [int(v)]
+        if isinstance(v, str):
+            s = v.strip()
+            # Try JSON-like list first
+            if s.startswith("[") and s.endswith("]"):
+                try:
+                    import json  # local import to avoid top-level dependency at import time
+                    arr = json.loads(s)
+                    return [int(x) for x in arr]
+                except Exception:
+                    # fall through to CSV parsing
+                    pass
+            # CSV parsing
+            parts = [p.strip() for p in s.split(",") if p.strip()]
+            out: list[int] = []
+            for p in parts:
+                try:
+                    out.append(int(p))
+                except Exception:
+                    # ignore invalid tokens quietly
+                    continue
+            return out
+        return []
 
     # OpenAI / FoodAI settings
     OPENAI_API_KEY: str | None = None

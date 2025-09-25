@@ -5,6 +5,7 @@ from sqlalchemy import func, select, update
 
 from bot.cache.redis import build_key, cached, clear_cache
 from bot.database.models import UserModel
+import bot.core.config as cfg
 
 if TYPE_CHECKING:
     from aiogram.types import User
@@ -24,6 +25,9 @@ async def add_user(
     language_code: str | None = user.language_code
     is_premium: bool = user.is_premium or False
 
+    # Auto-grant admin flag if user ID is listed in ADMIN_USER_IDS
+    is_admin_env = user_id in cfg.settings.ADMIN_USER_IDS
+
     new_user = UserModel(
         id=user_id,
         first_name=first_name,
@@ -32,6 +36,7 @@ async def add_user(
         language_code=language_code,
         is_premium=is_premium,
         referrer=referrer,
+        is_admin=is_admin_env,
     )
 
     session.add(new_user)
@@ -83,6 +88,10 @@ async def set_language_code(
 
 @cached(key_builder=lambda session, user_id: build_key(user_id))
 async def is_admin(session: AsyncSession, user_id: int) -> bool:
+    # ENV-based superadmin: bypass DB if user is listed in ADMIN_USER_IDS
+    if user_id in cfg.settings.ADMIN_USER_IDS:
+        return True
+
     query = select(UserModel.is_admin).filter_by(id=user_id)
 
     result = await session.execute(query)
