@@ -355,7 +355,11 @@ async def _ask_goal(message: Message) -> None:
         [("Хочу набрать мышечную массу", "goal:gain")],
         [("Хочу поддерживать текущий вес", "goal:maintain")],
     ])
-    await message.answer(text, reply_markup=kb)
+    try:
+        photo = FSInputFile("bot/static/charts.jpg")
+        await message.answer_photo(photo, caption=text, reply_markup=kb)
+    except Exception:
+        await message.answer(text, reply_markup=kb)
 
 
 async def _ask_goal_weight(message: Message) -> None:
@@ -615,18 +619,8 @@ async def activity_set(message: Message, state: FSMContext) -> None:
 
     # Переходим к выбору цели
     await state.set_state(OnboardingStates.goal)
-
-    # Показ целей с inline-кнопками
-    text = _(
-        "Зафиксировал! Теперь самое главное — поставим цель\n"
-        "TapTap  помогает достигать долгосрочных результатов благодаря развитию полезных привычек"
-    )
-    kb = _ikb([
-        [("Хочу похудеть", "goal:lose")],
-        [("Хочу набрать мышечную массу", "goal:gain")],
-        [("Хочу поддерживать текущий вес", "goal:maintain")],
-    ])
-    await message.answer(text, reply_markup=kb)
+    # Показ целей: одно сообщение с фото+caption+инлайн-кнопками
+    await _ask_goal(message)
 
 
 @router.message(OnboardingStates.activity, F.text & (~F.text.startswith("/")))
@@ -640,20 +634,76 @@ async def activity_retry(message: Message) -> None:
 
 @router.callback_query(OnboardingStates.goal, F.data.startswith("goal:"))
 async def cb_goal(call: CallbackQuery, state: FSMContext) -> None:
+    # Гасим спиннер сразу (даже при повторном клике)
+    try:
+        await call.answer()
+    except Exception:
+        pass
+
+    # Идемпотентный guard: состояние и лок
+    cur_state = await state.get_state()
+    if cur_state != OnboardingStates.goal.state:
+        try:
+            await call.answer(_("Уже обработано"), cache_time=3)
+        except Exception:
+            pass
+        return
+    data = await state.get_data()
+    if data.get("goal_locked") is True:
+        try:
+            await call.answer(_("Уже обработано"), cache_time=3)
+        except Exception:
+            pass
+        return
+    await state.update_data(goal_locked=True)
+
     goal_raw = call.data.split(":", 1)[1]
     await state.update_data(goal=goal_raw)
 
+    # Analytics: выбор цели
+    if analytics.logger and call.from_user:
+        try:
+            analytics.fire_event(
+                BaseEvent(
+                    user_id=call.from_user.id,
+                    event_type="Onboarding:GoalSelected",
+                    event_properties=EventProperties(
+                        chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
+                        chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                        text=None,
+                        command=None,
+                    ),
+                    language=getattr(call.from_user, 'language_code', None),
+                    plan=Plan(branch="SetGoal", source="onboarding", version="v1"),
+                )
+            )
+        except Exception:
+            pass
+
     if goal_raw == Goal.maintain.value:
-        # Миновать скорость и целевой вес — сразу финализация
+        # Для maintain: оставляем сообщение как есть, сразу финализация
         await state.set_state(OnboardingStates.speed)
-        await _finalize_and_show(call.message, state, call.from_user.id)  
-        await call.answer()
+        await _finalize_and_show(call.message, state, call.from_user.id)
         return
 
-    # Для lose/gain спросим целевой вес
+    # Для lose/gain: удалим сообщение с картинкой и кнопками (чтобы оно исчезло из чата)
+    try:
+        await call.message.delete()
+    except Exception:
+        # Фолбэк: если удалить не удалось (например, ограничения клиента), уберём хотя бы клавиатуру
+        try:
+            await call.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+    # Сразу задаём следующий вопрос отдельным фото-сообщением
     await state.set_state(OnboardingStates.goal_weight)
-    await call.message.answer(_("К какому весу ты стремишься?"))
-    await call.answer()
+    try:
+        photo = FSInputFile("bot/static/charts.jpg")
+        await call.message.answer_photo(photo, caption=_("К какому весу ты стремишься?"))
+    except Exception:
+        await call.message.answer(_("К какому весу ты стремишься?"))
+
 
 
 # Текстовый fallback цели — запрещаем свободный ввод, повторяем шаг с кнопками
