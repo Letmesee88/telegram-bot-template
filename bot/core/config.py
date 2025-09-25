@@ -98,7 +98,8 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     FOODAI_TEXT_VERBOSITY: str = "low"        # low|medium|high (responses API)
     # Enable LLM-based NLU for edit flow. If OPENAI_API_KEY is missing, code will fallback to local parser.
     FOODAI_EDIT_NLU: bool = True
-    FOODAI_CONFIDENCE_ESCALATE: float = 0.70
+    # DEPRECATED: use FOODAI_ESCALATE_CONF instead (kept only for backward-compat in runtime fallback)
+    # FOODAI_CONFIDENCE_ESCALATE: float = 0.70
     # Confidence display thresholds (for category rendering)
     FOODAI_CONF_LOW: float = 0.60
     FOODAI_CONF_HIGH: float = 0.80

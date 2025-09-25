@@ -481,7 +481,7 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                 async def _call_chat() -> str | None:
                     payload_chat = {
                         "model": model_id,
-                        "temperature": (0 if str(model_id).startswith("gpt-4o") else 1),
+                        "temperature": 0,
                         "messages": [
                             {"role": "system", "content": system},
                             {
@@ -582,6 +582,8 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                             }
                         },
                         "max_output_tokens": 800,
+                        "temperature": 0,
+                        "top_p": 0,
                         "input": [
                             {
                                 "role": "user",
@@ -988,7 +990,7 @@ async def _foodness_text(text: str) -> bool | None:
     primary_model = getattr(settings, "FOODAI_DEFAULT_MODEL", None) or getattr(settings, "FOODAI_VISION_MODEL", None)
     payload = {
         "model": primary_model,
-        "temperature": 1,
+        "temperature": 0,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": (text or "")[:500]},
@@ -1099,7 +1101,7 @@ async def analyze_text(text: str) -> dict[str, Any]:
             if not content and bool(getattr(settings, "FOODAI_TEXT_FALLBACK_TO_CHAT", True)):
                 payload_chat = {
                     "model": settings.FOODAI_DEFAULT_MODEL,
-                    "temperature": 1,
+                    "temperature": 0,
                     "max_tokens": 600,
                     "messages": [
                         {"role": "system", "content": system},
@@ -1110,7 +1112,7 @@ async def analyze_text(text: str) -> dict[str, Any]:
         else:
             payload = {
                 "model": settings.FOODAI_DEFAULT_MODEL,
-                "temperature": 1,
+                "temperature": 0,
                 "max_tokens": 600,
                 "messages": [
                     {"role": "system", "content": system},
