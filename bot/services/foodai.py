@@ -596,11 +596,11 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
 
                 content_local: str | None = None
                 if use_responses:
-                    # Use Responses only (no Chat fallback)
+                    # Use Responses API (no Chat fallback)
                     content_local = await _call_responses()
                 else:
-                    # Use Responses only (no Chat fallback)
-                    content_local = await _call_responses()
+                    # Use Chat API when Responses disabled for this model
+                    content_local = await _call_chat()
 
                 if content_local:
                     parsed_local = _normalize_openai_json(content_local)
@@ -1557,6 +1557,124 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
     except Exception:
         pass
 
+    # --- unit conversion helper (must be defined before NLU block) ---
+    def _qty_to_grams(name: str, qty: float, unit: str | None) -> tuple[float, bool]:
+        unit_l = (unit or "г").lower()
+        if unit_l in {"г", "гр", "грамм", "gram", "g"}:
+            return float(qty), False
+        if unit_l in {"кг", "kg"}:
+            return float(qty) * 1000.0, False
+        if unit_l in {"мл", "ml"}:
+            # convert to g using density
+            d = 1.0
+            key = (name or "").lower()
+            for k, val in densities.items():
+                if k in key:
+                    d = val
+                    break
+            return float(qty) * d, True
+        if unit_l in {"л", "l"}:
+            # liters -> ml -> g
+            ml = float(qty) * 1000.0
+            return _qty_to_grams(name, ml, "мл")
+        if unit_l in {"шт", "pc", "pcs"}:
+            key = (name or "").lower()
+            for k, val in pcs.items():
+                if k in key:
+                    return float(qty) * float(val), False
+            # unknown piece -> fallback 100g
+            return float(qty) * 100.0, False
+        # default
+        return float(qty), False
+
+    def _estimate_from_name(name: str, qty_g: float) -> tuple[int, float, float, float]:
+        per100 = {
+            "сыр": {"cal": 330, "p": 25.0, "f": 26.0, "c": 1.3},
+            "кетчуп": {"cal": 100, "p": 1.5, "f": 0.2, "c": 24.0},
+            "масло": {"cal": 900, "p": 0.0, "f": 100.0, "c": 0.0},
+            "оливковое масло": {"cal": 900, "p": 0.0, "f": 100.0, "c": 0.0},
+            "майонез": {"cal": 680, "p": 1.0, "f": 75.0, "c": 3.0},
+            "сметана": {"cal": 206, "p": 2.8, "f": 20.0, "c": 3.2},
+            "соус": {"cal": 150, "p": 1.0, "f": 5.0, "c": 24.0},
+            # eggs (boiled, average): ~155 kcal, 13P/11F/1.1C per 100 g
+            "яйц": {"cal": 155, "p": 13.0, "f": 11.0, "c": 1.1},
+            # common foods (approximate, per 100 g)
+            "банан": {"cal": 89, "p": 1.1, "f": 0.3, "c": 22.8},
+            "помидор": {"cal": 18, "p": 0.9, "f": 0.2, "c": 3.9},
+            "томат": {"cal": 18, "p": 0.9, "f": 0.2, "c": 3.9},
+            "огур": {"cal": 16, "p": 0.8, "f": 0.1, "c": 3.6},
+            "лук": {"cal": 40, "p": 1.1, "f": 0.1, "c": 9.3},
+            "чеснок": {"cal": 149, "p": 6.4, "f": 0.5, "c": 33.0},
+            "картоф": {"cal": 87, "p": 1.9, "f": 0.1, "c": 20.1},
+            "морков": {"cal": 41, "p": 0.9, "f": 0.2, "c": 10.0},
+            "яблок": {"cal": 52, "p": 0.3, "f": 0.2, "c": 14.0},
+            "хлеб": {"cal": 265, "p": 9.0, "f": 3.2, "c": 49.0},
+            # cooked cereals/pasta typical values
+            "рис": {"cal": 130, "p": 2.7, "f": 0.3, "c": 28.0},
+            "греч": {"cal": 110, "p": 3.6, "f": 1.7, "c": 20.0},
+            "макарон": {"cal": 158, "p": 5.8, "f": 0.9, "c": 30.0},
+            "паста": {"cal": 158, "p": 5.8, "f": 0.9, "c": 30.0},
+            # beverages/dairy (per 100 g)
+            "кефир": {"cal": 50, "p": 3.0, "f": 2.5, "c": 4.0},    # 2.5–3.2% fat
+            "йогурт": {"cal": 60, "p": 3.5, "f": 3.0, "c": 4.7},  # plain, unsweetened
+            "молок": {"cal": 60, "p": 3.2, "f": 3.2, "c": 4.8},   # stem to match "молоко"
+            "ряженк": {"cal": 54, "p": 2.9, "f": 2.5, "c": 4.1},
+            "простокваш": {"cal": 56, "p": 3.0, "f": 2.5, "c": 4.3},
+            "квас": {"cal": 27, "p": 0.2, "f": 0.0, "c": 6.0},
+            "вино": {"cal": 85, "p": 0.1, "f": 0.0, "c": 2.6},
+            "пиво": {"cal": 43, "p": 0.4, "f": 0.0, "c": 3.6},
+            "сироп": {"cal": 260, "p": 0.0, "f": 0.0, "c": 65.0},
+            "мёд": {"cal": 304, "p": 0.3, "f": 0.0, "c": 82.0},
+            "сок": {"cal": 45, "p": 0.5, "f": 0.1, "c": 10.0},    # generic juice avg
+            "лимонад": {"cal": 40, "p": 0.0, "f": 0.0, "c": 10.0},
+            # bread/bakery/sweets
+            "ржан": {"cal": 210, "p": 5.0, "f": 1.3, "c": 44.0},  # хлеб ржаной
+            "лаваш": {"cal": 260, "p": 8.0, "f": 1.2, "c": 52.0},
+            "сахар": {"cal": 387, "p": 0.0, "f": 0.0, "c": 100.0},
+            "арахис": {"cal": 588, "p": 21.0, "f": 50.0, "c": 20.0},  # паста
+            "шоколад": {"cal": 546, "p": 4.9, "f": 31.0, "c": 61.0},
+            # meats/fish (cooked/lean generalizations)
+            "курин груд": {"cal": 165, "p": 31.0, "f": 3.6, "c": 0.0},
+            "курин бедр": {"cal": 209, "p": 26.0, "f": 10.9, "c": 0.0},
+            "индейк фил": {"cal": 135, "p": 29.0, "f": 1.0, "c": 0.0},
+            "говядин": {"cal": 187, "p": 26.0, "f": 8.0, "c": 0.0},
+            "свинин": {"cal": 242, "p": 27.0, "f": 14.0, "c": 0.0},
+            "лосос": {"cal": 208, "p": 20.0, "f": 13.0, "c": 0.0},
+            "тунец": {"cal": 132, "p": 29.0, "f": 1.0, "c": 0.0},
+            "сельд": {"cal": 248, "p": 25.0, "f": 15.0, "c": 0.0},
+            "ветчин": {"cal": 145, "p": 20.0, "f": 6.0, "c": 1.5},
+            "сосиск": {"cal": 270, "p": 12.0, "f": 24.0, "c": 2.0},
+            # grains cooked
+            "овсян": {"cal": 68, "p": 2.4, "f": 1.4, "c": 12.0},
+            "пшён": {"cal": 109, "p": 3.2, "f": 1.0, "c": 23.0},
+            "перлов": {"cal": 110, "p": 3.5, "f": 0.4, "c": 23.0},
+            "булгур": {"cal": 110, "p": 3.1, "f": 0.3, "c": 22.9},
+            "кускус": {"cal": 112, "p": 3.8, "f": 0.2, "c": 23.2},
+            "пельмен": {"cal": 245, "p": 10.0, "f": 12.0, "c": 24.0},
+            # nuts/seeds/fruits
+            "миндал": {"cal": 579, "p": 21.0, "f": 50.0, "c": 22.0},
+            "грецк": {"cal": 654, "p": 15.0, "f": 65.0, "c": 14.0},
+            "фундук": {"cal": 628, "p": 15.0, "f": 61.0, "c": 17.0},
+            "кешью": {"cal": 553, "p": 18.0, "f": 44.0, "c": 30.0},
+            "семечки": {"cal": 584, "p": 21.0, "f": 51.0, "c": 20.0},
+            "чиа": {"cal": 486, "p": 17.0, "f": 31.0, "c": 44.0},
+            "авокадо": {"cal": 160, "p": 2.0, "f": 15.0, "c": 9.0},
+        }
+        n = (name or "").lower()
+        hit = None
+        for k in per100.keys():
+            if k in n:
+                hit = per100[k]
+                break
+        if not hit:
+            hit = {"cal": 250, "p": 8.0, "f": 18.0, "c": 12.0}
+        factor = max(qty_g, 0.0) / 100.0
+        cal = int(round(hit["cal"] * factor))
+        p = round(hit["p"] * factor, 1)
+        f = round(hit["f"] * factor, 1)
+        c = round(hit["c"] * factor, 1)
+        return cal, p, f, c
+
     # --- LLM NLU first (optional) ---
     if getattr(settings, "FOODAI_EDIT_NLU", False) and settings.OPENAI_API_KEY and interpret_edit is not None:
         try:
@@ -1727,16 +1845,41 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                     reason = "not_found" if len(idxs) == 0 else "ambiguous"
                     return {"error": reason, "meta": {"action": action, "reason": reason}}
                 idx = idxs[0]
-                new_qty_g, _ = _qty_to_grams(name, float(qty), unit)
+                new_qty_g, is_liq = _qty_to_grams(name, float(qty), unit)
                 new_qty_g = max(1.0, min(1000.0, new_qty_g))
                 cal, p, f, c = _estimate_from_name(name, new_qty_g)
-                items[idx].update({
+                _upd = {
                     "weight_g": new_qty_g,
                     "calories": cal,
                     "protein_g": p,
                     "fat_g": f,
                     "carbs_g": c,
-                })
+                }
+                try:
+                    if bool(is_liq):
+                        _upd["is_liquid"] = True
+                    if qty is not None and unit is not None:
+                        u = (str(unit) or "").lower()
+                        app = None
+                        if u in {"мл", "ml"}:
+                            d = 1.0
+                            key = (name or "").lower()
+                            for k, val in densities.items():
+                                if k in key:
+                                    d = val
+                                    break
+                            app = {"unit": "ml", "qty": float(qty), "density": float(d), "approx_g": float(new_qty_g)}
+                            _upd["is_liquid"] = True
+                        elif u in {"л", "l"}:
+                            app = {"unit": "l", "qty": float(qty), "density": 1.0, "approx_g": float(new_qty_g)}
+                            _upd["is_liquid"] = True
+                        elif u in {"шт", "pc", "pcs"}:
+                            app = {"unit": "шт", "qty": float(qty), "approx_g": float(new_qty_g)}
+                        if app:
+                            _upd["appearance"] = app
+                except Exception:
+                    pass
+                items[idx].update(_upd)
                 out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
                 return {
                     "title": title or "Блюдо",
@@ -2099,13 +2242,13 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         }
 
     # change quantity to N g/ml
-    m = re.search(r"(?:увеличить|уменьшить|сделать|до)\s+([a-zа-яё\-\s]+?)\s*(?:до)?\s*(\+?\-?\d{1,4})\s*(г|гр|грамм|мл|ml|л|l)\b", instr, flags=re.IGNORECASE)
+    m = re.search(r"(?:увеличить|уменьшить|сделать|до)\s+([a-zа-яё\-\s]+?)\s*(?:до)?\s*(\+?\-?\d{1,4})\s*(г|гр|грамм|мл|ml|л|l|шт|pc|pcs)\b", instr, flags=re.IGNORECASE)
     if not m:
         # pattern: '<name> +N г' but avoid leading action verbs (добавить/убрать/заменить)
         if re.match(r"\s*(?:добавить|добавь|положить|прибавить|убрать|убери|удалить|удали|без|минус|\-|заменить|замени|поменять)\b", instr, flags=re.IGNORECASE):
             m = None
         else:
-            m = re.search(r"^([a-zа-яё\-\s]+?)\s*([\+\-]?\d{1,4})\s*(г|гр|грамм|мл|ml|л|l)\b", instr, flags=re.IGNORECASE)
+            m = re.search(r"^([a-zа-яё\-\s]+?)\s*([\+\-]?\d{1,4})\s*(г|гр|грамм|мл|ml|л|l|шт|pc|pcs)\b", instr, flags=re.IGNORECASE)
     if m:
         action = "change_qty"
         name = _normalize_name_ru((m.group(1) or "").strip())
