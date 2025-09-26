@@ -181,6 +181,8 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     FOODAI_ALLOW_FALLBACK_TO_4O_MINI: bool = True
     FOODAI_TEXT_FALLBACK_TO_CHAT: bool = True
     FOODAI_SHOW_LOW_CONF_HINT: bool = False
+    # Show confidence category labels (низкая/средняя) in preview
+    FOODAI_SHOW_CONF_LABELS: bool = True
 
     # Adjustment (onboarding final corrections) LLM settings
     ADJUST_LLM_ENABLED: bool = True
