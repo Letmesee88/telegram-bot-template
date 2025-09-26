@@ -1097,24 +1097,37 @@ def _build_preview_text(
         except Exception:
             pass
     # Confidence display as category; hide for high confidence
-    try:
-        cval = float(conf)
-        low_thr = float(getattr(settings, "FOODAI_CONF_LOW", 0.6))
-        high_thr = float(getattr(settings, "FOODAI_CONF_HIGH", 0.8))
-        if cval < low_thr:
-            parts.append(_("Уверенность: низкая"))
-        elif cval < high_thr:
-            parts.append(_("Уверенность: средняя"))
-        # else: high — do not show the line
-    except Exception:
-        # fallback: keep old numeric display on parsing issues
+    # Optional confidence labels (низкая/средняя). Hidden if FOODAI_SHOW_CONF_LABELS is false
+    show_conf_labels = bool(getattr(settings, "FOODAI_SHOW_CONF_LABELS", True))
+    if show_conf_labels:
         try:
-            parts.append(_("Уровень уверенности {conf}%").format(conf=int(float(conf) * 100)))
+            cval = float(conf)
+            low_thr = float(getattr(settings, "FOODAI_CONF_LOW", 0.6))
+            high_thr = float(getattr(settings, "FOODAI_CONF_HIGH", 0.8))
+            if cval < low_thr:
+                parts.append(_("Уверенность: низкая"))
+            elif cval < high_thr:
+                parts.append(_("Уверенность: средняя"))
+            # else: high — do not show the line
+        except Exception:
+            # fallback: keep old numeric display on parsing issues
+            try:
+                parts.append(_("Уровень уверенности {conf}%").format(conf=int(float(conf) * 100)))
+            except Exception:
+                pass
+    # Keep warning if below escalate threshold
+    try:
+        conf_thr = float(getattr(settings, "FOODAI_ESCALATE_CONF", getattr(settings, "FOODAI_CONFIDENCE_ESCALATE", 0.7)))
+    except Exception:
+        conf_thr = 0.7
+    # Optional hint line controlled by FOODAI_SHOW_LOW_CONF_HINT
+    show_low_conf_hint = bool(getattr(settings, "FOODAI_SHOW_LOW_CONF_HINT", False))
+    if show_low_conf_hint:
+        try:
+            if float(conf) < conf_thr:
+                parts.append(_("Внимание: низкая уверенность. Рекомендуем отредактировать перед сохранением."))
         except Exception:
             pass
-    # Keep warning if below escalate threshold
-    if float(conf) < float(settings.FOODAI_CONFIDENCE_ESCALATE):
-        parts.append(_("Внимание: низкая уверенность. Рекомендуем отредактировать перед сохранением."))
 
     # Optional per-meal percent of plan
     if isinstance(itogo, dict):

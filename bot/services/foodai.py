@@ -582,8 +582,6 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                             }
                         },
                         "max_output_tokens": 800,
-                        "temperature": 0,
-                        "top_p": 0,
                         "input": [
                             {
                                 "role": "user",
