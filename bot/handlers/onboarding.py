@@ -423,6 +423,10 @@ async def cb_onboarding_resume(call: CallbackQuery, state: FSMContext) -> None:
     elif cur == OnboardingStates.activity.state:
         await _ask_activity(call.message)
     elif cur == OnboardingStates.goal.state:
+        try:
+            await state.update_data(goal_locked=False)
+        except Exception:
+            pass
         await _ask_goal(call.message)
     elif cur == OnboardingStates.goal_weight.state:
         await _ask_goal_weight(call.message)
@@ -619,6 +623,11 @@ async def activity_set(message: Message, state: FSMContext) -> None:
 
     # Переходим к выбору цели
     await state.set_state(OnboardingStates.goal)
+    # Сбрасываем лок выбора цели на входе в шаг
+    try:
+        await state.update_data(goal_locked=False)
+    except Exception:
+        pass
     # Показ целей: одно сообщение с фото+caption+инлайн-кнопками
     await _ask_goal(message)
 
@@ -642,11 +651,18 @@ async def cb_goal(call: CallbackQuery, state: FSMContext) -> None:
 
     # Идемпотентный guard: состояние и лок
     cur_state = await state.get_state()
+    logger.info("cb_goal | user_id={} | cur_state={}", getattr(call.from_user, 'id', None), cur_state)
     if cur_state != OnboardingStates.goal.state:
+        # Восстановление шага выбора цели: иногда состояние смещается до клика
         try:
-            await call.answer(_("Уже обработано"), cache_time=3)
+            await state.set_state(OnboardingStates.goal)
+            await _ask_goal(call.message)
+            await call.answer(_("Продублировал выбор цели — нажми кнопку ещё раз"), cache_time=3)
         except Exception:
-            pass
+            try:
+                await call.answer(_("Уже обработано"), cache_time=3)
+            except Exception:
+                pass
         return
     data = await state.get_data()
     if data.get("goal_locked") is True:
@@ -655,10 +671,22 @@ async def cb_goal(call: CallbackQuery, state: FSMContext) -> None:
         except Exception:
             pass
         return
-    await state.update_data(goal_locked=True)
+    # goal_locked выставим после успешного перехода на следующий шаг
 
     goal_raw = call.data.split(":", 1)[1]
     await state.update_data(goal=goal_raw)
+
+    # Снять клавиатуру немедленно, затем попытаться удалить сообщение
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+        logger.info("cb_goal.edit_reply_markup.ok | msg_id={}", getattr(call.message, 'message_id', None))
+    except Exception as e:
+        logger.warning("cb_goal.edit_reply_markup.err | user_id={} | err={}", getattr(call.from_user, 'id', None), e)
+    try:
+        await call.message.delete()
+        logger.info("cb_goal.delete.ok | msg_id={}", getattr(call.message, 'message_id', None))
+    except Exception as e:
+        logger.warning("cb_goal.delete.err | user_id={} | err={}", getattr(call.from_user, 'id', None), e)
 
     # Analytics: выбор цели
     if analytics.logger and call.from_user:
@@ -683,26 +711,35 @@ async def cb_goal(call: CallbackQuery, state: FSMContext) -> None:
     if goal_raw == Goal.maintain.value:
         # Для maintain: оставляем сообщение как есть, сразу финализация
         await state.set_state(OnboardingStates.speed)
+        await state.update_data(goal_locked=True)
         await _finalize_and_show(call.message, state, call.from_user.id)
         return
 
-    # Для lose/gain: удалим сообщение с картинкой и кнопками (чтобы оно исчезло из чата)
+    # Сразу задаём следующий вопрос отдельным фото-сообщением
     try:
-        await call.message.delete()
-    except Exception:
-        # Фолбэк: если удалить не удалось (например, ограничения клиента), уберём хотя бы клавиатуру
+        await state.set_state(OnboardingStates.goal_weight)
+        logger.info("cb_goal.next_state | user_id={} | state=goal_weight", getattr(call.from_user, 'id', None))
         try:
-            await call.message.edit_reply_markup(reply_markup=None)
+            photo = FSInputFile("bot/static/charts.jpg")
+            await call.message.answer_photo(photo, caption=_("К какому весу ты стремишься?"))
+        except Exception:
+            await call.message.answer(_("К какому весу ты стремишься?"))
+        await state.update_data(goal_locked=True)
+        logger.info("cb_goal.ask_goal_weight.sent | user_id={}", getattr(call.from_user, 'id', None))
+    except Exception as e:
+        logger.exception("cb_goal.ask_goal_weight.err | user_id={} | err={}", getattr(call.from_user, 'id', None), e)
+        # Снимаем лок и восстанавливаем экран цели
+        try:
+            await state.update_data(goal_locked=False)
+            await state.set_state(OnboardingStates.goal)
+            await _ask_goal(call.message)
+            try:
+                await call.answer(_("Повторил выбор цели"), cache_time=3)
+            except Exception:
+                pass
         except Exception:
             pass
-
-    # Сразу задаём следующий вопрос отдельным фото-сообщением
-    await state.set_state(OnboardingStates.goal_weight)
-    try:
-        photo = FSInputFile("bot/static/charts.jpg")
-        await call.message.answer_photo(photo, caption=_("К какому весу ты стремишься?"))
-    except Exception:
-        await call.message.answer(_("К какому весу ты стремишься?"))
+        return
 
 
 
