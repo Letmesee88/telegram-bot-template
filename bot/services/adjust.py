@@ -76,12 +76,14 @@ def _apply_strength_defaults(parsed: 'ParsedAdjustment', *, text: str) -> 'Parse
         "strong": settings.ADJUST_STRENGTH_CARBS_G_STRONG,
     }
 
-    # 1) Calories: if calories intent present but no explicit units in text → convert to percent by strength
+    # 1) Calories: if calories intent present but no explicit numbers in text → convert to percent by strength
     if parsed.calories:
         mode = (parsed.calories.get("mode") or "").lower()
         if mode not in {"absolute", "percent", "delta"}:
             mode = ""
-        if not (_has_percent(text) or _has_kcal(text)):
+        # Apply defaults only when user did not specify any numbers explicitly
+        # Using digit check avoids false positives from bare words like "калории"
+        if not re.search(r"\d", text or ""):
             # Determine direction from intents
             intents = set(parsed.intents or [])
             if "lower_calories" in intents:

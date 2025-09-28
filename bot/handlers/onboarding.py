@@ -194,6 +194,25 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
                 )
                 session.add(record)
             await session.commit()
+            # Analytics: Adjust Applied
+            try:
+                if analytics.logger:
+                    analytics.fire_event(
+                        BaseEvent(
+                            user_id=user_id,
+                            event_type="Adjust:Applied",
+                            event_properties=EventProperties(
+                                chat_id=getattr(message.chat, 'id', None),
+                                chat_type=getattr(message.chat, 'type', None),
+                                text=None,
+                                command=None,
+                            ),
+                            language=getattr(message.from_user, 'language_code', None),
+                            plan=Plan(branch="Adjust", source="onboarding", version="v1"),
+                        )
+                    )
+            except Exception:
+                pass
             logger.info("adjust.saved | user_id={} | adjustments_count={}", user_id, len(data_json.get("adjustments") or []))
     except Exception as e:
         logger.exception("onboarding.finalize.db_error | user_id={} | error={}", payload.user_id, e)
@@ -884,6 +903,25 @@ async def cb_final_adjust(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(OnboardingStates.adjust)
     kb = _ikb([[("Вернуться", "final:back")]])
     await call.message.answer(_("Напиши, в свободном формате, что нужно скорректировать в твоём индивидуальном плане"), reply_markup=kb)
+    # Analytics: Adjust Open
+    try:
+        if analytics.logger and call.from_user:
+            analytics.fire_event(
+                BaseEvent(
+                    user_id=call.from_user.id,
+                    event_type="Adjust:Open",
+                    event_properties=EventProperties(
+                        chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
+                        chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                        text=None,
+                        command=None,
+                    ),
+                    language=getattr(call.from_user, 'language_code', None),
+                    plan=Plan(branch="Adjust", source="onboarding", version="v1"),
+                )
+            )
+    except Exception:
+        pass
     await call.answer()
 
 
@@ -891,6 +929,25 @@ async def cb_final_adjust(call: CallbackQuery, state: FSMContext) -> None:
 async def cb_final_back(call: CallbackQuery, state: FSMContext) -> None:
     # Показать финальный экран снова
     await _finalize_and_show(call.message, state, call.from_user.id)
+    # Analytics: Adjust Back
+    try:
+        if analytics.logger and call.from_user:
+            analytics.fire_event(
+                BaseEvent(
+                    user_id=call.from_user.id,
+                    event_type="Adjust:Back",
+                    event_properties=EventProperties(
+                        chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
+                        chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                        text=None,
+                        command=None,
+                    ),
+                    language=getattr(call.from_user, 'language_code', None),
+                    plan=Plan(branch="Adjust", source="onboarding", version="v1"),
+                )
+            )
+    except Exception:
+        pass
     await call.answer()
 
 
@@ -906,6 +963,25 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
             pass
         await start_module.start_handler(message, state)
         return
+    # Analytics: Adjust Enter
+    try:
+        if analytics.logger:
+            analytics.fire_event(
+                BaseEvent(
+                    user_id=user_id,
+                    event_type="Adjust:Enter",
+                    event_properties=EventProperties(
+                        chat_id=getattr(message.chat, 'id', None),
+                        chat_type=getattr(message.chat, 'type', None),
+                        text=None,
+                        command=None,
+                    ),
+                    language=getattr(message.from_user, 'language_code', None),
+                    plan=Plan(branch="Adjust", source="onboarding", version="v1"),
+                )
+            )
+    except Exception:
+        pass
     # Immediate UX feedback while we process
     try:
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
@@ -925,6 +1001,25 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
                 select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id)
             )
             if not existing:
+                # Analytics: Adjust Fail (no onboarding data)
+                try:
+                    if analytics.logger:
+                        analytics.fire_event(
+                            BaseEvent(
+                                user_id=user_id,
+                                event_type="Adjust:Fail",
+                                event_properties=EventProperties(
+                                    chat_id=getattr(message.chat, 'id', None),
+                                    chat_type=getattr(message.chat, 'type', None),
+                                    text=None,
+                                    command=None,
+                                ),
+                                language=getattr(message.from_user, 'language_code', None),
+                                plan=Plan(branch="Adjust", source="onboarding", version="v1"),
+                            )
+                        )
+                except Exception:
+                    pass
                 # Redirect to fresh onboarding instead of dead-end message
                 try:
                     await state.clear()
@@ -1059,6 +1154,25 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
     except Exception as e:
         logger.exception("adjust.apply_failed | user_id={} | err={}", user_id, e)
         await message.answer(_("Не удалось применить корректировку. Попробуй ещё раз позже."))
+        # Analytics: Adjust Fail (exception)
+        try:
+            if analytics.logger:
+                analytics.fire_event(
+                    BaseEvent(
+                        user_id=getattr(message.from_user, 'id', None),
+                        event_type="Adjust:Fail",
+                        event_properties=EventProperties(
+                            chat_id=getattr(message.chat, 'id', None),
+                            chat_type=getattr(message.chat, 'type', None),
+                            text=None,
+                            command=None,
+                        ),
+                        language=getattr(message.from_user, 'language_code', None),
+                        plan=Plan(branch="Adjust", source="onboarding", version="v1"),
+                    )
+                )
+        except Exception:
+            pass
         return
 
     # Попробуем подготовить обновленный график (без немедленной отправки — вложим как caption ниже)
