@@ -21,6 +21,12 @@ async def start_handler(message: types.Message, state: FSMContext) -> None:
     """Start screen with branching: completed / in_progress / fresh."""
     user_id = message.from_user.id if message.from_user else None
 
+    # Force-reset FSM to avoid stale states (e.g., lingering OnboardingStates.adjust)
+    try:
+        await state.clear()
+    except Exception:
+        pass
+
     # Intro text unified with /onboarding
     intro = _(
         "Привет! 👋\n"

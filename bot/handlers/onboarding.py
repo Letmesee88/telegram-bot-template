@@ -898,6 +898,14 @@ async def cb_final_back(call: CallbackQuery, state: FSMContext) -> None:
 async def adjust_apply(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id
     text = (message.text or "").strip()
+    # If user typed /start or /onboarding while in adjust, hard-redirect to start
+    if text in {"/start", "/onboarding"}:
+        try:
+            await state.clear()
+        except Exception:
+            pass
+        await start_module.start_handler(message, state)
+        return
     # Immediate UX feedback while we process
     try:
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
@@ -917,7 +925,12 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
                 select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id)
             )
             if not existing:
-                await message.answer(_("Не нашёл данные онбординга. Попробуй начать заново: /start"))
+                # Redirect to fresh onboarding instead of dead-end message
+                try:
+                    await state.clear()
+                except Exception:
+                    pass
+                await start_module.start_handler(message, state)
                 return
 
             data_json = dict(existing.data or {})
@@ -1095,7 +1108,12 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
     lines.append(f"🍞 {_('Углеводы')}: {new_plan.carbs_g} {_('г')}")
     lines.append("")
     if 'personal_line' in locals() and personal_line:
-        lines.append(f"<i>{personal_line}</i>")
+        # Deduplicate: skip personal line if it repeats the explanation content
+        def _norm_txt(s: str) -> str:
+            return re.sub(r"\s+", " ", (s or "").lower()).strip()
+        pl_core = re.sub(r"^уч[её]л\s+запрос:\s*", "", personal_line, flags=re.I)
+        if _norm_txt(pl_core) and _norm_txt(pl_core) not in _norm_txt(explanation):
+            lines.append(f"<i>{personal_line}</i>")
     lines.append(explanation)
     lines.append("")
     lines.append(_("Оставим так или нужна еще корректировка?"))
@@ -1153,7 +1171,11 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
                 new_lines.append(f"🍞 { _('Углеводы') }: {new_plan.carbs_g} { _('г') }")
                 new_lines.append("")
                 if 'personal_line' in locals() and personal_line:
-                    new_lines.append(f"<i>{personal_line}</i>")
+                    def _norm_txt2(s: str) -> str:
+                        return re.sub(r"\s+", " ", (s or "").lower()).strip()
+                    pl_core2 = re.sub(r"^уч[её]л\s+запрос:\s*", "", personal_line, flags=re.I)
+                    if _norm_txt2(pl_core2) and _norm_txt2(pl_core2) not in _norm_txt2(rewritten):
+                        new_lines.append(f"<i>{personal_line}</i>")
                 new_lines.append(rewritten)
                 new_lines.append("")
                 new_lines.append(_("Оставим так или нужна еще корректировка?"))

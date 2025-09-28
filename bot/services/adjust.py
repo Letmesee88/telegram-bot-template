@@ -195,28 +195,29 @@ async def _llm_parse_adjustment(text: str, *, lang_hint: Optional[str]) -> Optio
         return None
 
     system = (
-        "You are a nutrition assistant that EXTRACTS user intents from free-form text to adjust a daily nutrition plan. "
-        "Always return your BEST-EFFORT interpretation even if the text is short, colloquial, or has typos. Language may be Russian. "
-        "Return STRICT JSON with keys: intents, activity_override, calories, macros, dietary_restrictions, confidence, rationale, version.\n"
-        "- intents: array of tags among [lower_calories, raise_calories, keto, low_carb, high_protein, custom_macros, activity_down, activity_up, lactose_free, gluten_free, sugar_free, low_fodmap_candidate, reduce_protein, reduce_fat, increase_fat] \n"
-        "- activity_override: null or one of ['sedentary','light','moderate','active','athlete'] when the user clearly states lower/higher daily activity.\n"
-        "- calories: {mode: 'absolute'|'delta'|'percent'|null, value: number|null} (delta is +/- calories per day, percent is +/- percent of CURRENT target). Accept formats like '200 ккал', '200 kcal', '+200', '-10%'.\n"
+        "Ты — опытный нутрициолог. Твоя задача: из свободного текста пользователя выделить намерение и вернуть строго JSON по схеме:"
+        " intents, activity_override, calories, macros, dietary_restrictions, confidence, rationale, version.\n"
+        "- intents: один или несколько тегов из [lower_calories, raise_calories, keto, low_carb, high_protein, custom_macros, activity_down, activity_up, lactose_free, gluten_free, sugar_free, low_fodmap_candidate, reduce_protein, reduce_fat, increase_fat, advice_only] \n"
+        "- activity_override: null или один из ['sedentary','light','moderate','active','athlete'] при явном указании активности.\n"
+        "- calories: {mode: 'absolute'|'delta'|'percent'|null, value: number|null} (delta=±ккал в день, percent=±% от ТЕКУЩЕЙ цели). Допускай '200 ккал', '+200', '-10%'.\n"
         "- macros: {scheme: 'keto'|'low_carb'|'high_protein'|'balanced'|'custom'|null, custom_target_g: {protein_g:int|null, fat_g:int|null, carbs_g:int|null}|null }\n"
-        "- dietary_restrictions: array of tags ['lactose_free','gluten_free','sugar_free','low_fodmap_candidate']\n"
-        "- confidence: 0..1 (use 0.3..0.9 for typical short commands) \n"
-        "- rationale: short string in the same language as input \n"
-        "- version: 'v1' \n"
-        "Rules: Do NOT invent numbers. If the user states just preferences/symptoms without explicit numeric targets, set macros.scheme (if applicable) but keep custom_target_g null. "
-        "Do NOT change calories unless user states hunger/too much food or explicit change. "
-        "Handle typos (e.g., 'ккла'~'ккал', 'углевод'~'углеводы').\n"
-        "RU examples (input -> JSON summary):\n"
-        "- 'убери углеводы' -> intents:[low_carb], macros.scheme:'low_carb'\n"
-        "- 'кето' -> intents:[keto], macros.scheme:'keto'\n"
-        "- 'добавь 200 ккал' -> intents:[raise_calories], calories:{mode:'delta', value:200}\n"
-        "- 'минус 10%' -> intents:[lower_calories], calories:{mode:'percent', value:-10}\n"
-        "- 'мало двигаюсь' -> intents:[activity_down], activity_override:'light'\n"
-        "- 'совсем не двигаюсь' -> activity_override:'sedentary'\n"
-        "- 'белка 170 жиры 60' -> macros:{scheme:'custom', custom_target_g:{protein_g:170, fat_g:60, carbs_g:null}}\n"
+        "- dietary_restrictions: массив тегов ['lactose_free','gluten_free','sugar_free','low_fodmap_candidate']\n"
+        "- confidence: 0..1 (обычно 0.3..0.9)\n"
+        "- rationale: краткое объяснение на русском (300–400 символов)\n"
+        "- version: 'nutri_v1'\n"
+        "Правила безопасности (не нарушай): белок ≥1.2 г/кг (при похудении/поддержании) или ≥1.6 г/кг (при наборе), жир ≥0.8 г/кг (0.6 г/кг только при явном запросе на снижение жира), углеводы ≥100 г/день (кроме явного кето). "
+        "Если запрос экстремальный (кето/0 жиров/крайне низкие угли) — мягко откажи и предложи безопасную альтернативу.\n"
+        "Не выдумывай числа без явного запроса; если пользователь говорит общими словами — ставь схему (например, low_carb), а custom_target_g оставь null. "
+        "Калории меняй только при явном запросе или жалобе на голод/избыток. Обрабатывай опечатки ('ккла'≈'ккал').\n"
+        "Примеры (вход → JSON):\n"
+        "- 'убери углеводы' → intents:[low_carb], macros.scheme:'low_carb'\n"
+        "- 'кето' → intents:[keto], macros.scheme:'keto'\n"
+        "- 'добавь 200 ккал' → intents:[raise_calories], calories:{mode:'delta', value:200}\n"
+        "- 'минус 10%' → intents:[lower_calories], calories:{mode:'percent', value:-10}\n"
+        "- 'мало двигаюсь' → intents:[activity_down], activity_override:'light'\n"
+        "- 'совсем не двигаюсь' → activity_override:'sedentary'\n"
+        "- 'белка 170 жиры 60' → macros:{scheme:'custom', custom_target_g:{protein_g:170, fat_g:60, carbs_g:null}}\n"
+        "- 'хочу играть в футбол' → intents:[advice_only] (без изменения калорий/макросов)\n"
     )
 
     user = {
@@ -224,54 +225,128 @@ async def _llm_parse_adjustment(text: str, *, lang_hint: Optional[str]) -> Optio
         "content": (f"lang: {lang_hint}\n" if lang_hint else "") + (text or "").strip(),
     }
 
-    base_url = settings.OPENAI_BASE_URL.strip() if settings.OPENAI_BASE_URL else "https://api.openai.com"
-    url = f"{base_url}/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-        "Content-Type": "application/json",
+    # Primary path: OpenAI Responses API with JSON Schema
+    base = settings.OPENAI_BASE_URL or "https://api.openai.com/v1"
+    headers = {"Authorization": f"Bearer {settings.OPENAI_API_KEY}", "Content-Type": "application/json"}
+    model_id = settings.ADJUST_LLM_MODEL or "gpt-5-mini"
+    schema = {
+        "type": "object",
+        "properties": {
+            "intents": {"type": "array", "items": {"type": "string"}},
+            "activity_override": {"type": ["string", "null"]},
+            "calories": {
+                "type": ["object", "null"],
+                "properties": {"mode": {"type": ["string","null"]}, "value": {"type": ["number","null"]}},
+                "required": ["mode","value"],
+                "additionalProperties": False
+            },
+            "macros": {
+                "type": ["object","null"],
+                "properties": {
+                    "scheme": {"type": ["string","null"]},
+                    "custom_target_g": {
+                        "type": ["object","null"],
+                        "properties": {
+                            "protein_g": {"type": ["integer","null"]},
+                            "fat_g": {"type": ["integer","null"]},
+                            "carbs_g": {"type": ["integer","null"]}
+                        },
+                        "additionalProperties": False
+                    }
+                },
+                "additionalProperties": False
+            },
+            "dietary_restrictions": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": ["number","null"], "minimum": 0, "maximum": 1},
+            "rationale": {"type": ["string","null"]},
+            "version": {"type": ["string","null"]}
+        },
+        "required": ["intents","activity_override","calories","macros","dietary_restrictions","confidence","rationale","version"],
+        "additionalProperties": False
     }
-    payload = {
-        "model": settings.ADJUST_LLM_MODEL or "gpt-4o-mini",
-        "temperature": 0.7,
-        "max_tokens": 280,
-        # Encourage strict JSON in OpenAI Chat Completions
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": system},
-            user,
+    payload_resp = {
+        "model": model_id,
+        "instructions": system,
+        "max_output_tokens": 600,
+        "text": {
+            "format": {"type": "json_schema", "name": "adjustment", "strict": True, "schema": schema}
+        },
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": (f"lang: {lang_hint}\n" if lang_hint else "") + (text or "").strip()}
+                ],
+            }
         ],
     }
-
-    timeout = float(getattr(settings, "ADJUST_LLM_TIMEOUT_SEC", 2.5) or 2.5)
+    timeout = float(getattr(settings, "ADJUST_LLM_TIMEOUT_SEC", 4.0) or 4.0)
+    data: Optional[dict] = None
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as sess:
-            async with sess.post(url, headers=headers, json=payload) as resp:
-                if resp.status != 200:
+            async with sess.post(f"{base}/responses", headers=headers, json=payload_resp) as resp:
+                if resp.status >= 400:
                     body = await resp.text()
-                    logger.warning(
-                        "adjust_llm_http_error | status={} | body_len={} | body_sha256={}",
-                        resp.status,
-                        len(body or ""),
-                        _privacy_hash(body),
-                    )
-                    return None
-                data = await resp.json()
+                    logger.warning("adjust_llm_http_error | endpoint=/responses | status={} | body_len={} | body_sha256={}", resp.status, len(body or ""), _privacy_hash(body))
+                else:
+                    data = await resp.json()
     except asyncio.TimeoutError:
-        logger.info("adjust_llm_timeout | timeout_s={}", timeout)
-        return None
+        logger.info("adjust_llm_timeout | endpoint=/responses | timeout_s={}", timeout)
     except Exception as e:
-        logger.exception("adjust_llm_exception | err={}", e)
+        logger.exception("adjust_llm_exception | endpoint=/responses | err={}", e)
+
+    def _extract_responses_text(d: dict | None) -> Optional[str]:
+        if not d:
+            return None
+        try:
+            if isinstance(d.get("output_text"), str) and d["output_text"].strip():
+                return d["output_text"].strip()
+            out: list[str] = []
+            for piece in (d.get("output") or []):
+                if (piece or {}).get("type") == "message":
+                    for c in (piece.get("content") or []):
+                        if (c or {}).get("type") in {"output_text", "input_text", "text"}:
+                            t = (c.get("text") or "").strip()
+                            if t:
+                                out.append(t)
+            if out:
+                return "\n".join(out)
+        except Exception:
+            return None
         return None
 
+    content = _extract_responses_text(data)
+    if not content:
+        # Fallback to Chat Completions with json_object (legacy)
+        base_url = settings.OPENAI_BASE_URL.strip() if settings.OPENAI_BASE_URL else "https://api.openai.com"
+        url = f"{base_url}/v1/chat/completions"
+        payload_chat = {
+            "model": getattr(settings, "ADJUST_CHAT_FALLBACK_MODEL", None) or "gpt-4o-mini",
+            "temperature": 0.0,
+            "max_tokens": 320,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": system},
+                user,
+            ],
+        }
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as sess:
+                async with sess.post(url, headers=headers, json=payload_chat) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        logger.warning("adjust_llm_http_error | endpoint=/chat/completions | status={} | body_len={} | body_sha256={}", resp.status, len(body or ""), _privacy_hash(body))
+                        return None
+                    data = await resp.json()
+            content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
+        except Exception as e:
+            logger.exception("adjust_llm_exception | endpoint=/chat/completions | err={}", e)
+            return None
+
     try:
-        content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
-        obj = _coerce_json(content)
+        obj = _coerce_json(content or "")
         if not isinstance(obj, dict):
-            logger.warning(
-                "adjust_llm_bad_json | content_len={} | content_sha256={}",
-                len(content or ""),
-                _privacy_hash(content),
-            )
+            logger.warning("adjust_llm_bad_json | content_len={} | content_sha256={}", len(content or ""), _privacy_hash(content))
             return None
         intents = list(obj.get("intents") or [])
         activity_override = obj.get("activity_override") or None
@@ -351,13 +426,64 @@ def _apply_calorie_change(base_cal: int, tdee: float, goal: Goal, cal_obj: dict)
         return base_cal
 
 
-def _recompute_macros(calories: int, weight_kg: float, scheme: str | None, custom: Optional[dict]) -> Tuple[int, int, int, str]:
-    """Return protein_g, fat_g, carbs_g, scheme_used."""
+def _normalize_explanation_text(text: str) -> str:
+    """Deduplicate repeated sentences, collapse spaces, and cap length (~420 chars)."""
+    try:
+        import re
+        t = (text or "").replace("\n", " ").replace("\r", " ").strip()
+        if not t:
+            return ""
+        # Split into rough sentences by .!? and remove duplicates (case-insensitive)
+        parts = [p.strip() for p in re.split(r"[.!?]+", t) if p and p.strip()]
+        seen = set()
+        uniq: list[str] = []
+        for p in parts:
+            key = p.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(p)
+        out = ". ".join(uniq).strip()
+        if out and out[-1] not in ".!?":
+            out += "."
+        # Cap length for caption/UX
+        if len(out) > 420:
+            out = out[:417].rstrip() + "…"
+        return out
+    except Exception:
+        try:
+            return (text or "").strip()
+        except Exception:
+            return text
+
+
+def _recompute_macros(
+    calories: int,
+    weight_kg: float,
+    scheme: str | None,
+    custom: Optional[dict],
+    goal: Goal,
+    reduce_fat_requested: bool,
+    is_keto_requested: bool,
+) -> Tuple[int, int, int, str, bool]:
+    """Return protein_g, fat_g, carbs_g, scheme_used, safety_clamped.
+
+    Enforces safety floors:
+    - protein >= 1.2 g/kg (lose/maintain) or >= 1.6 g/kg (gain), min 60 g absolute
+    - fat >= 0.8 g/kg by default (>= 0.6 g/kg allowed only if explicitly reducing fat), min 30 g absolute
+    - carbs >= 100 g/day unless explicit keto, where carbs_min=20 g
+    """
+    clamped = False
+
     # floors/ceilings
-    prot_min = int(round(max(1.2 * weight_kg, 60)))  # at least 60g
+    prot_floor_per_kg = 1.2 if goal in {Goal.lose, Goal.maintain} else 1.6
+    prot_min = int(round(max(prot_floor_per_kg * weight_kg, 60)))  # at least 60g
     prot_cap = int(round(2.4 * weight_kg))
-    fat_min = int(round(max(0.6 * weight_kg, 30)))   # at least 30g
-    carb_min = 20
+
+    fat_floor_per_kg = 0.6 if reduce_fat_requested else 0.8
+    fat_min = int(round(max(fat_floor_per_kg * weight_kg, 30)))   # at least 30g
+
+    carb_min = 20 if is_keto_requested else 100
 
     def clamp(v: int, lo: int, hi: int) -> int:
         return max(lo, min(hi, v))
@@ -375,22 +501,32 @@ def _recompute_macros(calories: int, weight_kg: float, scheme: str | None, custo
         fat_g = max(fat_min, int(round(f_cal / 9)))
         if fat_g * 9 + protein_g * 4 + carbs_g * 4 > calories:
             # reduce protein slightly to satisfy fat_min
-            protein_g = clamp(protein_g - 10, prot_min, prot_cap)
+            new_p = clamp(protein_g - 10, prot_min, prot_cap)
+            if new_p != protein_g:
+                clamped = True
+            protein_g = new_p
             f_cal = calories - (protein_g * 4 + carbs_g * 4)
-            fat_g = max(fat_min, int(round(f_cal / 9)))
-        return protein_g, fat_g, carbs_g, used
+            fat_new = max(fat_min, int(round(f_cal / 9)))
+            if fat_new != fat_g:
+                clamped = True
+            fat_g = fat_new
+        return protein_g, fat_g, carbs_g, used, clamped
 
     if used == "low_carb":
-        carbs_g = max(80, carb_min)
+        carbs_g = max(100, carb_min)
         protein_g = clamp(int(round(1.6 * weight_kg)), prot_min, prot_cap)
         f_cal = calories - (protein_g * 4 + carbs_g * 4)
-        fat_g = max(fat_min, int(round(f_cal / 9)))
+        fat_new = max(fat_min, int(round(f_cal / 9)))
+        fat_g = fat_new
         if fat_g * 9 + protein_g * 4 + carbs_g * 4 > calories:
             # relax carbs to fit
-            carbs_g = carb_min
+            carbs_new = carb_min
+            if carbs_new != carbs_g:
+                clamped = True
+            carbs_g = carbs_new
             f_cal = calories - (protein_g * 4 + carbs_g * 4)
             fat_g = max(fat_min, int(round(f_cal / 9)))
-        return protein_g, fat_g, carbs_g, used
+        return protein_g, fat_g, carbs_g, used, clamped
 
     if used == "high_protein":
         protein_g = clamp(int(round(2.0 * weight_kg)), prot_min, prot_cap)
@@ -399,10 +535,13 @@ def _recompute_macros(calories: int, weight_kg: float, scheme: str | None, custo
         carbs_g = max(carb_min, int(round(c_cal / 4)))
         if protein_g * 4 + fat_g * 9 + carbs_g * 4 > calories:
             # lower protein a bit to fit
-            protein_g = clamp(protein_g - 10, prot_min, prot_cap)
+            new_p = clamp(protein_g - 10, prot_min, prot_cap)
+            if new_p != protein_g:
+                clamped = True
+            protein_g = new_p
             c_cal = calories - (protein_g * 4 + fat_g * 9)
             carbs_g = max(carb_min, int(round(c_cal / 4)))
-        return protein_g, fat_g, carbs_g, used
+        return protein_g, fat_g, carbs_g, used, clamped
 
     if used == "custom" and isinstance(custom, dict):
         p = custom.get("protein_g")
@@ -422,7 +561,7 @@ def _recompute_macros(calories: int, weight_kg: float, scheme: str | None, custo
             excess_cal = total - calories
             reduce_c = min(carbs_g - carb_min, int(round(excess_cal / 4)))
             carbs_g -= max(0, reduce_c)
-        return protein_g, fat_g, carbs_g, used
+        return protein_g, fat_g, carbs_g, used, (protein_g < (p or protein_g) or fat_g < (f or fat_g) or c is not None and carbs_g < int(c))
 
     # balanced (default): reuse current split roughly 30/30/40
     p_cal = int(round(calories * 0.30))
@@ -431,7 +570,9 @@ def _recompute_macros(calories: int, weight_kg: float, scheme: str | None, custo
     protein_g = max(prot_min, int(round(p_cal / 4)))
     fat_g = max(fat_min, int(round(f_cal / 9)))
     carbs_g = max(carb_min, int(round(c_cal / 4)))
-    return protein_g, fat_g, carbs_g, used
+    if protein_g == prot_min or fat_g == fat_min or carbs_g == carb_min:
+        clamped = True
+    return protein_g, fat_g, carbs_g, used, clamped
 
 
 def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: ParsedAdjustment) -> Tuple[DailyPlan, str, dict]:
@@ -443,6 +584,13 @@ def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: Parsed
             payload = payload.model_copy(update={"activity_level": ao})
         except Exception:
             payload.activity_level = ao  # type: ignore[attr-defined]
+
+    # Advice-only guard: нерелевантные запросы — план не менять, дать только совет
+    intents_set = set(parsed.intents or [])
+    if ("advice_only" in intents_set) and (not parsed.activity_override) and (not parsed.calories) and (not parsed.macros):
+        explanation = (parsed.rationale or "Продолжай активность: в тренировочные дни чуть увеличивай углеводы, следи за водой и электролитами.")
+        summary = {"activity_override": None, "calories": base_plan.calories, "scheme": None, "advice_only": True}
+        return base_plan, explanation, summary
 
     # Recompute plan if activity changed to update TDEE baseline
     plan0 = calculate_daily_plan(payload)
@@ -475,7 +623,38 @@ def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: Parsed
         if custom.get("fat_g") is None:
             custom["fat_g"] = int(base_plan.fat_g)
 
-    protein_g, fat_g, carbs_g, used_scheme = _recompute_macros(cal_target, data.weight_kg, scheme, custom)
+    intents_set = set(parsed.intents or [])
+    reduce_fat_req = ("reduce_fat" in intents_set)
+    is_keto_req = ((scheme or "") == "keto") or ("keto" in intents_set)
+
+    # If user didn't request calories/macros changes, keep existing macros unchanged
+    if (parsed.macros is None) and (parsed.calories is None):
+        src_plan = plan0 if ao is not None else base_plan
+        protein_g, fat_g, carbs_g = int(src_plan.protein_g), int(src_plan.fat_g), int(src_plan.carbs_g)
+        used_scheme, clamped = None, False
+    else:
+        protein_g, fat_g, carbs_g, used_scheme, clamped = _recompute_macros(
+            cal_target,
+            data.weight_kg,
+            scheme,
+            custom,
+            data.goal,
+            reduce_fat_req,
+            is_keto_req,
+        )
+
+    # UX guard: if user requested to reduce fat, we must not end up increasing fat above current plan
+    # Keep fat at most base value and rebalance by carbs upwards (respecting carb minima)
+    if reduce_fat_req and fat_g > int(base_plan.fat_g):
+        base_fat = int(base_plan.fat_g)
+        fat_g = base_fat
+        # Recompute carbs to maintain calories; do not violate keto/non-keto minimums
+        carb_min = 20 if is_keto_req else 100
+        c_cal = int(cal_target) - (int(protein_g) * 4 + int(fat_g) * 9)
+        carbs_new = max(carb_min, int(round(c_cal / 4)))
+        if carbs_new != carbs_g:
+            clamped = True
+            carbs_g = carbs_new
 
     # 4) weekly rate (rough) and eta keep from plan0 when possible
     weekly_rate_kg = _calc_weekly_rate(tdee, cal_target, data.goal)
@@ -593,15 +772,34 @@ def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: Parsed
         if "low_fodmap_candidate" in dr:
             parts.append("Чтобы уменьшить вздутие, временно ограничьте продукты с высоким FODMAP (бобовые, капустные, лук/чеснок, газировку).")
 
-    explanation = " ".join(parts) if parts else "Применил корректировку и сохранил медицински безопасные границы."
+    # Prefer deterministic explanation when the visible plan changed for the user.
+    # Compare against the user's current plan before adjustment (base_plan), not plan0.
+    changed_vs_user = (
+        int(new_plan.calories) != int(base_plan.calories)
+        or int(new_plan.protein_g) != int(base_plan.protein_g)
+        or int(new_plan.fat_g) != int(base_plan.fat_g)
+        or int(new_plan.carbs_g) != int(base_plan.carbs_g)
+    )
+    explanation_text = ""
+    if not changed_vs_user:
+        # Only trust LLM rationale if nothing changed numerically for the user
+        explanation_text = (parsed.rationale or "").strip() if getattr(parsed, "rationale", None) else ""
+    if not explanation_text:
+        explanation_text = " ".join(parts) if parts else "Применил корректировку и сохранил медицински безопасные границы."
+    safety_clamped = bool(clamped)
+    if safety_clamped:
+        explanation_text = (explanation_text + " ").strip() + "Сохранены безопасные границы по белкам/жирам/углеводам."
+    # Deduplicate repeated sentences and cap length for UX
+    explanation_text = _normalize_explanation_text(explanation_text)
 
     summary = {
         "activity_override": ao.value if ao else None,
         "calories": cal_target,
         "scheme": used_scheme,
+        "safety_clamped": safety_clamped,
     }
 
-    return new_plan, explanation, summary
+    return new_plan, explanation_text, summary
 
 
 def apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: ParsedAdjustment) -> Tuple[DailyPlan, str, dict]:
@@ -663,6 +861,11 @@ def parse_adjustment_heuristic(text: str) -> Optional[ParsedAdjustment]:
     elif re.search(r"(очень\s+актив|каждый\s+день\s+трен|высокая\s+актив)", s):
         activity_override = "active"
         intents.append("activity_up")
+
+    # sports / non-plan advice-only
+    if re.search(r"(игра(ть)?\s+в\s+футбол|в\s+футбол|бегать|пробежк|в\s+зал|тренировк|спорт)", s):
+        if "advice_only" not in intents:
+            intents.append("advice_only")
 
     # GI / lactose signals (no KБЖУ change; only flags and explanation)
     if re.search(r"(пукаю|газ|вздут|метеоризм)", s):
