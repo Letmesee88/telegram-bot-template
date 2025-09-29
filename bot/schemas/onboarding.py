@@ -46,7 +46,7 @@ class OnboardingData(BaseModel):
     age: int
     weight_kg: float
     height_cm: float
-    activity_text: str
+    activity_text: Optional[str] = None
     activity_level: Optional[ActivityLevel] = None
     goal: Goal
     goal_weight_kg: Optional[float] = None
@@ -73,14 +73,7 @@ class OnboardingData(BaseModel):
             raise ValueError("height must be between 120 and 250 cm")
         return v
 
-    @field_validator("activity_text")
-    @classmethod
-    def validate_activity_text(cls, v: str) -> str:
-        if v is None:
-            raise ValueError("activity text is required")
-        if len(v.strip()) < 10:
-            raise ValueError("activity text must be at least 10 characters")
-        return v
+    # activity_text is optional in the new button-based flow
 
 
 class DailyPlan(BaseModel):

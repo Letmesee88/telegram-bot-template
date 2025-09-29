@@ -89,13 +89,14 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
     speed = Speed(speed_val) if isinstance(speed_val, str) and speed_val else None
 
     try:
+        activity_text_val = data.get("activity_text")
         payload = OnboardingData(
             user_id=user_id,  
             gender=Gender(str(data["gender"])),
             age=int(data["age"]),
             weight_kg=float(data["weight_kg"]),
             height_cm=float(data["height_cm"]),
-            activity_text=str(data["activity_text"]),
+            activity_text=(str(activity_text_val) if activity_text_val is not None else None),
             goal=Goal(str(data["goal"])),
             speed=speed,
             goal_weight_kg=float(data["goal_weight_kg"]) if data.get("goal_weight_kg") is not None else None,
@@ -115,7 +116,7 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
         level = ActivityLevel(pre_level_raw)
     else:
         try:
-            llm_obj = await classify_activity_cached(user_id, payload.activity_text, lang_hint=getattr(message.from_user, 'language_code', None))
+            llm_obj = await classify_activity_cached(user_id, (payload.activity_text or ""), lang_hint=getattr(message.from_user, 'language_code', None))
             if llm_obj and isinstance(getattr(llm_obj, 'level', None), str):
                 lvl = (llm_obj.level or '').strip().lower()
                 conf = float(getattr(llm_obj, 'confidence', 0.0) or 0.0)
@@ -140,12 +141,12 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
                             level = ActivityLevel.active
                     llm_used = True
                 else:
-                    level = infer_activity_level(payload.activity_text)
+                    level = infer_activity_level(payload.activity_text or "")
             else:
-                level = infer_activity_level(payload.activity_text)
+                level = infer_activity_level(payload.activity_text or "")
         except Exception as e:
             logger.warning("onboarding.activity.llm_failed | user_id={} | err={}", user_id, e)
-            level = infer_activity_level(payload.activity_text)
+            level = infer_activity_level(payload.activity_text or "")
 
     # гарантируем, что расчёт плана использует определённый уровень
     try:
@@ -356,12 +357,64 @@ async def _ask_height(message: Message) -> None:
 
 
 async def _ask_activity(message: Message) -> None:
-    await message.answer(
-        _(
-            "Опиши, пожалуйста, свою повседневную активность. Так мы сможем учесть уровень активности в плане питания, чтобы он был максимально точным.\n\n"
-            "Например:\nВ среднем хожу 7-10 тысяч шагов в день, 2 раза в неделю тренируюсь в зале, 1 раз в неделю бегаю."
-        )
-    )
+    text = _("Выберите свой уровень активности. Это поможет составить максимально точный план питания.")
+    kb = _ikb([
+        [("Сидячий образ жизни", "activity:sedentary")],
+        [("Активность пару раз в неделю", "activity:light")],
+        [("Активность 3-4 раза в неделю", "activity:moderate")],
+        [("Активность 5-6 раз в неделю", "activity:active")],
+        [("Активность каждый день (7/7)", "activity:athlete")],
+    ])
+    await message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(OnboardingStates.activity, F.data.startswith("activity:"))
+async def cb_activity_select(call: CallbackQuery, state: FSMContext) -> None:
+    try:
+        code = (call.data or "").split(":", 1)[1]
+    except Exception:
+        await call.answer()
+        return
+    code = (code or "").strip().lower()
+    if code not in {"sedentary", "light", "moderate", "active", "athlete"}:
+        await call.answer()
+        return
+    # Persist selection
+    try:
+        await state.update_data(activity_level=code)
+    except Exception:
+        pass
+    # Remove keyboard to prevent double-clicks
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    # Analytics: Activity Selected
+    try:
+        if analytics.logger and call.from_user:
+            analytics.fire_event(
+                BaseEvent(
+                    user_id=call.from_user.id,
+                    event_type="Onboarding:ActivitySelected",
+                    event_properties=EventProperties(
+                        chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
+                        chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                        text=None,
+                        command=None,
+                    ),
+                    language=getattr(call.from_user, 'language_code', None),
+                    plan=Plan(branch="Activity", source="onboarding", version="v1"),
+                )
+            )
+    except Exception:
+        pass
+    # Proceed to goal selection
+    await state.set_state(OnboardingStates.goal)
+    await _ask_goal(call.message)
+    try:
+        await call.answer()
+    except Exception:
+        pass
 
 
 async def _ask_goal(message: Message) -> None:
@@ -572,12 +625,7 @@ async def height_set(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(height_cm=h)
     await state.set_state(OnboardingStates.activity)
-    await message.answer(
-        _(
-            "Опиши, пожалуйста, свою повседневную активность. Так мы сможем учесть уровень активности в плане питания, чтобы он был максимально точным.\n\n"
-            "Например:\nВ среднем хожу 7-10 тысяч шагов в день, 2 раза в неделю тренируюсь в зале, 1 раз в неделю бегаю."
-        )
-    )
+    await _ask_activity(message)
 
 
 @router.message(OnboardingStates.height, F.text & (~F.text.startswith("/")))
@@ -585,75 +633,17 @@ async def height_retry(message: Message) -> None:
     await message.answer(_("Пожалуйста, введите корректный рост (от 120 до 250 см)"))
 
 
-@router.message(OnboardingStates.activity, F.text.len() >= 10)
+@router.message(OnboardingStates.activity, F.text.len() >= 1)
 async def activity_set(message: Message, state: FSMContext) -> None:
-    # Сохраняем текст и сразу классифицируем активность (LLM с таймаутом и фолбэком)
-    text_raw = (message.text or "").strip()
-    await state.update_data(activity_text=text_raw)
-
-    # Сообщение пользователю и гарантия минимальной задержки 0.3с
-    await message.answer(_("✨ Анализирую уровень активности..."))
-    t0 = perf_counter()
-
-    # Попытка LLM → даунгрейд правил athlete → фолбэк эвристика
-    level: ActivityLevel
-    try:
-        llm_obj = await classify_activity_cached(
-            getattr(message.from_user, 'id', 0),
-            text_raw,
-            lang_hint=getattr(message.from_user, 'language_code', None),
-        )
-        if llm_obj and isinstance(getattr(llm_obj, 'level', None), str):
-            lvl = (llm_obj.level or '').strip().lower()
-            conf = float(getattr(llm_obj, 'confidence', 0.0) or 0.0)
-            if lvl in {"sedentary", "light", "moderate", "active", "athlete"} and conf >= 0.6:
-                level = ActivityLevel(lvl)
-                if level == ActivityLevel.athlete:
-                    features = (getattr(llm_obj, 'features', {}) or {})
-                    wpw_raw = features.get('workouts_per_week')
-                    wpw_num = None
-                    try:
-                        if isinstance(wpw_raw, (int, float)):
-                            wpw_num = int(wpw_raw)
-                        elif isinstance(wpw_raw, str):
-                            s = wpw_raw.strip()
-                            m = re.search(r"(\d+)", s)
-                            if m:
-                                wpw_num = int(m.group(1))
-                    except Exception:
-                        wpw_num = None
-                    if wpw_num is not None and wpw_num < 6:
-                        level = ActivityLevel.active
-            else:
-                level = infer_activity_level(text_raw)
-        else:
-            level = infer_activity_level(text_raw)
-    except Exception as e:
-        logger.warning("activity.inline.llm_failed | user_id={} | err={}", getattr(message.from_user, 'id', None), e)
-        level = infer_activity_level(text_raw)
-
-    # Сохраняем определённый уровень в FSM
-    await state.update_data(activity_level=level.value)
-
-    # Гарантируем минимальную задержку 0.3с (если LLM ответил быстрее)
-    dt = perf_counter() - t0
-    if dt < 0.3:
-        await asyncio.sleep(0.3 - dt)
-
-    # Переходим к выбору цели
-    await state.set_state(OnboardingStates.goal)
-    # Сбрасываем лок выбора цели на входе в шаг
-    try:
-        await state.update_data(goal_locked=False)
-    except Exception:
-        pass
-    # Показ целей: одно сообщение с фото+caption+инлайн-кнопками
-    await _ask_goal(message)
+    # В новом флоу на шаге активности используем только кнопки
+    await message.answer(_("Пожалуйста, используй кнопки ниже"))
+    await _ask_activity(message)
 
 
 @router.message(OnboardingStates.activity, F.text & (~F.text.startswith("/")))
 async def activity_retry(message: Message) -> None:
-    await message.answer(_("Пожалуйста, опишите вашу активность подробнее (минимум 10 символов)"))
+    await message.answer(_("Пожалуйста, используй кнопки ниже"))
+    await _ask_activity(message)
 
 
 # =====================
