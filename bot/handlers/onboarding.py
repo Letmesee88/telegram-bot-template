@@ -829,6 +829,25 @@ async def goal_weight_retry(message: Message) -> None:
 async def cb_speed(call: CallbackQuery, state: FSMContext) -> None:
     speed_raw = call.data.split(":", 1)[1]
     await state.update_data(speed=speed_raw)
+    # Analytics: Speed Selected
+    try:
+        if analytics.logger and call.from_user:
+            analytics.fire_event(
+                BaseEvent(
+                    user_id=call.from_user.id,
+                    event_type="Onboarding:SpeedSelected",
+                    event_properties=EventProperties(
+                        chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
+                        chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                        text=None,
+                        command=None,
+                    ),
+                    language=getattr(call.from_user, 'language_code', None),
+                    plan=Plan(branch="Speed", source="onboarding", version="v1"),
+                )
+            )
+    except Exception:
+        pass
     await _finalize_and_show(call.message, state, call.from_user.id)
     await call.answer()
 

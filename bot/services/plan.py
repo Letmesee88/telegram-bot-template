@@ -6,6 +6,7 @@ from datetime import date, timedelta
 import re
 
 from loguru import logger
+from bot.core.config import settings
 
 from bot.schemas.onboarding import (
     ACTIVITY_MULTIPLIERS,
@@ -31,13 +32,13 @@ SPEED_PERCENT_BY_WEIGHT = {
     Speed.fast: 0.008,     # 0.8%
 }
 
-# Safety limits
-MAX_LOSS_RATE = 0.01  # 1% weight/week
-MAX_GAIN_RATE = 0.005  # 0.5% weight/week
-MAX_DEFICIT_ABS = 1000  # kcal/day
-MAX_DEFICIT_FRAC = 0.30  # 30% of TDEE
-GAIN_MIN_SURPLUS = 200  # kcal/day
-GAIN_MAX_SURPLUS = 500  # kcal/day
+# Safety limits (configurable via settings)
+MAX_LOSS_RATE = float(getattr(settings, "PLAN_MAX_LOSS_RATE", 0.01))
+MAX_GAIN_RATE = float(getattr(settings, "PLAN_MAX_GAIN_RATE", 0.005))
+MAX_DEFICIT_ABS = int(getattr(settings, "PLAN_MAX_DEFICIT_ABS", 1000))
+MAX_DEFICIT_FRAC = float(getattr(settings, "PLAN_MAX_DEFICIT_FRAC", 0.30))
+GAIN_MIN_SURPLUS = int(getattr(settings, "PLAN_GAIN_MIN_SURPLUS", 200))
+GAIN_MAX_SURPLUS = int(getattr(settings, "PLAN_GAIN_MAX_SURPLUS", 500))
 
 
 def calc_bmr_mifflin(gender: Gender, age: int, weight: float, height: float) -> float:

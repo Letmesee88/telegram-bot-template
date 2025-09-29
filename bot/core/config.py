@@ -262,5 +262,18 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     QUICKCHART_HEIGHT: int = 600
     QUICKCHART_TIMEOUT_SEC: float = 5
 
+    # =====================
+    # Plan safety limits (weight change and calorie caps)
+    # =====================
+    # Faster-but-not-extreme defaults, configurable via ENV
+    # Weight change caps (fraction of body weight per week)
+    PLAN_MAX_LOSS_RATE: float = 0.012   # 1.2% / week (was 1.0%)
+    PLAN_MAX_GAIN_RATE: float = 0.007   # 0.7% / week (was 0.5%)
+    # Daily calorie caps
+    PLAN_MAX_DEFICIT_ABS: int = 1200    # kcal/day (was 1000)
+    PLAN_MAX_DEFICIT_FRAC: float = 0.35 # fraction of TDEE (was 0.30)
+    PLAN_GAIN_MIN_SURPLUS: int = 200    # kcal/day (unchanged)
+    PLAN_GAIN_MAX_SURPLUS: int = 600    # kcal/day (was 500)
+
 
 settings = Settings()
