@@ -106,6 +106,53 @@ async def test_replace_chicken_to_fish():
     assert 140.0 <= w <= 160.0, f"fish weight should inherit ~150g, got {w}"
 
 
+async def test_add_unit_first_honey_tbsp():
+    r = await _call("добавь 1 ст.л. мёда")
+    assert not r.get("error"), f"unexpected error: {r}"
+    it = _find_item(r.get("items") or [], "мёд")
+    assert it, "no honey item"
+    w = float(it.get("weight_g") or 0)
+    # 1 tbsp = 15 ml => ~21-22 g for honey
+    assert 19.0 <= w <= 23.5, f"expected ~21g honey, got {w}"
+
+
+async def test_add_soy_sauce_teaspoons():
+    r = await _call("добавь соевый соус 2 ч.л.")
+    assert not r.get("error"), f"unexpected error: {r}"
+    it = _find_item(r.get("items") or [], "соевый соус")
+    assert it, "no soy sauce item"
+    w = float(it.get("weight_g") or 0)
+    # 2 tsp = 10 ml => ~12 g
+    assert 9.0 <= w <= 14.5, f"expected ~12g soy sauce, got {w}"
+
+
+async def test_add_pinch_salt():
+    r = await _call("добавь щепотку соли")
+    assert not r.get("error"), f"unexpected error: {r}"
+    it = _find_item(r.get("items") or [], "соль")
+    assert it, "no salt item"
+    w = float(it.get("weight_g") or 0)
+    assert 0.2 <= w <= 0.7, f"expected ~0.4g pinch, got {w}"
+
+
+async def test_add_handful_nuts():
+    r = await _call("добавь горсть орехов")
+    assert not r.get("error"), f"unexpected error: {r}"
+    it = _find_item(r.get("items") or [], "орех")
+    assert it, "no nuts item"
+    w = float(it.get("weight_g") or 0)
+    assert 25.0 <= w <= 35.0, f"expected ~30g handful of nuts, got {w}"
+
+
+async def test_add_cup_kefir():
+    r = await _call("добавь 1 стакан кефира")
+    assert not r.get("error"), f"unexpected error: {r}"
+    it = _find_item(r.get("items") or [], "кефир")
+    assert it, "no kefir item"
+    w = float(it.get("weight_g") or 0)
+    assert 235.0 <= w <= 270.0, f"expected ~250g kefir, got {w}"
+
+
 async def test_replace_croutons_to_bread():
     r = await _call("замени сухарики на хлеб")
     assert not r.get("error"), f"unexpected error: {r}"
@@ -138,6 +185,11 @@ async def main():
         test_replace_chicken_to_fish,
         test_replace_croutons_to_bread,
         test_change_qty_pasta,
+        test_add_unit_first_honey_tbsp,
+        test_add_soy_sauce_teaspoons,
+        test_add_pinch_salt,
+        test_add_handful_nuts,
+        test_add_cup_kefir,
         test_not_food_rejected,
     ]
     failed = 0

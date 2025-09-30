@@ -181,7 +181,7 @@ def _lexicon_is_food_text(text: str | None) -> bool | None:
             "рис", "гречка", "макароны", "паста", "картофель", "картошка", "овсянка", "каша", "манка",
             "яблоко", "банан", "хлеб", "сыр", "творог", "яйцо", "яйца", "омлет",
             "майонез", "кетчуп", "соус", "сметана", "масло",
-            "огурец", "помидор", "томат", "перец",
+            "огурец", "помидор", "томат", "перец", "соль",
             # зелень/травы
             "петрушка", "укроп", "базилик", "кинза", "руккола", "шпинат", "зелень",
             # овощи/грибы/бобовые
@@ -194,9 +194,11 @@ def _lexicon_is_food_text(text: str | None) -> bool | None:
             # молочное/сыры/масла
             "моцарелла", "творожный сыр", "крем-чиз", "сливочное масло",
             # соусы/добавки/маслины
-            "соевый соус", "горчица", "томатная паста", "оливки", "маслины",
+            "соевый соус", "горчица", "томатная паста", "оливки", "маслины", "песто", "барбекю", "терияки", "цезарь",
             # крупы
             "киноа",
+            # хлебцы/выпечка/колбасы/крабовые
+            "тортилья", "хлебцы", "круассан", "блин", "олад", "салями", "колбаса", "крабовые палочки",
         }
         # obvious non-food single objects (guard for one-token)
         non_food = {
@@ -1225,6 +1227,16 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         "масло": 0.91,
         "лимонад": 1.02,
         "сок": 1.04,
+        # additions for better spoon/cup conversions
+        "мёд": 1.42,
+        "сироп": 1.30,
+        "соевый соус": 1.20,
+        "томатная паста": 1.08,
+        "майонез": 0.90,
+        "сметана": 0.99,
+        "подсолнечное масло": 0.92,
+        "масло подсолнечное": 0.92,
+        "оливковое масло": 0.91,
     }
     pcs = {  # rough grams per piece
         "яйцо": 50,
@@ -1257,6 +1269,12 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         "маслина": 4,
         "долька лимона": 12,
         "долька лайма": 10,
+        # extras
+        "перепелиное яйцо": 10,
+        "яйцо перепелиное": 10,
+        "лайм": 70,
+        "томат сливка": 80,
+        "помидор сливка": 80,
     }
 
     def _clone_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1418,7 +1436,16 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "кашу": "каша",
             "манку": "манка",
             "рыбку": "рыба",
+            "соли": "соль",
+            "солью": "соль",
         }
+        # apply token-level mapping first
+        try:
+            parts = s_l.split()
+            parts = [mapping.get(p, p) for p in parts]
+            s_l = " ".join(parts)
+        except Exception:
+            pass
         # generic -у/-ю -> -а/-я
         if s_l.endswith("у") and len(s_l) >= 3:
             s_l = s_l[:-1] + "а"
@@ -1585,6 +1612,16 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             return float(qty), False
         if unit_l in {"кг", "kg"}:
             return float(qty) * 1000.0, False
+        # spoons/cups -> ml
+        if unit_l in {"ч.л", "ч.л.", "ч л", "чайная ложка", "чайная", "чайные ложки", "teaspoon"}:
+            ml = float(qty) * 5.0
+            return _qty_to_grams(name, ml, "мл")
+        if unit_l in {"ст.л", "ст.л.", "ст л", "столовая ложка", "столовая", "столовые ложки", "tablespoon"}:
+            ml = float(qty) * 15.0
+            return _qty_to_grams(name, ml, "мл")
+        if unit_l in {"стакан", "кружка", "чашка", "cup"}:
+            ml = float(qty) * 250.0
+            return _qty_to_grams(name, ml, "мл")
         if unit_l in {"мл", "ml"}:
             # convert to g using density
             d = 1.0
@@ -1598,6 +1635,19 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             # liters -> ml -> g
             ml = float(qty) * 1000.0
             return _qty_to_grams(name, ml, "мл")
+        # conversational units
+        if unit_l in {"щепотка", "щепотку", "щеп", "pinch"}:
+            n = (name or "").lower()
+            # spices/salt default ~0.4 g
+            w = 0.4
+            return w * float(max(qty, 1.0)), False
+        if unit_l in {"горсть", "горсти", "handful"}:
+            n = (name or "").lower()
+            if any(k in n for k in ["орех", "миндал", "грецк", "фундук", "кешью", "арахис", "фисташ", "семеч", "тыквен", "кунжут"]):
+                return 30.0 * float(max(qty, 1.0)), False
+            if any(k in n for k in ["петруш", "укроп", "базилик", "кинза", "руккол", "шпинат", "зелень"]):
+                return 12.0 * float(max(qty, 1.0)), False
+            return 30.0 * float(max(qty, 1.0)), False
         if unit_l in {"шт", "pc", "pcs"}:
             key = (name or "").lower()
             for k, val in pcs.items():
@@ -2028,6 +2078,16 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             return float(qty), False
         if unit_l in {"кг", "kg"}:
             return float(qty) * 1000.0, False
+        # spoons/cups -> ml
+        if unit_l in {"ч.л", "ч.л.", "ч л", "чайная ложка", "чайная", "чайные ложки", "teaspoon"}:
+            ml = float(qty) * 5.0
+            return _qty_to_grams(name, ml, "мл")
+        if unit_l in {"ст.л", "ст.л.", "ст л", "столовая ложка", "столовая", "столовые ложки", "tablespoon"}:
+            ml = float(qty) * 15.0
+            return _qty_to_grams(name, ml, "мл")
+        if unit_l in {"стакан", "кружка", "чашка", "cup"}:
+            ml = float(qty) * 250.0
+            return _qty_to_grams(name, ml, "мл")
         if unit_l in {"мл", "ml"}:
             # convert to g using density
             d = 1.0
@@ -2041,6 +2101,18 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             # liters -> ml -> g
             ml = float(qty) * 1000.0
             return _qty_to_grams(name, ml, "мл")
+        # conversational units
+        if unit_l in {"щепотка", "щепотку", "щеп", "pinch"}:
+            # spices/salt default ~0.4 g
+            w = 0.4
+            return w * float(max(qty, 1.0)), False
+        if unit_l in {"горсть", "горсти", "handful"}:
+            n = (name or "").lower()
+            if any(k in n for k in ["орех", "миндал", "грецк", "фундук", "кешью", "арахис", "фисташ", "семеч", "тыквен", "кунжут"]):
+                return 30.0 * float(max(qty, 1.0)), False
+            if any(k in n for k in ["петруш", "укроп", "базилик", "кинза", "руккол", "шпинат", "зелень"]):
+                return 12.0 * float(max(qty, 1.0)), False
+            return 30.0 * float(max(qty, 1.0)), False
         if unit_l in {"шт", "pc", "pcs"}:
             key = (name or "").lower()
             for k, val in pcs.items():
@@ -2189,7 +2261,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
     reason = None
 
     # replace
-    m = re.search(r"(?:заменить|замени|поменять)\s+([a-zа-яё\-\s]+?)\s+на\s+([a-zа-яё\-\s]+?)(?:\s+(\d{1,4})\s*(г|гр|грамм|мл|ml|л|l|шт))?\b", instr, flags=re.IGNORECASE)
+    m = re.search(r"(?:заменить|замени|поменять)\s+([a-zа-яё\-\s]+?)\s+на\s+([a-zа-яё\-\s]+?)(?:\s+(\d{1,4})\s*(г|гр|грамм|мл|ml|л|l|шт|pc|pcs|ч\.л\.?|ст\.л\.?|стакан|кружка|чашка|щепотка|горсть))?\b", instr, flags=re.IGNORECASE)
     if m:
         action = "replace"
         old_name = _normalize_name_ru((m.group(1) or "").strip())
@@ -2303,13 +2375,13 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         }
 
     # change quantity to N g/ml
-    m = re.search(r"(?:увеличить|уменьшить|сделать|до)\s+([a-zа-яё\-\s]+?)\s*(?:до)?\s*(\+?\-?\d{1,4})\s*(г|гр|грамм|мл|ml|л|l|шт|pc|pcs)\b", instr, flags=re.IGNORECASE)
+    m = re.search(r"(?:увеличить|уменьшить|сделать|до)\s+([a-zа-яё\-\s]+?)\s*(?:до)?\s*(\+?\-?\d{1,4})\s*(г|гр|грамм|мл|ml|л|l|шт|pc|pcs|ч\.л\.?|ст\.л\.?|стакан|кружка|чашка|щепотка|горсть)\b", instr, flags=re.IGNORECASE)
     if not m:
         # pattern: '<name> +N г' but avoid leading action verbs (добавить/убрать/заменить)
         if re.match(r"\s*(?:добавить|добавь|положить|прибавить|убрать|убери|удалить|удали|без|минус|\-|заменить|замени|поменять)\b", instr, flags=re.IGNORECASE):
             m = None
         else:
-            m = re.search(r"^([a-zа-яё\-\s]+?)\s*([\+\-]?\d{1,4})\s*(г|гр|грамм|мл|ml|л|l|шт|pc|pcs)\b", instr, flags=re.IGNORECASE)
+            m = re.search(r"^([a-zа-яё\-\s]+?)\s*([\+\-]?\d{1,4})\s*(г|гр|грамм|мл|ml|л|l|шт|pc|pcs|ч\.л\.?|ст\.л\.?|стакан|кружка|чашка|щепотка|горсть)\b", instr, flags=re.IGNORECASE)
     if m:
         action = "change_qty"
         name = _normalize_name_ru((m.group(1) or "").strip())
@@ -2383,9 +2455,107 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "meta": {"action": action, "delta_cal": int(out_cal - base_cal)},
         }
 
+    # add (unit-first, e.g. 'добавь 1 ст.л. мёда' or 'добавь 1 стакан кефира')
+    m = re.match(r"^\s*(?:добавить|добавь|положить|прибавить|\+)\s*(\d{1,4})\s*(ч\.л\.?|ст\.л\.?|стакан|кружка|чашка|мл|ml|л|l|шт|pc|pcs|щепотк(?:а|у|и)?|горст(?:ь|и)?)\s+([a-zа-яё\-\s]+?)\s*$", instr, flags=re.IGNORECASE)
+    if m:
+        action = "add"
+        add_qty = float(m.group(1))
+        unit = (m.group(2) or None)
+        add_name = _normalize_name_ru((m.group(3) or "").strip())
+        try:
+            is_food_flag: bool | None = None
+            lex_hit = _lexicon_is_food_text(add_name)
+            if lex_hit is True:
+                is_food_flag = True
+            else:
+                is_food_flag = await _foodness_text(add_name)
+        except Exception:
+            is_food_flag = None
+        if is_food_flag is False:
+            return {"error": "not_food", "meta": {"action": action, "reason": "not_food"}}
+        qty_g, _is_liq = _qty_to_grams(add_name, add_qty, unit)
+        qty_g = max(0.1, min(1000.0, qty_g))
+        add_cal, add_p, add_f, add_c = _estimate_from_name(add_name, qty_g)
+        items = _clone_items(items_in)
+        items.append({
+            "name": add_name,
+            "weight_g": qty_g,
+            "calories": add_cal,
+            "protein_g": add_p,
+            "fat_g": add_f,
+            "carbs_g": add_c,
+        })
+        out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
+        new_cal = int(max(out_cal, base_cal + add_cal))
+        return {
+            "title": (title or "Блюдо"),
+            "calories": new_cal,
+            "protein_g": float(out_p),
+            "fat_g": float(out_f),
+            "carbs_g": float(out_c),
+            "weight_g": float(out_w if out_w > 0 else weight_g + qty_g),
+            "confidence": float((base or {}).get("confidence") or 0.8),
+            "items": items,
+            "references": {"sources": [
+                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                "USDA FoodData Central",
+            ]},
+            "analysis_text": None,
+            "appearance": {},
+            "not_food": False,
+            "meta": {"action": action, "delta_cal": int(new_cal - base_cal)},
+        }
+
+    # add (pinch/handful without number e.g. 'добавь щепотку соли')
+    m = re.match(r"^\s*(?:добавить|добавь|положить|прибавить|\+)\s*(щепотк(?:а|у|и)?|горст(?:ь|и)?)\s+([a-zа-яё\-\s]+?)\s*$", instr, flags=re.IGNORECASE)
+    if m:
+        action = "add"
+        unit = (m.group(1) or None)
+        add_name = _normalize_name_ru((m.group(2) or "").strip())
+        try:
+            is_food_flag = _lexicon_is_food_text(add_name)
+            if is_food_flag is not True:
+                is_food_flag = await _foodness_text(add_name)
+        except Exception:
+            is_food_flag = None
+        if is_food_flag is False:
+            return {"error": "not_food", "meta": {"action": action, "reason": "not_food"}}
+        qty_g, _is_liq = _qty_to_grams(add_name, 1.0, unit)
+        qty_g = max(0.1, min(1000.0, qty_g))
+        add_cal, add_p, add_f, add_c = _estimate_from_name(add_name, qty_g)
+        items = _clone_items(items_in)
+        items.append({
+            "name": add_name,
+            "weight_g": qty_g,
+            "calories": add_cal,
+            "protein_g": add_p,
+            "fat_g": add_f,
+            "carbs_g": add_c,
+        })
+        out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
+        new_cal = int(max(out_cal, base_cal + add_cal))
+        return {
+            "title": (title or "Блюдо"),
+            "calories": new_cal,
+            "protein_g": float(out_p),
+            "fat_g": float(out_f),
+            "carbs_g": float(out_c),
+            "weight_g": float(out_w if out_w > 0 else weight_g + qty_g),
+            "confidence": float((base or {}).get("confidence") or 0.8),
+            "items": items,
+            "references": {"sources": [
+                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                "USDA FoodData Central",
+            ]},
+            "analysis_text": None,
+            "appearance": {},
+            "not_food": False,
+            "meta": {"action": action, "delta_cal": int(new_cal - base_cal)},
+        }
+
     # add
     # Anchor add at line start to avoid catching scale-like phrases; prefer explicit verbs or '+'
-    m = re.match(r"^\s*(?:добавить|добавь|положить|прибавить|\+)\s*([a-zа-яё\-\s]+?)\s*(\d{1,4})\s*(г|гр|грамм|мл|ml|л|l|шт)?\b", instr, flags=re.IGNORECASE)
+    m = re.match(r"^\s*(?:добавить|добавь|положить|прибавить|\+)\s*([a-zа-яё\-\s]+?)\s*(\d{1,4})\s*(г|гр|грамм|мл|ml|л|l|шт|pc|pcs|ч\.л\.?|ст\.л\.?|стакан|кружка|чашка|щепотка|горсть)?\b", instr, flags=re.IGNORECASE)
     if m:
         action = "add"
         add_name = _normalize_name_ru((m.group(1) or "").strip().strip('- '))
