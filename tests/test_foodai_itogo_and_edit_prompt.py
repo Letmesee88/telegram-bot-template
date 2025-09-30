@@ -34,17 +34,17 @@ def test_itogo_operator_precedence_and_values(monkeypatch: pytest.MonkeyPatch):
     # Ensure 'Итого' section present
     assert "\n📊 Итого:\n" in out
 
-    # Calories: (120-100) = 20 -> integer, 'до нормы' per _fmt when delta > 0
-    assert "🔥 Калории: 20 ккал до нормы" in out
+    # Calories: (120-100) = 20 -> integer, now 'превышено' when delta > 0
+    assert "⚠️ 🔥 Калории: +20 ккал превышено" in out
 
-    # Proteins: (110.5-100)=10.5 -> one decimal
-    assert "🥩 Белки: 10.5 г до нормы" in out
+    # Proteins: (110.5-100)=10.5 -> one decimal, 'превышено'
+    assert "⚠️ 🥩 Белки: +10.5 г превышено" in out
 
     # Fats: (100-100)=0 -> reached
     assert "🥑 Жиры: норма достигнута" in out
 
-    # Carbs: (95-100)=-5 -> warning line with plus before value and one decimal
-    assert "⚠️ 🍞 Углеводы: +5.0 г превышено" in out
+    # Carbs: (95-100)=-5 -> now 'до нормы' with absolute value
+    assert "🍞 Углеводы: 5.0 г до нормы" in out
 
 
 def test_edit_prompt_proteins_spacing(monkeypatch: pytest.MonkeyPatch):

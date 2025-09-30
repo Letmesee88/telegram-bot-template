@@ -604,7 +604,7 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                                 "role": "user",
                                 "content": [
                                     {"type": "input_text", "text": "Estimate nutrition for this dish and return json only."},
-                                    {"type": "input_image", "image_url": file_url},
+                                    {"type": "input_image", "image_url": file_url, "detail": detail},
                                 ],
                             }
                         ],

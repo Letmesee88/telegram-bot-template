@@ -1162,9 +1162,9 @@ def _build_preview_text(
                 else:
                     show_val = f"{abs(delta):.1f}"
                 if delta > 0:
-                    return f"{emoji} {label}: {show_val} {unit} до нормы"
-                if delta < 0:
                     return f"⚠️ {emoji} {label}: +{show_val} {unit} превышено"
+                if delta < 0:
+                    return f"{emoji} {label}: {show_val} {unit} до нормы"
                 return f"{emoji} {label}: норма достигнута"
 
             parts.append(_fmt((itogo.get("cal_pct") or 0) - 100, "🔥", "ккал", "Калории"))
