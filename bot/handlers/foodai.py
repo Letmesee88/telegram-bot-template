@@ -280,7 +280,7 @@ async def edit_text_received(message: types.Message, state: FSMContext) -> None:
     items = list(result.get("items") or [])
     title = (result.get("title") or meal.title)
     text_preview = _build_preview_text(cal, p, f, c, 0.8, weight=w, items=items, references=None, title=title, source="edit")
-    combined = _("👍🏼  Готово !") + "\n" + _("📝 Изменения: {t}").format(t=instruction) + "\n\n" + text_preview
+    combined = "\n" + _("👍🏼  Готово !") + "\n" + _("📝 Изменения: {t}").format(t=instruction) + "\n\n" + text_preview
     await message.answer(combined, reply_markup=_preview_kb(meal_id))
 
 
@@ -1167,10 +1167,10 @@ def _build_preview_text(
                     return f"⚠️ {emoji} {label}: +{show_val} {unit} превышено"
                 return f"{emoji} {label}: норма достигнута"
 
-            parts.append(_fmt(itogo.get("cal_pct") or 0 - 100, "🔥", "ккал", "Калории"))
-            parts.append(_fmt(itogo.get("p_pct") or 0 - 100, "🥩", "г", "Белки"))
-            parts.append(_fmt(itogo.get("f_pct") or 0 - 100, "🥑", "г", "Жиры"))
-            parts.append(_fmt(itogo.get("c_pct") or 0 - 100, "🍞", "г", "Углеводы"))
+            parts.append(_fmt((itogo.get("cal_pct") or 0) - 100, "🔥", "ккал", "Калории"))
+            parts.append(_fmt((itogo.get("p_pct") or 0) - 100, "🥩", "г", "Белки"))
+            parts.append(_fmt((itogo.get("f_pct") or 0) - 100, "🥑", "г", "Жиры"))
+            parts.append(_fmt((itogo.get("c_pct") or 0) - 100, "🍞", "г", "Углеводы"))
         except Exception:
             pass
 
@@ -1194,7 +1194,7 @@ def _build_edit_prompt_text(
         parts.append(f"<b>{_html_escape(str(title))}</b>")
     parts.append("")
     parts.append(_("🔥 Калории: {cal} ккал").format(cal=int(cal)))
-    parts.append(_("🥩 Белки: {p}  г").format(p=p))
+    parts.append(_("🥩 Белки: {p} г").format(p=p))
     parts.append(_("🥑 Жиры: {f} г").format(f=f))
     parts.append(_("🍞 Углеводы: {c} г").format(c=c))
     if weight:
