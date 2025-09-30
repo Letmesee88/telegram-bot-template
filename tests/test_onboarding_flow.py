@@ -116,10 +116,10 @@ async def test_onboarding_happy_path_lose(apply_migrations, db_session, monkeypa
     msg.text = "180"  # type: ignore[attr-defined]
     await ob.height_set(msg, state)
 
-    # Activity
-    msg = DummyMessage(user_id)
-    msg.text = "Хожу 8-10к шагов, 2 тренировки, иногда бег."  # type: ignore[attr-defined]
-    await ob.activity_set(msg, state)
+    # Activity via button
+    call = DummyCallback(user_id)
+    call.data = "activity:moderate"
+    await ob.cb_activity_select(call, state)
 
     # Goal -> lose
     call = DummyCallback(user_id)
@@ -198,9 +198,9 @@ async def test_onboarding_maintain_direct_finalize(apply_migrations, db_session,
     msg.text = "175"  # type: ignore[attr-defined]
     await ob.height_set(msg, state)
 
-    msg = DummyMessage(user_id)
-    msg.text = "Сижу много, 2 раза спорт в неделю."  # type: ignore[attr-defined]
-    await ob.activity_set(msg, state)
+    call = DummyCallback(user_id)
+    call.data = "activity:light"
+    await ob.cb_activity_select(call, state)
 
     # maintain should trigger immediate finalize
     call = DummyCallback(user_id)
