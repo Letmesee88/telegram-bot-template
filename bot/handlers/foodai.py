@@ -170,16 +170,38 @@ async def edit_text_received(message: types.Message, state: FSMContext) -> None:
                 )
             except Exception:
                 pass
-        # User message by reason
-        err_map = {
+        # Build contextual ingredient list for better hints
+        ing_hint = None
+        try:
+            async with sessionmaker() as session:
+                meal_ctx = await session.get(MealModel, meal_id)
+                if meal_ctx:
+                    names: list[str] = []
+                    for it in (meal_ctx.items or []):
+                        try:
+                            n = (it.name or "").strip()
+                        except Exception:
+                            n = None
+                        if n:
+                            names.append(n)
+                    if names:
+                        ing_hint = _("Состав сейчас: {lst}").format(lst=", ".join(names[:8]))
+        except Exception:
+            ing_hint = None
+
+        # User message by reason (more actionable)
+        base_map = {
             "parse": _("Не понял запрос. Примеры: добавить сыр 30 г; убрать соус; заменить рыбу на индейку 100 г; увеличить порцию на 20%."),
-            "ambiguous": _("Нашёл несколько ингредиентов. Уточните, пожалуйста, какой именно."),
-            "not_found": _("Ингредиент не найден в составе. Попробуйте точнее: например, заменить кетчуп на соус 20 г."),
+            "ambiguous": _("Нашёл несколько совпадений. Уточните точнее название, например: заменить соус томатный на кетчуп 20 г."),
+            "not_found": _("Ингредиент не найден в составе. Напишите так, как в списке ниже, или уточните форму: например, 'замени куриное филе на рыбу 100 г'."),
             "caps": _("Слишком большая масса. Ограничение — до 1000 г/мл."),
-            "unsupported": _("Пока не поддерживаю такой запрос. Попробуйте: добавить/убрать/заменить/изменить массу/увеличить порцию."),
-            "not_food": _("Похоже, это не еда и не напиток. Добавляйте только то, что можно съесть или выпить."),
+            "unsupported": _("Пока не поддерживаю такой запрос. Попробуйте: добавить/убрать/заменить/изменить массу/увеличить порцию. Для добавления без граммов поставьте: 'добавь базилик 5 г'."),
+            "not_food": _("Похоже, это не еда и не напиток. Если это специя/зелень — укажите массу, например: 'петрушка 5 г'."),
         }
-        await message.answer(err_map.get(reason or "", _("Не удалось применить изменения. Попробуйте переформулировать и отправьте ещё раз.")))
+        msg = base_map.get(reason or "", _("Не удалось применить изменения. Попробуйте переформулировать и отправьте ещё раз."))
+        if ing_hint and (reason in {"ambiguous", "not_found"}):
+            msg = msg + "\n\n" + ing_hint
+        await message.answer(msg)
         return
 
     # Persist updated meal

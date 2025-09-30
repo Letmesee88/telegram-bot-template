@@ -318,7 +318,7 @@ async def cb_onboarding(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "onboarding_start")
 async def cb_onboarding_start(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(OnboardingStates.gender)
-    caption = _("Теперь нужно собрать начальные показатели, чтобы составить план. Начнём с выбора пола")
+    caption = _("Отлично! Теперь настроим всё под тебя 🎯\nПервый шаг — выбери свой пол, чтобы я точно рассчитал твою норму калорий.")
     kb = _ikb([
         [("Я мужчина", "gender:male"), ("Я девушка", "gender:female")],
     ])
@@ -335,7 +335,7 @@ async def cb_onboarding_start(call: CallbackQuery, state: FSMContext) -> None:
 # =====================
 
 async def _ask_gender(message: Message) -> None:
-    caption = _("Теперь нужно собрать начальные показатели, чтобы составить план. Начнём с выбора пола")
+    caption = _("Отлично! Теперь настроим всё под тебя 🎯\nПервый шаг — выбери свой пол, чтобы я точно рассчитал твою норму калорий.")
     kb = _ikb([[ ("Я мужчина", "gender:male"), ("Я девушка", "gender:female") ]])
     try:
         photo = FSInputFile("bot/static/gender.jpg")
@@ -357,7 +357,7 @@ async def _ask_height(message: Message) -> None:
 
 
 async def _ask_activity(message: Message) -> None:
-    text = _("Выберите свой уровень активности. Это поможет составить максимально точный план питания.")
+    text = _("Выберите свой уровень активности. Это поможет составить максимально точный план питания. 💪🏼")
     kb = _ikb([
         [("Сидячий образ жизни", "activity:sedentary")],
         [("Активность пару раз в неделю", "activity:light")],
@@ -419,8 +419,8 @@ async def cb_activity_select(call: CallbackQuery, state: FSMContext) -> None:
 
 async def _ask_goal(message: Message) -> None:
     text = _(
-        "Зафиксировал! Теперь самое главное — поставим цель\n"
-        "TapTap  помогает достигать долгосрочных результатов благодаря развитию полезных привычек"
+        "Отлично! А теперь ключевой момент — выбираем цель ⭐️\n"
+        "Calorissimo помогает достигать долгосрочных результатов благодаря точному контролю калорий"
     )
     kb = _ikb([
         [("Хочу похудеть", "goal:lose")],
@@ -556,7 +556,7 @@ async def cb_gender(call: CallbackQuery, state: FSMContext) -> None:
 # Текстовый fallback (male/female) — запрещаем свободный ввод, повторяем шаг с кнопками
 @router.message(OnboardingStates.gender, F.text.casefold().in_(["male", "female"]))
 async def gender_set(message: Message, state: FSMContext) -> None:
-    caption = _("Теперь нужно собрать начальные показатели, чтобы составить план. Начнём с выбора пола")
+    caption = _("Отлично! Теперь настроим всё под тебя 🎯\nПервый шаг — выбери свой пол, чтобы я точно рассчитал твою норму калорий.")
     kb = _ikb([
         [("Я мужчина", "gender:male"), ("Я девушка", "gender:female")],
     ])
@@ -570,7 +570,7 @@ async def gender_set(message: Message, state: FSMContext) -> None:
 # На шаге выбора пола любые сообщения — только кнопки
 @router.message(OnboardingStates.gender, F.text & (~F.text.startswith("/")))
 async def gender_retry(message: Message) -> None:
-    caption = _("Теперь нужно собрать начальные показатели, чтобы составить план. Начнём с выбора пола")
+    caption = _("Отлично! Теперь настроим всё под тебя 🎯\nПервый шаг — выбери свой пол, чтобы я точно рассчитал твою норму калорий.")
     kb = _ikb([
         [("Я мужчина", "gender:male"), ("Я девушка", "gender:female")],
     ])
@@ -1236,7 +1236,7 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
             return re.sub(r"\s+", " ", (s or "").lower()).strip()
         pl_core = re.sub(r"^уч[её]л\s+запрос:\s*", "", personal_line, flags=re.I)
         if _norm_txt(pl_core) and _norm_txt(pl_core) not in _norm_txt(explanation):
-            lines.append(f"<i>{personal_line}</i>")
+            lines.append(personal_line)
     lines.append(explanation)
     lines.append("")
     lines.append(_("Оставим так или нужна еще корректировка?"))
@@ -1298,7 +1298,7 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
                         return re.sub(r"\s+", " ", (s or "").lower()).strip()
                     pl_core2 = re.sub(r"^уч[её]л\s+запрос:\s*", "", personal_line, flags=re.I)
                     if _norm_txt2(pl_core2) and _norm_txt2(pl_core2) not in _norm_txt2(rewritten):
-                        new_lines.append(f"<i>{personal_line}</i>")
+                        new_lines.append(personal_line)
                 new_lines.append(rewritten)
                 new_lines.append("")
                 new_lines.append(_("Оставим так или нужна еще корректировка?"))

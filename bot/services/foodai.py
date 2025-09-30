@@ -182,6 +182,21 @@ def _lexicon_is_food_text(text: str | None) -> bool | None:
             "яблоко", "банан", "хлеб", "сыр", "творог", "яйцо", "яйца", "омлет",
             "майонез", "кетчуп", "соус", "сметана", "масло",
             "огурец", "помидор", "томат", "перец",
+            # зелень/травы
+            "петрушка", "укроп", "базилик", "кинза", "руккола", "шпинат", "зелень",
+            # овощи/грибы/бобовые
+            "брокколи", "цветная капуста", "капуста", "кабачок", "баклажан", "свекла", "свёкла", "горошек", "зелёный горошек",
+            "шампиньоны", "шампиньон", "вешенки", "вешенка", "фасоль", "нут", "чечевица",
+            # фрукты/ягоды
+            "клубника", "малина", "черника", "виноград", "апельсин", "груша", "киви", "персик",
+            # рыба/морепродукты
+            "треска", "хек", "креветки", "креветка", "кальмар",
+            # молочное/сыры/масла
+            "моцарелла", "творожный сыр", "крем-чиз", "сливочное масло",
+            # соусы/добавки/маслины
+            "соевый соус", "горчица", "томатная паста", "оливки", "маслины",
+            # крупы
+            "киноа",
         }
         # obvious non-food single objects (guard for one-token)
         non_food = {
@@ -1236,6 +1251,12 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         "морковь": 70,
         "луковица": 100,
         "кусок сыра": 20,
+        # additions
+        "шампиньон": 15,
+        "оливка": 5,
+        "маслина": 4,
+        "долька лимона": 12,
+        "долька лайма": 10,
     }
 
     def _clone_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1659,6 +1680,13 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "семечки": {"cal": 584, "p": 21.0, "f": 51.0, "c": 20.0},
             "чиа": {"cal": 486, "p": 17.0, "f": 31.0, "c": 44.0},
             "авокадо": {"cal": 160, "p": 2.0, "f": 15.0, "c": 9.0},
+            # herbs/greens (per 100 g, generic values)
+            "петруш": {"cal": 36, "p": 3.0, "f": 0.8, "c": 6.3},   # петрушка
+            "укроп": {"cal": 43, "p": 3.5, "f": 1.1, "c": 7.0},     # укроп
+            "базилик": {"cal": 23, "p": 3.1, "f": 0.6, "c": 2.7},  # базилик
+            "кинза": {"cal": 23, "p": 2.1, "f": 0.5, "c": 3.7},    # кинза/кориандр зелень
+            "руккол": {"cal": 25, "p": 2.6, "f": 0.7, "c": 3.7},   # руккола
+            "шпинат": {"cal": 23, "p": 2.9, "f": 0.4, "c": 3.6},   # шпинат
         }
         n = (name or "").lower()
         hit = None
@@ -2113,11 +2141,44 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         return cal, p, f, c
 
     def _find_indices(items: list[dict[str, Any]], needle: str) -> list[int]:
+        """Find item indices by forgiving Russian matching.
+
+        - Normalizes both the needle and item name via _normalize_name_ru.
+        - Matches if either contains the other (substring, after normalization).
+        - Falls back to: (a) root-token intersection (>=4 letters), (b) shared 4-letter token prefixes.
+        """
         res: list[int] = []
-        n = (needle or "").lower().strip()
+        try:
+            n_norm = (_normalize_name_ru(needle) or "").lower().strip()
+        except Exception:
+            n_norm = (needle or "").lower().strip()
         for i, it in enumerate(items):
             try:
-                if n and n in str(it.get("name") or "").lower():
+                raw = str(it.get("name") or "")
+                try:
+                    nm = (_normalize_name_ru(raw) or "").lower()
+                except Exception:
+                    nm = raw.lower()
+                cond = bool(n_norm) and (n_norm in nm or nm in n_norm)
+                if not cond:
+                    # token-root overlap (>=4 letters)
+                    import re as _re
+                    roots = set(_re.findall(r"[a-zа-яё]{4,}", n_norm))
+                    if any(r in nm for r in roots):
+                        cond = True
+                if not cond:
+                    # shared 4-letter token prefix (e.g., 'куриц' vs 'курин' -> 'кури')
+                    import re as _re2
+                    def _tok4(s: str) -> set[str]:
+                        out = set()
+                        for t in _re2.findall(r"[a-zа-яё]{4,}", s):
+                            out.add(t[:4])
+                        return out
+                    pref_a = _tok4(n_norm)
+                    pref_b = _tok4(nm)
+                    if pref_a and pref_b and (pref_a & pref_b):
+                        cond = True
+                if cond:
                     res.append(i)
             except Exception:
                 continue
@@ -2161,7 +2222,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                 is_food_flag = await _foodness_text(new_name)
         except Exception:
             is_food_flag = None
-        if is_food_flag is False or is_food_flag is None:
+        if is_food_flag is False:
             try:
                 logger.info("FoodAI:edit | replace | rejected_not_food | new='{}'", new_name)
             except Exception:
@@ -2342,7 +2403,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                 is_food_flag = await _foodness_text(add_name)
         except Exception:
             is_food_flag = None
-        if is_food_flag is False or is_food_flag is None:
+        if is_food_flag is False:
             return {"error": "not_food", "meta": {"action": action, "reason": "not_food"}}
         qty_g, _is_liq = _qty_to_grams(add_name, add_qty, unit)
         qty_g = max(1.0, min(1000.0, qty_g))
@@ -2388,6 +2449,66 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         items.append(_item_out)
         out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
         # Prefer adding estimated delta to base calories to avoid undercount when base items were incomplete
+        new_cal = int(max(out_cal, base_cal + add_cal))
+        return {
+            "title": (title or "Блюдо"),
+            "calories": new_cal,
+            "protein_g": float(out_p),
+            "fat_g": float(out_f),
+            "carbs_g": float(out_c),
+            "weight_g": float(out_w if out_w > 0 else weight_g + qty_g),
+            "confidence": float((base or {}).get("confidence") or 0.8),
+            "items": items,
+            "references": {"sources": [
+                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                "USDA FoodData Central",
+            ]},
+            "analysis_text": None,
+            "appearance": {},
+            "not_food": False,
+            "meta": {"action": action, "delta_cal": int(new_cal - base_cal)},
+        }
+
+    # add (fallback): no quantity specified → apply sensible defaults by category
+    m = re.match(r"^\s*(?:добавить|добавь|положить|прибавить|\+)\s*([a-zа-яё\-\s]+?)\s*$", instr, flags=re.IGNORECASE)
+    if m:
+        action = "add"
+        add_name = _normalize_name_ru((m.group(1) or "").strip().strip('- '))
+        add_name = re.sub(r"^(?:добавить|добавь|положить|прибавить)\s+", "", add_name, flags=re.IGNORECASE)
+        # Foodness gate (None -> allow)
+        try:
+            is_food_flag = _lexicon_is_food_text(add_name)
+            if is_food_flag is not True:
+                is_food_flag = await _foodness_text(add_name)
+        except Exception:
+            is_food_flag = None
+        if is_food_flag is False:
+            return {"error": "not_food", "meta": {"action": action, "reason": "not_food"}}
+        # Defaults
+        def _default_add_qty(name: str) -> tuple[float, str | None]:
+            nl = (name or "").lower()
+            if any(k in nl for k in ["петруш", "укроп", "базилик", "кинза", "руккол", "шпинат", "зелень"]):
+                return 5.0, "г"
+            if any(k in nl for k in ["соус", "кетчуп", "майонез", "сметан", "йогурт", "сливки"]):
+                return 20.0, "г"
+            if any(k in nl for k in ["масло", "оливковое масло"]):
+                return 5.0, "г"
+            return 30.0, "г"
+        add_qty, unit = _default_add_qty(add_name)
+        qty_g, _is_liq = _qty_to_grams(add_name, float(add_qty), unit)
+        qty_g = max(1.0, min(1000.0, qty_g))
+        add_cal, add_p, add_f, add_c = _estimate_from_name(add_name, qty_g)
+        items = _clone_items(items_in)
+        _item_out = {
+            "name": add_name,
+            "weight_g": qty_g,
+            "calories": add_cal,
+            "protein_g": add_p,
+            "fat_g": add_f,
+            "carbs_g": add_c,
+        }
+        items.append(_item_out)
+        out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
         new_cal = int(max(out_cal, base_cal + add_cal))
         return {
             "title": (title or "Блюдо"),
