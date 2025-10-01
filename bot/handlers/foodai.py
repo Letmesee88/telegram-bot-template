@@ -371,7 +371,7 @@ async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
         meal_id = meal.id
 
     # Notify user we're analyzing
-    analyzing_msg = await message.answer(_("Анализирую фото…"))
+    analyzing_msg = await message.answer(_("✨Анализирую еду на фото… это может занять около 35 секунд"))
 
     # Analytics: photo analyze started
     # Prometheus: started
@@ -1156,21 +1156,40 @@ def _build_preview_text(
         parts.append("")
         parts.append(_("📊 Итого:"))
         try:
-            def _fmt(delta: float, emoji: str, unit: str, label: str) -> str:
+            def _pct_show(x: float) -> str:
+                try:
+                    s = f"{float(x):.1f}"
+                    if s.endswith(".0"):
+                        return s[:-2]
+                    return s
+                except Exception:
+                    try:
+                        return str(int(round(float(x))))
+                    except Exception:
+                        return str(x)
+
+            def _fmt(pct: float, delta: float, emoji: str, unit: str, label: str) -> str:
+                # delta here is pct-100; keep legacy semantics for absolute magnitude
                 if unit == "ккал":
                     show_val = f"{int(abs(delta))}"
                 else:
                     show_val = f"{abs(delta):.1f}"
+                pct_s = _pct_show(pct)
                 if delta > 0:
-                    return f"⚠️ {emoji} {label}: +{show_val} {unit} превышено"
+                    return f"⚠️ {emoji} {label}: {pct_s}% (+{show_val} {unit} превышено)"
                 if delta < 0:
-                    return f"{emoji} {label}: {show_val} {unit} до нормы"
-                return f"{emoji} {label}: норма достигнута"
+                    return f"{emoji} {label}: {pct_s}% (-{show_val} {unit} до нормы)"
+                return f"{emoji} {label}: {pct_s}% (норма достигнута)"
 
-            parts.append(_fmt((itogo.get("cal_pct") or 0) - 100, "🔥", "ккал", "Калории"))
-            parts.append(_fmt((itogo.get("p_pct") or 0) - 100, "🥩", "г", "Белки"))
-            parts.append(_fmt((itogo.get("f_pct") or 0) - 100, "🥑", "г", "Жиры"))
-            parts.append(_fmt((itogo.get("c_pct") or 0) - 100, "🍞", "г", "Углеводы"))
+            cal_pct = float(itogo.get("cal_pct") or 0)
+            p_pct = float(itogo.get("p_pct") or 0)
+            f_pct = float(itogo.get("f_pct") or 0)
+            c_pct = float(itogo.get("c_pct") or 0)
+
+            parts.append(_fmt(cal_pct, cal_pct - 100, "🔥", "ккал", "Калории"))
+            parts.append(_fmt(p_pct, p_pct - 100, "🥩", "г", "Белки"))
+            parts.append(_fmt(f_pct, f_pct - 100, "🥑", "г", "Жиры"))
+            parts.append(_fmt(c_pct, c_pct - 100, "🍞", "г", "Углеводы"))
         except Exception:
             pass
 
