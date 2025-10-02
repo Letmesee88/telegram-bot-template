@@ -1285,6 +1285,12 @@ def _edit_kb(meal_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def _saved_with_recommend_kb(meal_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=_("🎲 Рекомендуй следующее блюдо"), callback_data=f"rec:start:{meal_id}")]]
+    )
+
+
 async def _edit_caption_or_text(cb: types.CallbackQuery, text: str, kb: InlineKeyboardMarkup | None = None) -> None:
     # Try caption edit first (if message has a photo), then text edit; finally fallback to sending a new message
     try:
@@ -1432,7 +1438,7 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
         logger.warning("day_analysis_failed | user_id={} | err={}", user_id, e)
 
     combined_text = saved_line if not analysis_text else f"{saved_line}\n\n{analysis_text}"
-    await _edit_caption_or_text(callback, combined_text, kb=None)
+    await _edit_caption_or_text(callback, combined_text, kb=_saved_with_recommend_kb(meal_id))
     await callback.answer()
 
 

@@ -43,6 +43,11 @@ EventType = Literal[
     "Onboarding:Restart",
     "Onboarding:ActivitySelected",
     "Onboarding:SpeedSelected",
+    # Recommendations
+    "Rec:StartClicked",
+    "Rec:TypeChosen",
+    "Rec:Generated",
+    "Rec:OtherClicked",
 ]
 PaymentMethod = Literal["Stripe", "PayPal", "Square", "Crypto"]
 

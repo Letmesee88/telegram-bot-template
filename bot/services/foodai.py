@@ -131,9 +131,12 @@ async def _openai_request(kind: str, payload: dict[str, Any]) -> str | None:
             return _strip_code_fence(data["output_text"])  # combined text
         out: list[str] = []
         for piece in (data.get("output") or []):
-            if (piece or {}).get("type") == "message":
+            # Only collect assistant messages to avoid echoing user input
+            if (piece or {}).get("type") == "message" and (piece or {}).get("role") == "assistant":
                 for c in (piece.get("content") or []):
-                    if (c or {}).get("type") in {"output_text", "input_text", "text"}:
+                    ttype = (c or {}).get("type")
+                    # Exclude input_text; keep only model outputs
+                    if ttype in {"output_text", "text"}:
                         t = (c.get("text") or "").strip()
                         if t:
                             out.append(t)
