@@ -19,10 +19,7 @@ from bot.metrics import (
     recommender_failed,
     recommender_duration_ms,
 )
-
-# In-memory recent titles to avoid repeats (MVP). Format: {user_id: [(title, ts), ...]}
-_recent_titles: dict[int, list[tuple[str, float]]] = {}
-
+from bot.services.recommendations_log import add_recommendation_title, get_recent_titles as get_recent_titles_db
 
 def _get_setting(name: str, default: Any) -> Any:
     try:
@@ -30,27 +27,27 @@ def _get_setting(name: str, default: Any) -> Any:
     except Exception:
         return default
 
+async def record_recent_title(user_id: int, title: str) -> None:
+    """Persist recent title to DB (anti-repeat)."""
+    try:
+        async with sessionmaker() as session:
+            await add_recommendation_title(session, user_id, title.strip())
+    except Exception:
+        # Non-fatal: anti-repeat persistence is best-effort
+        pass
 
-def _cleanup_recent(user_id: int, window_days: int) -> None:
-    now = time.time()
-    window = window_days * 86400
-    arr = _recent_titles.get(user_id) or []
-    _recent_titles[user_id] = [(t, ts) for (t, ts) in arr if now - ts <= window]
 
+async def recent_titles(user_id: int) -> list[str]:
+    """Fetch recent titles from DB with window and cap.
 
-def record_recent_title(user_id: int, title: str) -> None:
+    Returns lowercase titles for matching.
+    """
     window_days = int(_get_setting("REC_AVOID_REPEAT_DAYS", 3) or 3)
-    _cleanup_recent(user_id, window_days)
-    arr = _recent_titles.get(user_id) or []
-    arr.append((title.strip().lower(), time.time()))
-    # trim to last 20
-    _recent_titles[user_id] = arr[-20:]
-
-
-def recent_titles(user_id: int) -> list[str]:
-    window_days = int(_get_setting("REC_AVOID_REPEAT_DAYS", 3) or 3)
-    _cleanup_recent(user_id, window_days)
-    return [t for (t, _ts) in (_recent_titles.get(user_id) or [])]
+    try:
+        async with sessionmaker() as session:
+            return await get_recent_titles_db(session, user_id, window_days=window_days, limit=20)
+    except Exception:
+        return []
 
 
 def _is_nutrition_valid(
@@ -242,7 +239,7 @@ async def recommend(
         pass
 
     plan, fact = await _load_plan_and_fact(user_id)
-    avoid = recent_titles(user_id)
+    avoid = await recent_titles(user_id)
     system, payload_extras = _build_instructions(meal_type, plan, fact, avoid)
 
     # Build Responses payload
@@ -422,7 +419,7 @@ async def recommend(
         data["language"] = "ru"
         title = str(data.get("title") or "").strip()
         if title:
-            record_recent_title(user_id, title)
+            await record_recent_title(user_id, title)
         try:
             recommender_succeeded.labels(meal_type).inc()
             recommender_duration_ms.labels(meal_type).observe((time.time() - t0) * 1000)
