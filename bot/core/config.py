@@ -187,6 +187,8 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     # =====================
     # Recommender settings (Responses API)
     # =====================
+    # Default timezone for "today" calculations when user-specific TZ is not set
+    DEFAULT_TZ: str = "Europe/Moscow"
     RECOMMENDATIONS_ENABLED: bool = True
     # Model for Responses API (e.g., gpt-5, gpt-5-mini, gpt-4o, gpt-4o-mini)
     RECOMMENDER_MODEL: str = "gpt-5-mini"

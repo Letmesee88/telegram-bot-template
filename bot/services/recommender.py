@@ -4,7 +4,8 @@ from typing import Any, Literal, Tuple
 import asyncio
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, time as dtime
+from zoneinfo import ZoneInfo
 
 from bot.core.config import settings
 from bot.database.database import sessionmaker
@@ -97,7 +98,25 @@ async def _load_plan_and_fact(user_id: int) -> tuple[dict[str, float], dict[str,
     plan/fact have keys: calories(int), protein_g, fat_g, carbs_g (floats)
     Missing values default to zeros.
     """
-    today_utc = datetime.now(timezone.utc).date()
+    # Determine local "today" using default timezone (no per-user TZ yet)
+    tz_name = str(getattr(settings, "DEFAULT_TZ", "Europe/Moscow") or "Europe/Moscow")
+    # Robust fallback: avoid ZoneInfo("UTC") to work on systems without tzdata
+    if tz_name.upper() in ("UTC", "Z"):
+        tz = timezone.utc
+    else:
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = timezone.utc
+    now_local = datetime.now(tz)
+    local_date = now_local.date()
+    local_start = datetime.combine(local_date, dtime(0, 0), tz)
+    local_end = local_start + timedelta(days=1)
+    # Overlapping UTC dates for the local 24h window (at most two)
+    d1 = local_start.astimezone(timezone.utc).date()
+    # use end-ε to get proper second date when it crosses UTC midnight
+    d2 = (local_end - timedelta(seconds=1)).astimezone(timezone.utc).date()
+    date_candidates = {d1, d2}
     plan = {"calories": 0.0, "protein_g": 0.0, "fat_g": 0.0, "carbs_g": 0.0}
     fact = {"calories": 0.0, "protein_g": 0.0, "fat_g": 0.0, "carbs_g": 0.0}
     async with sessionmaker() as session:
@@ -115,19 +134,20 @@ async def _load_plan_and_fact(user_id: int) -> tuple[dict[str, float], dict[str,
                 }
             except Exception:
                 pass
-        di = await session.scalar(
-            DailyIntakeModel.__table__.select().where(
-                (DailyIntakeModel.user_id == user_id) & (DailyIntakeModel.date_utc == today_utc)
+        from sqlalchemy import select
+        res = await session.execute(
+            select(DailyIntakeModel).where(
+                (DailyIntakeModel.user_id == user_id) & (DailyIntakeModel.date_utc.in_(date_candidates))
             )
         )
-        if di:
+        rows = res.scalars().all()
+        if rows:
             try:
-                fact = {
-                    "calories": float(di.calories or 0),
-                    "protein_g": float(di.protein_g or 0),
-                    "fat_g": float(di.fat_g or 0),
-                    "carbs_g": float(di.carbs_g or 0),
-                }
+                c = sum(float(r.calories or 0) for r in rows)
+                p = sum(float(r.protein_g or 0) for r in rows)
+                f = sum(float(r.fat_g or 0) for r in rows)
+                cb = sum(float(r.carbs_g or 0) for r in rows)
+                fact = {"calories": c, "protein_g": p, "fat_g": f, "carbs_g": cb}
             except Exception:
                 pass
     return plan, fact

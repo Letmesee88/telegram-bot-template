@@ -33,6 +33,7 @@ bot = [
     "orjson>=3.10.15,<4.0.0",
     "alembic>=1.14.1,<2.0.0",
     "prometheus-client>=0.21.1,<1.0.0",
+    "tzdata>=2024.1,<2026.0",
 ]
 admin = [
     "gunicorn>=23.0.0,<24.0.0",
