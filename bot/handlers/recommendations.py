@@ -8,6 +8,7 @@ from aiogram import F, Router, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.core.config import settings
+from bot.core.loader import redis_client
 from bot.services.analytics import analytics
 from bot.analytics.types import BaseEvent, EventProperties, Plan
 from bot.services.recommender import recommend
@@ -46,6 +47,28 @@ def _other_kb(meal_type: str, ctx: str) -> InlineKeyboardMarkup:
 
 def _human_type(meal_type: str) -> str:
     return {"bf": "завтрак", "ln": "обед", "dn": "ужин", "snack": "перекус"}.get(meal_type, "приём пищи")
+
+
+def _retry_kb(meal_type: str, ctx: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔁 Попробовать ещё", callback_data=f"rec:type:{meal_type}:{ctx}")]]
+    )
+
+
+async def _rate_limited(user_id: int, route: str, meal_type: str) -> bool:
+    try:
+        window = int(getattr(settings, "RECOMMENDER_RATE_LIMIT_WINDOW_SEC", 2) or 2)
+        cap = int(getattr(settings, "RECOMMENDER_RATE_LIMIT_MAX", 1) or 1)
+    except Exception:
+        window, cap = 2, 1
+    key = f"rl:rec:{route}:{user_id}:{meal_type}"
+    try:
+        cnt = await redis_client.incr(key)
+        if cnt == 1:
+            await redis_client.expire(key, window)
+        return cnt > cap
+    except Exception:
+        return False
 
 
 def _build_recommendation_text(rec: dict[str, Any], meal_code: str | None = None) -> str:
@@ -168,10 +191,49 @@ async def cb_rec_type(callback: types.CallbackQuery) -> None:
             )
         )
 
+    # Rate limit
+    if await _rate_limited(user_id, "type", meal_type):
+        try:
+            if analytics.logger:
+                analytics.fire_event(
+                    BaseEvent(
+                        user_id=user_id,
+                        event_type="Rec:Failed",
+                        event_properties=EventProperties(
+                            chat_id=callback.message.chat.id if callback.message else None,
+                            chat_type=callback.message.chat.type if callback.message else None,
+                            text=f"type={meal_type}; reason=rate_limited",
+                        ),
+                        language=getattr(callback.from_user, 'language_code', None),
+                        plan=Plan(branch="Recommend", source="FoodAI", version="v1"),
+                    )
+                )
+        except Exception:
+            pass
+        await callback.answer("Слишком часто. Попробуйте через пару секунд.")
+        return
+
     try:
-        rec = await recommend(user_id, meal_type)  # type: ignore[arg-type]
+        rec, reason = await recommend(user_id, meal_type)  # type: ignore[arg-type]
         if not rec:
-            await callback.message.answer("Не удалось подготовить рекомендацию. Попробуйте ещё раз.")
+            try:
+                if analytics.logger:
+                    analytics.fire_event(
+                        BaseEvent(
+                            user_id=user_id,
+                            event_type="Rec:Failed",
+                            event_properties=EventProperties(
+                                chat_id=callback.message.chat.id if callback.message else None,
+                                chat_type=callback.message.chat.type if callback.message else None,
+                                text=f"type={meal_type}; reason={reason}",
+                            ),
+                            language=getattr(callback.from_user, 'language_code', None),
+                            plan=Plan(branch="Recommend", source="FoodAI", version="v1"),
+                        )
+                    )
+            except Exception:
+                pass
+            await callback.message.answer("Не удалось подготовить рекомендацию. Попробуйте ещё раз.", reply_markup=_retry_kb(meal_type, ctx))
             await callback.answer()
             return
         text = _build_recommendation_text(rec, meal_type)
@@ -228,10 +290,49 @@ async def cb_rec_other(callback: types.CallbackQuery) -> None:
             )
         )
 
+    # Rate limit
+    if await _rate_limited(user_id, "other", meal_type):
+        try:
+            if analytics.logger:
+                analytics.fire_event(
+                    BaseEvent(
+                        user_id=user_id,
+                        event_type="Rec:Failed",
+                        event_properties=EventProperties(
+                            chat_id=callback.message.chat.id if callback.message else None,
+                            chat_type=callback.message.chat.type if callback.message else None,
+                            text=f"type={meal_type}; reason=rate_limited",
+                        ),
+                        language=getattr(callback.from_user, 'language_code', None),
+                        plan=Plan(branch="Recommend", source="FoodAI", version="v1"),
+                    )
+                )
+        except Exception:
+            pass
+        await callback.answer("Слишком часто. Попробуйте через пару секунд.")
+        return
+
     try:
-        rec = await recommend(user_id, meal_type, another=True)  # type: ignore[arg-type]
+        rec, reason = await recommend(user_id, meal_type, another=True)  # type: ignore[arg-type]
         if not rec:
-            await callback.message.answer("Не удалось подготовить рекомендацию. Попробуйте ещё раз.")
+            try:
+                if analytics.logger:
+                    analytics.fire_event(
+                        BaseEvent(
+                            user_id=user_id,
+                            event_type="Rec:Failed",
+                            event_properties=EventProperties(
+                                chat_id=callback.message.chat.id if callback.message else None,
+                                chat_type=callback.message.chat.type if callback.message else None,
+                                text=f"type={meal_type}; other=1; reason={reason}",
+                            ),
+                            language=getattr(callback.from_user, 'language_code', None),
+                            plan=Plan(branch="Recommend", source="FoodAI", version="v1"),
+                        )
+                    )
+            except Exception:
+                pass
+            await callback.message.answer("Не удалось подготовить рекомендацию. Попробуйте ещё раз.", reply_markup=_retry_kb(meal_type, ctx))
             await callback.answer()
             return
         text = _build_recommendation_text(rec, meal_type)

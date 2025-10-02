@@ -48,6 +48,7 @@ EventType = Literal[
     "Rec:TypeChosen",
     "Rec:Generated",
     "Rec:OtherClicked",
+    "Rec:Failed",
 ]
 PaymentMethod = Literal["Stripe", "PayPal", "Square", "Crypto"]
 

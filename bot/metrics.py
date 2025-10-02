@@ -184,3 +184,27 @@ foodai_escalation_total_dur_ms = prometheus_client.Histogram(
     "FoodAI vision escalation total chain duration in milliseconds",
     buckets=[50, 100, 200, 400, 800, 1600, 3200, 6400],
 )
+
+# ===== Recommender metrics =====
+# Keep label sets LOW cardinality. reason ∈ {timeout,json_parse,invalid,provider_error,empty,other}
+recommender_started = prometheus_client.Counter(
+    "recommender_started_total",
+    "Recommender started",
+    ["meal_type"],
+)
+recommender_succeeded = prometheus_client.Counter(
+    "recommender_succeeded_total",
+    "Recommender succeeded",
+    ["meal_type"],
+)
+recommender_failed = prometheus_client.Counter(
+    "recommender_failed_total",
+    "Recommender failed",
+    ["meal_type", "reason"],
+)
+recommender_duration_ms = prometheus_client.Histogram(
+    "recommender_duration_ms",
+    "Recommender duration in milliseconds",
+    ["meal_type"],
+    buckets=[50, 100, 200, 400, 800, 1600, 3200, 6400, 12800],
+)

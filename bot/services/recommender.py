@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, Tuple
 import asyncio
 import json
 import time
@@ -13,6 +13,12 @@ from loguru import logger
 
 # Reuse existing OpenAI Responses API helper
 from bot.services.foodai import _openai_request  # type: ignore
+from bot.metrics import (
+    recommender_started,
+    recommender_succeeded,
+    recommender_failed,
+    recommender_duration_ms,
+)
 
 # In-memory recent titles to avoid repeats (MVP). Format: {user_id: [(title, ts), ...]}
 _recent_titles: dict[int, list[tuple[str, float]]] = {}
@@ -47,7 +53,11 @@ def recent_titles(user_id: int) -> list[str]:
     return [t for (t, _ts) in (_recent_titles.get(user_id) or [])]
 
 
-def _is_nutrition_valid(data: dict[str, Any] | None, target_cal_max: float | None) -> tuple[bool, dict[str, float]]:
+def _is_nutrition_valid(
+    data: dict[str, Any] | None,
+    target_cal_max: float | None,
+    enforce_cap: bool,
+) -> tuple[bool, dict[str, float]]:
     """Basic sanity checks for nutrition block.
 
     Returns (valid, details) where details contains parsed numbers.
@@ -76,9 +86,9 @@ def _is_nutrition_valid(data: dict[str, Any] | None, target_cal_max: float | Non
                 return False, details
     except Exception:
         pass
-    # Optional upper cap guard vs target
+    # Optional upper cap guard vs target (only if enforce_cap)
     try:
-        if target_cal_max is not None and cal > (float(target_cal_max) * 1.10):  # allow +10% over soft cap
+        if enforce_cap and target_cal_max is not None and cal > (float(target_cal_max) * 1.10):  # allow +10%
             return False, details
     except Exception:
         pass
@@ -211,12 +221,25 @@ def _build_instructions(meal_type: str, plan: dict[str, float], fact: dict[str, 
     return system, {"user": user, "format": format_obj, "target_cal_max": target_cal_max}
 
 
-async def recommend(user_id: int, meal_type: Literal["bf", "ln", "dn", "snack"], *, another: bool = False) -> dict[str, Any] | None:
+async def recommend(
+    user_id: int,
+    meal_type: Literal["bf", "ln", "dn", "snack"],
+    *,
+    another: bool = False,
+) -> Tuple[dict[str, Any] | None, str | None]:
     """Generate a structured recommendation dict via Responses API.
     Returns None on failure.
     """
     model = str(_get_setting("RECOMMENDER_MODEL", "gpt-5-mini") or "gpt-5-mini")
     timeout = int(_get_setting("RECOMMENDER_TIMEOUT", 8) or 8)
+    enforce_cap = bool(_get_setting("RECOMMENDER_ENFORCE_CAP", False) or False)
+    language_required = str(_get_setting("RECOMMENDER_LANGUAGE_REQUIRED", "ru") or "ru").lower()
+
+    t0 = time.time()
+    try:
+        recommender_started.labels(meal_type).inc()
+    except Exception:
+        pass
 
     plan, fact = await _load_plan_and_fact(user_id)
     avoid = recent_titles(user_id)
@@ -250,7 +273,12 @@ async def recommend(user_id: int, meal_type: Literal["bf", "ln", "dn", "snack"],
     try:
         raw = await asyncio.wait_for(_openai_request("responses", payload), timeout=timeout)
         if not raw:
-            return None
+            try:
+                recommender_failed.labels(meal_type, "empty").inc()
+                recommender_duration_ms.labels(meal_type).observe((time.time() - t0) * 1000)
+            except Exception:
+                pass
+            return None, "empty"
         # Robust JSON parse: first try direct, then trim to outermost braces if needed
         data: dict[str, Any] | None = None
         try:
@@ -274,9 +302,49 @@ async def recommend(user_id: int, meal_type: Literal["bf", "ln", "dn", "snack"],
                 )
             except Exception:
                 pass
-            return None
+            try:
+                recommender_failed.labels(meal_type, "json_parse").inc()
+                recommender_duration_ms.labels(meal_type).observe((time.time() - t0) * 1000)
+            except Exception:
+                pass
+            return None, "json_parse"
+        # Language validation (if model provided language field)
+        lang = str(data.get("language") or "").lower().strip()
+        if language_required and lang and lang != language_required:
+            retry_user_text_lang = user_text + " Ответ строго на русском языке (language='ru')."
+            retry_payload_lang = dict(payload)
+            retry_payload_lang["input"] = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": retry_user_text_lang},
+                    ],
+                }
+            ]
+            raw_lang = await asyncio.wait_for(_openai_request("responses", retry_payload_lang), timeout=timeout)
+            if not raw_lang:
+                try:
+                    recommender_failed.labels(meal_type, "language").inc()
+                    recommender_duration_ms.labels(meal_type).observe((time.time() - t0) * 1000)
+                except Exception:
+                    pass
+                return None, "language"
+            try:
+                data = json.loads(raw_lang)
+            except Exception:
+                t3 = (raw_lang or "").strip()
+                s3 = t3.find("{")
+                e3 = t3.rfind("}")
+                data = json.loads(t3[s3 : e3 + 1]) if (s3 != -1 and e3 != -1 and e3 > s3) else None
+            if not isinstance(data, dict) or str(data.get("language") or "").lower().strip() != language_required:
+                try:
+                    recommender_failed.labels(meal_type, "language").inc()
+                    recommender_duration_ms.labels(meal_type).observe((time.time() - t0) * 1000)
+                except Exception:
+                    pass
+                return None, "language"
         # Nutrition validation – first pass
-        ok, det = _is_nutrition_valid(data, payload_extras.get("target_cal_max"))
+        ok, det = _is_nutrition_valid(data, payload_extras.get("target_cal_max"), enforce_cap)
         if not ok:
             try:
                 logger.warning(
@@ -306,7 +374,12 @@ async def recommend(user_id: int, meal_type: Literal["bf", "ln", "dn", "snack"],
             ]
             raw2 = await asyncio.wait_for(_openai_request("responses", retry_payload), timeout=timeout)
             if not raw2:
-                return None
+                try:
+                    recommender_failed.labels(meal_type, "invalid").inc()
+                    recommender_duration_ms.labels(meal_type).observe((time.time() - t0) * 1000)
+                except Exception:
+                    pass
+                return None, "invalid"
             data2: dict[str, Any] | None = None
             try:
                 data2 = json.loads(raw2)
@@ -320,8 +393,13 @@ async def recommend(user_id: int, meal_type: Literal["bf", "ln", "dn", "snack"],
                     except Exception:
                         data2 = None
             if not isinstance(data2, dict):
-                return None
-            ok2, det2 = _is_nutrition_valid(data2, payload_extras.get("target_cal_max"))
+                try:
+                    recommender_failed.labels(meal_type, "json_parse").inc()
+                    recommender_duration_ms.labels(meal_type).observe((time.time() - t0) * 1000)
+                except Exception:
+                    pass
+                return None, "json_parse"
+            ok2, det2 = _is_nutrition_valid(data2, payload_extras.get("target_cal_max"), enforce_cap)
             if not ok2:
                 try:
                     logger.warning(
@@ -332,7 +410,12 @@ async def recommend(user_id: int, meal_type: Literal["bf", "ln", "dn", "snack"],
                     )
                 except Exception:
                     pass
-                return None
+                try:
+                    recommender_failed.labels(meal_type, "invalid_final").inc()
+                    recommender_duration_ms.labels(meal_type).observe((time.time() - t0) * 1000)
+                except Exception:
+                    pass
+                return None, "invalid_final"
             data = data2
         # Force language and type
         data["meal_type"] = data.get("meal_type") or {"bf": "завтрак", "ln": "обед", "dn": "ужин", "snack": "перекус"}[meal_type]
@@ -340,16 +423,31 @@ async def recommend(user_id: int, meal_type: Literal["bf", "ln", "dn", "snack"],
         title = str(data.get("title") or "").strip()
         if title:
             record_recent_title(user_id, title)
-        return data
+        try:
+            recommender_succeeded.labels(meal_type).inc()
+            recommender_duration_ms.labels(meal_type).observe((time.time() - t0) * 1000)
+        except Exception:
+            pass
+        return data, None
     except asyncio.TimeoutError:
         try:
             logger.warning("recommender_timeout | user_id={} | timeout_s={}", user_id, timeout)
         except Exception:
             pass
-        return None
+        try:
+            recommender_failed.labels(meal_type, "timeout").inc()
+            recommender_duration_ms.labels(meal_type).observe((time.time() - t0) * 1000)
+        except Exception:
+            pass
+        return None, "timeout"
     except Exception as e:
         try:
             logger.warning("recommender_failed | user_id={} | err={}", user_id, e)
         except Exception:
             pass
-        return None
+        try:
+            recommender_failed.labels(meal_type, "other").inc()
+            recommender_duration_ms.labels(meal_type).observe((time.time() - t0) * 1000)
+        except Exception:
+            pass
+        return None, "other"

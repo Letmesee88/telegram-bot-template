@@ -184,6 +184,26 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     # Show confidence category labels (низкая/средняя) in preview
     FOODAI_SHOW_CONF_LABELS: bool = True
 
+    # =====================
+    # Recommender settings (Responses API)
+    # =====================
+    RECOMMENDATIONS_ENABLED: bool = True
+    # Model for Responses API (e.g., gpt-5, gpt-5-mini, gpt-4o, gpt-4o-mini)
+    RECOMMENDER_MODEL: str = "gpt-5-mini"
+    # Max time to wait for recommendation (seconds)
+    RECOMMENDER_TIMEOUT: int = 8
+    # Allow soft overshoot of daily calorie plan per single recommendation (percent)
+    RECOMMENDER_OVERSHOOT_CAL_PCT: int = 5
+    # Avoid repeating the same dish title within N days
+    REC_AVOID_REPEAT_DAYS: int = 3
+    # Feature flag: hard enforce calorie cap (reject outputs over ~cap*1.1)
+    RECOMMENDER_ENFORCE_CAP: bool = False
+    # Language validation requirement (e.g., 'ru')
+    RECOMMENDER_LANGUAGE_REQUIRED: str = "ru"
+    # Rate limiting per-user for rec:type/other
+    RECOMMENDER_RATE_LIMIT_WINDOW_SEC: int = 2
+    RECOMMENDER_RATE_LIMIT_MAX: int = 1
+
     # Adjustment (onboarding final corrections) LLM settings
     ADJUST_LLM_ENABLED: bool = True
     ADJUST_LLM_MODEL: str | None = "gpt-4o-mini"
