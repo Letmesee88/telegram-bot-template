@@ -37,17 +37,11 @@ def test_itogo_operator_precedence_and_values(monkeypatch: pytest.MonkeyPatch):
     # Analysis paragraph must NOT mention confidence word
     assert "Уверенность" not in out
 
-    # Calories: 120% -> (+20 ккал превышено)
-    assert "⚠️ 🔥 Калории: 120% (+20 ккал превышено)" in out
-
-    # Proteins: 110.5% -> (+10.5 г превышено)
-    assert "⚠️ 🥩 Белки: 110.5% (+10.5 г превышено)" in out
-
-    # Fats: 100% -> норма достигнута
-    assert "🥑 Жиры: 100% (норма достигнута)" in out
-
-    # Carbs: 95% -> (-5.0 г до нормы)
-    assert "🍞 Углеводы: 95% (-5.0 г до нормы)" in out
+    # New format: absolute values of this meal + percent of daily plan
+    assert "🔥 Калории: 300 ккал (120% от нормы)" in out
+    assert "🥩 Белки: 25.0 г (110.5% от нормы)" in out
+    assert "🥑 Жиры: 10.0 г (100% от нормы)" in out
+    assert "🍞 Углеводы: 35.0 г (95% от нормы)" in out
 
 
 def test_edit_prompt_proteins_spacing(monkeypatch: pytest.MonkeyPatch):

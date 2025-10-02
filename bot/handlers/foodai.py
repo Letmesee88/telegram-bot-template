@@ -1151,7 +1151,7 @@ def _build_preview_text(
         except Exception:
             pass
 
-    # Optional per-meal percent of plan
+    # Optional per-meal: absolute values + percent of daily plan (no day remainder here)
     if isinstance(itogo, dict):
         parts.append("")
         parts.append(_("📊 Итого:"))
@@ -1168,28 +1168,15 @@ def _build_preview_text(
                     except Exception:
                         return str(x)
 
-            def _fmt(pct: float, delta: float, emoji: str, unit: str, label: str) -> str:
-                # delta here is pct-100; keep legacy semantics for absolute magnitude
-                if unit == "ккал":
-                    show_val = f"{int(abs(delta))}"
-                else:
-                    show_val = f"{abs(delta):.1f}"
-                pct_s = _pct_show(pct)
-                if delta > 0:
-                    return f"⚠️ {emoji} {label}: {pct_s}% (+{show_val} {unit} превышено)"
-                if delta < 0:
-                    return f"{emoji} {label}: {pct_s}% (-{show_val} {unit} до нормы)"
-                return f"{emoji} {label}: {pct_s}% (норма достигнута)"
-
             cal_pct = float(itogo.get("cal_pct") or 0)
             p_pct = float(itogo.get("p_pct") or 0)
             f_pct = float(itogo.get("f_pct") or 0)
             c_pct = float(itogo.get("c_pct") or 0)
 
-            parts.append(_fmt(cal_pct, cal_pct - 100, "🔥", "ккал", "Калории"))
-            parts.append(_fmt(p_pct, p_pct - 100, "🥩", "г", "Белки"))
-            parts.append(_fmt(f_pct, f_pct - 100, "🥑", "г", "Жиры"))
-            parts.append(_fmt(c_pct, c_pct - 100, "🍞", "г", "Углеводы"))
+            parts.append(f"🔥 Калории: {int(cal)} ккал ({_pct_show(cal_pct)}% от нормы)")
+            parts.append(f"🥩 Белки: {float(p):.1f} г ({_pct_show(p_pct)}% от нормы)")
+            parts.append(f"🥑 Жиры: {float(f):.1f} г ({_pct_show(f_pct)}% от нормы)")
+            parts.append(f"🍞 Углеводы: {float(c):.1f} г ({_pct_show(c_pct)}% от нормы)")
         except Exception:
             pass
 
