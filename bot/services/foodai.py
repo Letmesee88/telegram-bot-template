@@ -126,11 +126,23 @@ async def _openai_request(kind: str, payload: dict[str, Any]) -> str | None:
         if endpoint == "/chat/completions":
             content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
             return _strip_code_fence(content) if isinstance(content, str) else None
-        # Responses API
+        # Responses API — prefer structured JSON if present
+        outputs = data.get("output") or []
+        for piece in outputs:
+            if (piece or {}).get("type") == "message" and (piece or {}).get("role") == "assistant":
+                for c in (piece.get("content") or []):
+                    ttype = (c or {}).get("type") or ""
+                    if ttype in {"output_json", "json"}:
+                        try:
+                            obj = c.get("json")
+                            if obj is not None:
+                                return json.dumps(obj, ensure_ascii=False)
+                        except Exception:
+                            continue
         if isinstance(data.get("output_text"), str) and data["output_text"].strip():
             return _strip_code_fence(data["output_text"])  # combined text
         out: list[str] = []
-        for piece in (data.get("output") or []):
+        for piece in outputs:
             # Only collect assistant messages to avoid echoing user input
             if (piece or {}).get("type") == "message" and (piece or {}).get("role") == "assistant":
                 for c in (piece.get("content") or []):
@@ -484,6 +496,8 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                 "Always set references.sources to exactly [\"ФГБУН \\\"ФИЦ питания и биотехнологии\\\"\", \"USDA FoodData Central\"]. "
                 "If the image clearly does not contain any food or drinks, set not_food=true and keep items minimal. "
                 "For liquids, set items[].is_liquid=true (e.g., вода, сок, кофе, чай, молоко, кефир, йогурт питьевой, бульон, суп-пюре, лимонад). "
+                "Atomic items only: do not return umbrella items (e.g., 'скрэмбл 160 г'); list base components (яйца, креветки, масло/сливки, хлеб, соусы) as separate entries. "
+                "Balance requirements: ensure sum of items.weight_g equals weight_g within ±5% and sum of items.calories equals calories within ±2%. If mismatch occurs, adjust low-impact items first (соусы, листовые). "
                 "analysis_text: a single paragraph of 350–420 characters in Russian that (1) states whether the dish appears homemade or packaged (do not invent brands unless clearly visible), "
                 "(2) names 2–3 visually identified main components, (3) explains how portion size was estimated (e.g., by plate size ~24 cm and ingredient count/volume); "
                 "include the exact sentence: \"Использованы справочные данные ФИЦ питания и USDA.\" Return JSON only, without explanations."
@@ -601,7 +615,7 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                                     }
                             }
                         },
-                        "max_output_tokens": 800,
+                        "max_output_tokens": 1600,
                         "input": [
                             {
                                 "role": "user",
@@ -630,6 +644,19 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                             parsed_local = None
                     except Exception:
                         parsed_local = None
+                    # Chat fallback if Responses failed to produce parsable/non-zero content
+                    if parsed_local is None:
+                        try:
+                            chat_enabled = bool(getattr(settings, "FOODAI_TEXT_FALLBACK_TO_CHAT", False))
+                        except Exception:
+                            chat_enabled = False
+                        if use_responses and chat_enabled:
+                            try:
+                                chat_content = await _call_chat()
+                            except Exception:
+                                chat_content = None
+                            if chat_content:
+                                parsed_local = _normalize_openai_json(chat_content)
                     return parsed_local
                 return None
 
