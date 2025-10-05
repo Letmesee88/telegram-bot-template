@@ -487,6 +487,54 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                     strict = False
                 if strict:
                     return {"error": "provider_unavailable"}
+            # Optional Visual Facts pre-step (pure LMM grounding)
+            facts_text: str | None = None
+            try:
+                facts_enabled = bool(getattr(settings, "FOODAI_FACTS_ENABLED", False))
+            except Exception:
+                facts_enabled = False
+            async def _call_facts(model_id: str, detail: str) -> str | None:
+                facts_instructions = (
+                    "Extract observable visual facts ONLY (no grams/kcal). Return a single compact JSON object. "
+                    "Fill only what is clearly visible; if unsure, omit the key; if nothing is clear, return {}. "
+                    "No slashes or alternatives. Suggested keys (all optional): \n"
+                    "container: {type:string, size_hint:string, diameter_cm:int|null, width_cm:int|null, length_cm:int|null, fill_fraction:number|null}, \n"
+                    "scale_refs: {spoon:bool, fork:bool, mug:bool, chopsticks:bool}, \n"
+                    "base_present:string (e.g., rice|noodles|bread|potato|none|unknown), \n"
+                    "unit_items: [{kind:string, count:int}], \n"
+                    "sauce_coverage:number|null (0..1), toppings_hint:string, packaging:string, confidence_facts:number|null (0..1)."
+                )
+                payload = {
+                    "model": model_id,
+                    "instructions": facts_instructions,
+                    "reasoning": {"effort": settings.FOODAI_REASONING_EFFORT},
+                    "text": {"verbosity": settings.FOODAI_TEXT_VERBOSITY},
+                    "max_output_tokens": int(getattr(settings, "FOODAI_FACTS_MAX_TOKENS", 400) or 400),
+                    "input": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "Extract visual facts for this image only and return a single JSON object."},
+                                {"type": "input_image", "image_url": file_url, "detail": detail},
+                            ],
+                        }
+                    ],
+                }
+                return await _openai_request("responses", payload)
+
+            if facts_enabled:
+                try:
+                    facts_text = await _call_facts(getattr(settings, "FOODAI_VISION_MODEL", None) or settings.FOODAI_DEFAULT_MODEL, _norm_detail(getattr(settings, "FOODAI_IMAGE_DETAIL", "high")))
+                    if facts_text:
+                        try:
+                            obj = json.loads(_strip_code_fence(facts_text) or "{}")
+                            keys = list((obj or {}).keys())
+                            logger.info("foodai.facts | present=True | len={} | keys={}", len(facts_text or ""), keys)
+                        except Exception:
+                            logger.info("foodai.facts | present=True | len={} | keys=?", len(facts_text or ""))
+                except Exception:
+                    pass
+
             system = (
                 "You are a nutrition analyst. Given an image, estimate total calories, protein_g, fat_g, carbs_g, "
                 "and weight_g for the pictured dish. Return ONLY a compact JSON with keys: \n"
@@ -496,11 +544,16 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                 "Always set references.sources to exactly [\"ФГБУН \\\"ФИЦ питания и биотехнологии\\\"\", \"USDA FoodData Central\"]. "
                 "If the image clearly does not contain any food or drinks, set not_food=true and keep items minimal. "
                 "For liquids, set items[].is_liquid=true (e.g., вода, сок, кофе, чай, молоко, кефир, йогурт питьевой, бульон, суп-пюре, лимонад). "
-                "Atomic items only: do not return umbrella items (e.g., 'скрэмбл 160 г'); list base components (яйца, креветки, масло/сливки, хлеб, соусы) as separate entries. "
-                "Balance requirements: ensure sum of items.weight_g equals weight_g within ±5% and sum of items.calories equals calories within ±2%. If mismatch occurs, adjust low-impact items first (соусы, листовые). "
+                "HARD RULE: Container/tableware mass is ZERO — never add any grams for plate, bowl, cup, box, spoon, fork, or packaging; count ONLY edible items. Use container ONLY to infer usable area/volume and fill level. If a plate has a visible rim, use inner/usable diameter (exclude rim). Do not create items like 'тарелка/миска/чашка/контейнер'. If such an item appears, remove it and re-balance before returning JSON. "
+                "First, mentally classify dish archetype (do NOT output it): salad_no_base | bowl_with_base | burger_sandwich | pizza_slice | soup | sushi_set | dessert | beverage | mixed_plate. "
+                "Estimate TOTAL edible weight first. If Visual Facts are provided as 'Visual Facts: {...}', use them as ground truth for unit counts, container fill_fraction and presence of base. If base_present is none/unknown, treat as salad_no_base (no dense carb base) and set weight_g within 300±40 g (i.e., 260–340 g). Do NOT exceed this band unless strong facts show otherwise; when uncertain, use the lower end. For other archetypes use conservative ranges and override only if facts clearly indicate otherwise (bowl_with_base ~300–450 g; burger_sandwich ~180–320 g; pizza_slice ~90–180 g; soup (liquid) ~250–400 g; sushi_set(10–12 pcs) ~200–320 g; dessert(piece) ~70–160 g; beverage(cup) ~200–350 g). "
+                "Then distribute weights across items so that baskets are combined where appropriate: Fresh vegetables as ONE item with specifics in parentheses (e.g., 'свежие овощи (помидоры, огурцы, перец)'); pickled vegetables as ONE item; sauces/dressings as ONE item unless clearly distinct. Merge small herbs/greens into fresh vegetables unless they are a substantial separate component (>10 г). Protein units (e.g., фалафель/котлеты/роллы) may use counts from Facts. Bread/pita/rice/noodles/poached grains are separate base items. "
+                "Default conservative masses when unsure (do not exceed without strong evidence): falafel 30–35 г per piece (keep the counted number of pieces), pita/bread 30–45 г (for half/small pieces), hummus 40–60 г, fresh vegetables (single basket) 80–120 г, pickled vegetables (single basket) 20–40 г, sauce/dressing (single basket) 10–20 г. Prefer the lower bound when in doubt. "
+                "Atomic naming: strictly forbid slashes/alternatives ('/','или'). Use ONE concrete name for each item; for combined baskets, list specifics in parentheses. Outputs that contain '/' or 'или' in names are invalid; correct them before returning JSON. "
+                "Balance requirements: ensure sum(items.weight_g)=weight_g within ±2% and sum(items.calories)=calories within ±2%. If mismatch occurs, reduce first sauces, then pickles, then fresh vegetables, then bread/pita, then hummus. Do not change the counted number of unit items. Re-check before returning JSON. "
                 "analysis_text: a single paragraph of 350–420 characters in Russian that (1) states whether the dish appears homemade or packaged (do not invent brands unless clearly visible), "
-                "(2) names 2–3 visually identified main components, (3) explains how portion size was estimated (e.g., by plate size ~24 cm and ingredient count/volume); "
-                "include the exact sentence: \"Использованы справочные данные ФИЦ питания и USDA.\" Return JSON only, without explanations."
+                "(2) names 2–3 visually identified main components, (3) explains how portion size was estimated (container size/fill and counts). "
+                "Include the exact sentence: \"Использованы справочные данные ФИЦ питания и USDA.\" Add the clause: 'Вес посуды не учитывался.' Return JSON only, without explanations."
             )
 
             async def _build_and_call(detail: str, model_id: str) -> dict[str, Any] | None:
@@ -521,6 +574,7 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                             {
                                 "role": "user",
                                 "content": [
+                                    {"type": "text", "text": ("Visual Facts: " + (facts_text or "{}")) if facts_text else ""},
                                     {"type": "text", "text": "Estimate nutrition for this dish and return json only."},
                                     {"type": "image_url", "image_url": {"url": file_url, "detail": detail}},
                                 ],
@@ -620,7 +674,7 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                             {
                                 "role": "user",
                                 "content": [
-                                    {"type": "input_text", "text": "Estimate nutrition for this dish and return json only."},
+                                    {"type": "input_text", "text": (("Visual Facts: " + (facts_text or "{}") + "\n\n") if facts_text else "") + "Estimate nutrition for this dish and return json only."},
                                     {"type": "input_image", "image_url": file_url, "detail": detail},
                                 ],
                             }
@@ -866,6 +920,7 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
 
             initial_detail = _norm_detail(getattr(settings, "FOODAI_IMAGE_DETAIL", "low"))
             vision_model = getattr(settings, "FOODAI_VISION_MODEL", None) or settings.FOODAI_DEFAULT_MODEL
+            _t0_local = time.perf_counter()
             parsed = await _build_and_call(initial_detail, vision_model)
             if parsed:
                 conf = float(parsed.get("confidence") or 0)
@@ -875,12 +930,27 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                     and conf < float(getattr(settings, "FOODAI_CONFIDENCE_ESCALATE", 0.7))
                 )
                 if need_retry:
+                    _t1 = time.perf_counter()
                     parsed_hi = await _build_and_call("high", vision_model)
                     if parsed_hi:
                         try:
                             m = parsed_hi.get("meta") or {}
                             m["escalation"] = {"enabled": False}
                             parsed_hi["meta"] = m
+                        except Exception:
+                            pass
+                        # final log (non-escalation path, high-detail retry)
+                        try:
+                            total_ms = int((time.perf_counter() - _t1) * 1000.0)
+                            logger.info(
+                                "foodai.final | model={} | detail={} | steps={} | total_ms={} | conf={} | items={}",
+                                vision_model,
+                                _norm_detail("high"),
+                                1,
+                                total_ms,
+                                parsed_hi.get("confidence"),
+                                len(list(parsed_hi.get("items") or [])),
+                            )
                         except Exception:
                             pass
                         return parsed_hi
@@ -923,16 +993,45 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                     parsed["meta"] = m
                 except Exception:
                     pass
+                # final log (non-escalation path, initial detail)
+                try:
+                    total_ms = int((time.perf_counter() - _t0_local) * 1000.0)
+                    logger.info(
+                        "foodai.final | model={} | detail={} | steps={} | total_ms={} | conf={} | items={}",
+                        vision_model,
+                        initial_detail,
+                        1,
+                        total_ms,
+                        parsed.get("confidence"),
+                        len(list(parsed.get("items") or [])),
+                    )
+                except Exception:
+                    pass
                 return parsed
             else:
                 # parsing failed — try a single high-detail retry if enabled
                 if bool(getattr(settings, "FOODAI_IMAGE_DETAIL_HIGH_RETRY", True)) and initial_detail != "high":
+                    _t2 = time.perf_counter()
                     parsed_hi = await _build_and_call("high", vision_model)
                     if parsed_hi:
                         try:
                             m = parsed_hi.get("meta") or {}
                             m["escalation"] = {"enabled": False}
                             parsed_hi["meta"] = m
+                        except Exception:
+                            pass
+                        # final log (non-escalation path, high-detail single retry after initial fail)
+                        try:
+                            total_ms = int((time.perf_counter() - _t2) * 1000.0)
+                            logger.info(
+                                "foodai.final | model={} | detail={} | steps={} | total_ms={} | conf={} | items={}",
+                                vision_model,
+                                _norm_detail("high"),
+                                1,
+                                total_ms,
+                                parsed_hi.get("confidence"),
+                                len(list(parsed_hi.get("items") or [])),
+                            )
                         except Exception:
                             pass
                         return parsed_hi

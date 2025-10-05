@@ -139,6 +139,9 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     FOODAI_API: str = "chat"  # one of: chat, responses
     FOODAI_REASONING_EFFORT: str = "minimal"  # minimal|low|medium|high (responses API)
     FOODAI_TEXT_VERBOSITY: str = "low"        # low|medium|high (responses API)
+    # Visual Facts grounding flags
+    FOODAI_FACTS_ENABLED: bool = False
+    FOODAI_FACTS_MAX_TOKENS: int = 400
     # Enable LLM-based NLU for edit flow. If OPENAI_API_KEY is missing, code will fallback to local parser.
     FOODAI_EDIT_NLU: bool = True
     # DEPRECATED: use FOODAI_ESCALATE_CONF instead (kept only for backward-compat in runtime fallback)
