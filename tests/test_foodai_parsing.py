@@ -93,6 +93,7 @@ class DummyClientSession:
             "output": [
                 {
                     "type": "message",
+                    "role": "assistant",
                     "content": [
                         {"type": "output_text", "text": "{\"is_food\": true}"}
                     ],

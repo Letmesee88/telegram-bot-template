@@ -263,6 +263,9 @@ async def test_api_path_selection_for_gpt5_responses_vs_chat(monkeypatch: pytest
     foodai_module.settings.FOODAI_VISION_ESCALATION_ENABLED = False
     foodai_module.settings.FOODAI_ANALYSIS_REWRITE = "off"
     foodai_module.settings.FOODAI_IMAGE_DETAIL_HIGH_RETRY = False
+    foodai_module.settings.FOODAI_ALLOW_FALLBACK_TO_4O_MINI = False
+    foodai_module.settings.FOODAI_TEXT_FALLBACK_TO_CHAT = False
+    foodai_module.settings.FOODAI_FACTS_ENABLED = True
 
     async def fake_tg_file_url(file_id: str) -> str | None:
         return "https://example.com/img.jpg"
@@ -292,7 +295,8 @@ async def test_api_path_selection_for_gpt5_responses_vs_chat(monkeypatch: pytest
     calls.clear()
     res1 = await analyze_photo("fake_photo_id")
     assert isinstance(res1, dict) and not res1.get("error")
-    assert calls and calls[0] == "responses"
+    # With Visual Facts enabled, the first call is Facts (responses), the second is main (responses)
+    assert len(calls) >= 2 and calls[0] == "responses" and calls[1] == "responses"
 
     # Case 2: use Chat for gpt-5
     foodai_module.settings.FOODAI_VISION_MODEL = "gpt-5.1-mini"
@@ -300,7 +304,8 @@ async def test_api_path_selection_for_gpt5_responses_vs_chat(monkeypatch: pytest
     calls.clear()
     res2 = await analyze_photo("fake_photo_id")
     assert isinstance(res2, dict) and not res2.get("error")
-    assert calls and calls[0] == "chat"
+    # With Visual Facts enabled, the first call is Facts (responses), the second is main (chat)
+    assert len(calls) >= 2 and calls[0] == "responses" and calls[1] == "chat"
 
 
 @pytest.mark.asyncio
