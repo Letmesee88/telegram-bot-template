@@ -2,7 +2,8 @@ FROM ghcr.io/astral-sh/uv:0.5-python3.13-alpine
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    PATH="/usr/src/app/.venv/bin:$PATH"
+    PATH="/usr/src/app/.venv/bin:$PATH" \
+    PYTHONPATH="/usr/src/app"
 
 WORKDIR /usr/src/app
 

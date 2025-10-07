@@ -20,6 +20,7 @@ from bot.services.templates import (
     list_templates,
     create_template_from_meal,
     create_meal_draft_from_template,
+    delete_template,
 )
 from bot.handlers.foodai import _build_preview_text, _preview_kb, _saved_with_recommend_kb
 
@@ -301,27 +302,14 @@ async def cb_tpl_del(callback: types.CallbackQuery) -> None:
     tpl_id = int(m.group(1))
     category = m.group(2)
     user_id = callback.from_user.id
-    from bot.services.templates import delete_template
     async with sessionmaker() as session:
         await delete_template(session, user_id, tpl_id)
-        tpls = await list_templates(session, user_id, category)
-    data = [(int(t.id), str(t.title or "")) for t in tpls]
-    title = {
-        "breakfast": _("🥞 Завтрак"),
-        "lunch": _("🍜 Обед"),
-        "dinner": _("🥗 Ужин"),
-        "snack": _("🍎 Перекус"),
-    }[category]
-    lines = []
-    for idx, (_id, _title) in enumerate(data, start=1):
-        t = (_title or "").strip() or _("Без названия")
-        lines.append(f"# {idx} {t}")
-    lst = "\n".join(lines)
-    text = _("📌 Шаблоны · {title}").format(title=title) + "\n" + _("Выбери шаблон:") + ("\n\n" + lst if lst else "")
+    # Per spec: show delete confirmation and hint back to list
+    text = _("❌ Шаблон удалён") + "\n\n" + _("Вернуться к списку: /templates")
     try:
-        await callback.message.edit_text(text, reply_markup=templates_list_kb(data, category))
+        await callback.message.edit_text(text)
     except Exception:
-        await callback.message.answer(text, reply_markup=templates_list_kb(data, category))
+        await callback.message.answer(text)
     await callback.answer()
 
 
