@@ -36,7 +36,10 @@ class MealModel(Base):
     )
 
     title: Mapped[Optional[str]] = mapped_column(String(255))
-    source: Mapped[str] = mapped_column(Enum("photo", "text", "edit", name="meal_source"), nullable=False)
+    # Added 'template' to track meals created from saved templates
+    source: Mapped[str] = mapped_column(
+        Enum("photo", "text", "edit", "template", name="meal_source"), nullable=False
+    )
     status: Mapped[str] = mapped_column(
         Enum("draft", "saved", "deleted", name="meal_status"), nullable=False, server_default="draft"
     )

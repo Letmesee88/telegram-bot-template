@@ -21,6 +21,7 @@ from bot.metrics import (
     recommender_duration_ms,
 )
 from bot.services.recommendations_log import add_recommendation_title, get_recent_titles as get_recent_titles_db
+from bot.services.users import get_timezone as get_user_timezone
 
 def _get_setting(name: str, default: Any) -> Any:
     try:
@@ -96,30 +97,38 @@ def _is_nutrition_valid(
 async def _load_plan_and_fact(user_id: int) -> tuple[dict[str, float], dict[str, float]]:
     """Return (plan, fact) macros for today.
     plan/fact have keys: calories(int), protein_g, fat_g, carbs_g (floats)
-    Missing values default to zeros.
+    Missing values default to zeros. Uses per-user timezone when available.
     """
-    # Determine local "today" using default timezone (no per-user TZ yet)
-    tz_name = str(getattr(settings, "DEFAULT_TZ", "Europe/Moscow") or "Europe/Moscow")
-    # Robust fallback: avoid ZoneInfo("UTC") to work on systems without tzdata
-    if tz_name.upper() in ("UTC", "Z"):
-        tz = timezone.utc
-    else:
-        try:
-            tz = ZoneInfo(tz_name)
-        except Exception:
-            tz = timezone.utc
-    now_local = datetime.now(tz)
-    local_date = now_local.date()
-    local_start = datetime.combine(local_date, dtime(0, 0), tz)
-    local_end = local_start + timedelta(days=1)
-    # Overlapping UTC dates for the local 24h window (at most two)
-    d1 = local_start.astimezone(timezone.utc).date()
-    # use end-ε to get proper second date when it crosses UTC midnight
-    d2 = (local_end - timedelta(seconds=1)).astimezone(timezone.utc).date()
-    date_candidates = {d1, d2}
     plan = {"calories": 0.0, "protein_g": 0.0, "fat_g": 0.0, "carbs_g": 0.0}
     fact = {"calories": 0.0, "protein_g": 0.0, "fat_g": 0.0, "carbs_g": 0.0}
     async with sessionmaker() as session:
+        # Resolve timezone: per-user -> DEFAULT_TZ -> UTC
+        tz_name = str(getattr(settings, "DEFAULT_TZ", "Europe/Moscow") or "Europe/Moscow")
+        try:
+            user_tz = await get_user_timezone(session, user_id)
+            if user_tz:
+                tz_name = user_tz
+        except Exception:
+            # Column may be missing before migration or other transient issues
+            pass
+        if (tz_name or "").upper() in ("UTC", "Z"):
+            tz = timezone.utc
+        else:
+            try:
+                tz = ZoneInfo(tz_name)
+            except Exception:
+                tz = timezone.utc
+
+        now_local = datetime.now(tz)
+        local_date = now_local.date()
+        local_start = datetime.combine(local_date, dtime(0, 0), tz)
+        local_end = local_start + timedelta(days=1)
+        # Overlapping UTC dates for the local 24h window (at most two)
+        d1 = local_start.astimezone(timezone.utc).date()
+        # use end-ε to get proper second date when it crosses UTC midnight
+        d2 = (local_end - timedelta(seconds=1)).astimezone(timezone.utc).date()
+        date_candidates = {d1, d2}
+
         oa = await session.scalar(
             OnboardingAnswerModel.__table__.select().where(OnboardingAnswerModel.user_id == user_id)
         )

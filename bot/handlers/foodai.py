@@ -1266,6 +1266,7 @@ def _edit_kb(meal_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="+10 г", callback_data=f"foodai:adj:wt:10:{meal_id}"),
             ],
             [InlineKeyboardButton(text=_("✅ Сохранить"), callback_data=f"foodai:save:{meal_id}")],
+            [InlineKeyboardButton(text=_("📌Сохранить еду в шаблон"), callback_data=f"tpl:save:{meal_id}")],
             [InlineKeyboardButton(text=_("◀️ Назад"), callback_data=f"foodai:back:{meal_id}")],
             [InlineKeyboardButton(text=_("🗑 Удалить"), callback_data=f"foodai:del:{meal_id}")],
         ]
@@ -1274,7 +1275,10 @@ def _edit_kb(meal_id: int) -> InlineKeyboardMarkup:
 
 def _saved_with_recommend_kb(meal_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=_("🎲 Рекомендуй следующее блюдо"), callback_data=f"rec:start:{meal_id}")]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text=_("📌Сохранить еду в шаблон"), callback_data=f"tpl:save:{meal_id}")],
+            [InlineKeyboardButton(text=_("🎲 Рекомендуй следующее блюдо"), callback_data=f"rec:start:{meal_id}")],
+        ]
     )
 
 

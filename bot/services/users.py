@@ -86,6 +86,27 @@ async def set_language_code(
     await session.commit()
 
 
+# =====================
+# Timezone helpers
+# =====================
+
+@cached(key_builder=lambda session, user_id: build_key(user_id))
+async def get_timezone(session: "AsyncSession", user_id: int) -> str:
+    """Return user's IANA timezone string or empty string if not set."""
+    query = select(UserModel.timezone).filter_by(id=user_id)
+    result = await session.execute(query)
+    tz = result.scalar_one_or_none()
+    return tz or ""
+
+
+async def set_timezone(session: "AsyncSession", user_id: int, tz_name: str) -> None:
+    """Set user's timezone (IANA name). Caller must validate value upstream."""
+    stmt = update(UserModel).where(UserModel.id == user_id).values(timezone=(tz_name or "").strip() or None)
+    await session.execute(stmt)
+    await session.commit()
+    await clear_cache(get_timezone, user_id)
+
+
 @cached(key_builder=lambda session, user_id: build_key(user_id))
 async def is_admin(session: AsyncSession, user_id: int) -> bool:
     # ENV-based superadmin: bypass DB if user is listed in ADMIN_USER_IDS

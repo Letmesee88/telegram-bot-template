@@ -9,12 +9,15 @@ if TYPE_CHECKING:
 users_commands: dict[str, dict[str, str]] = {
     "en": {
         "start": "start bot",
+        "templates": "meal templates",
     },
     "uk": {
         "start": "start bot",
+        "templates": "шаблони страв",
     },
     "ru": {
         "start": "start bot",
+        "templates": "шаблоны блюд",
     },
 }
 

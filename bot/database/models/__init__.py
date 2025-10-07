@@ -3,6 +3,7 @@ from .user import UserModel
 from .onboarding_answer import OnboardingAnswerModel
 from .meals import MealModel, MealItemModel, MealPhotoModel, DailyIntakeModel
 from .recommendation_log import RecommendationLogModel
+from .templates import MealTemplateModel, MealTemplateItemModel
 
 __all__ = [
     "Base",
@@ -13,4 +14,6 @@ __all__ = [
     "MealPhotoModel",
     "DailyIntakeModel",
     "RecommendationLogModel",
+    "MealTemplateModel",
+    "MealTemplateItemModel",
 ]

@@ -1,6 +1,7 @@
 from aiogram import Router
 
 from . import admin, export_users, onboarding, start, foodai
+from . import templates
 from . import recommendations
 
 
@@ -12,6 +13,8 @@ def get_handlers_router() -> Router:
     router.include_router(foodai.router)
     # Include edit-state router after main FoodAI router
     router.include_router(foodai.router_edit)
+    # Templates router for browsing/applying meal templates
+    router.include_router(templates.router)
     router.include_router(onboarding.router)
     router.include_router(start.router)
     router.include_router(admin.router)
