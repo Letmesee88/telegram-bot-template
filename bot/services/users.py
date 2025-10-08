@@ -1,5 +1,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
+from datetime import datetime, timezone, timedelta, time as dtime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, update
 
@@ -105,6 +107,35 @@ async def set_timezone(session: "AsyncSession", user_id: int, tz_name: str) -> N
     await session.execute(stmt)
     await session.commit()
     await clear_cache(get_timezone, user_id)
+
+
+async def get_user_tzinfo(session: "AsyncSession", user_id: int):
+    """Resolve user's tzinfo with fallback to DEFAULT_TZ or UTC."""
+    tz_name = str(getattr(cfg.settings, "DEFAULT_TZ", "Europe/Moscow") or "Europe/Moscow")
+    try:
+        user_tz = await get_timezone(session, user_id)
+        if user_tz:
+            tz_name = user_tz
+    except Exception:
+        pass
+    try:
+        if (tz_name or "").upper() in ("UTC", "Z"):
+            return timezone.utc
+        return ZoneInfo(tz_name)
+    except Exception:
+        return timezone.utc
+
+
+async def today_local_utc_dates(session: "AsyncSession", user_id: int) -> set:
+    """Return 1-2 UTC dates covering user's local 'today' window."""
+    tz = await get_user_tzinfo(session, user_id)
+    now_local = datetime.now(tz)
+    local_date = now_local.date()
+    local_start = datetime.combine(local_date, dtime(0, 0), tz)
+    local_end = local_start + timedelta(days=1)
+    d1 = local_start.astimezone(timezone.utc).date()
+    d2 = (local_end - timedelta(seconds=1)).astimezone(timezone.utc).date()
+    return {d1, d2}
 
 
 @cached(key_builder=lambda session, user_id: build_key(user_id))

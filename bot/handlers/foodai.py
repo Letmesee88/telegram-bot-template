@@ -19,6 +19,7 @@ from bot.database.database import sessionmaker
 from bot.database.models import DailyIntakeModel, MealItemModel, MealModel, MealPhotoModel, OnboardingAnswerModel
 from bot.filters.foodai_enabled import FoodAIEnabledFilter
 from bot.services.foodai import analyze_photo, analyze_text, refine_meal
+from bot.services.users import get_user_tzinfo, today_local_utc_dates
 from bot.core.config import settings
 from bot.handlers.start import start_handler  # to forward /start from edit-state
 from bot.analytics.types import BaseEvent, EventProperties, Plan
@@ -1317,8 +1318,10 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
     meal_id = int(m.group(1))
     user_id = callback.from_user.id
 
-    today_utc = datetime.now(timezone.utc).date()
     async with sessionmaker() as session:
+        # Resolve current user's UTC date according to their local time
+        tz = await get_user_tzinfo(session, user_id)
+        utc_date_now = datetime.now(tz).astimezone(timezone.utc).date()
         meal = await session.get(MealModel, meal_id)
         if not meal or meal.user_id != user_id:
             await callback.answer(_("Не найдено"), show_alert=True)
@@ -1330,13 +1333,13 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
 
         di = await session.scalar(
             select(DailyIntakeModel).where(
-                (DailyIntakeModel.user_id == user_id) & (DailyIntakeModel.date_utc == today_utc)
+                (DailyIntakeModel.user_id == user_id) & (DailyIntakeModel.date_utc == utc_date_now)
             )
         )
         if di is None:
             di = DailyIntakeModel(
                 user_id=user_id,
-                date_utc=today_utc,
+                date_utc=utc_date_now,
                 calories=0,
                 protein_g=0,
                 fat_g=0,
@@ -1380,26 +1383,29 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
     analysis_text = ""
     try:
         async with sessionmaker() as session:
-            di = await session.scalar(
+            # Sum over UTC dates covering user's local 'today'
+            dates = await today_local_utc_dates(session, user_id)
+            res = await session.execute(
                 select(DailyIntakeModel).where(
-                    (DailyIntakeModel.user_id == user_id) & (DailyIntakeModel.date_utc == today_utc)
+                    (DailyIntakeModel.user_id == user_id) & (DailyIntakeModel.date_utc.in_(dates))
                 )
             )
+            rows = list(res.scalars().all())
             oa = await session.scalar(
                 select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id)
             )
 
-        if di and oa and isinstance(getattr(oa, "daily_plan", None), dict):
+        if rows and oa and isinstance(getattr(oa, "daily_plan", None), dict):
             plan = oa.daily_plan or {}
             plan_cal = int(plan.get("calories") or 0)
             plan_p = float(plan.get("protein_g") or 0)
             plan_f = float(plan.get("fat_g") or 0)
             plan_c = float(plan.get("carbs_g") or 0)
 
-            fact_cal = int(di.calories or 0)
-            fact_p = float(di.protein_g or 0)
-            fact_f = float(di.fat_g or 0)
-            fact_c = float(di.carbs_g or 0)
+            fact_cal = int(sum(int(r.calories or 0) for r in rows))
+            fact_p = float(sum(float(r.protein_g or 0) for r in rows))
+            fact_f = float(sum(float(r.fat_g or 0) for r in rows))
+            fact_c = float(sum(float(r.carbs_g or 0) for r in rows))
 
             diff_cal = plan_cal - fact_cal
             diff_p = plan_p - fact_p

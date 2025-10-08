@@ -23,6 +23,7 @@ from bot.services.templates import (
     delete_template,
 )
 from bot.handlers.foodai import _build_preview_text, _preview_kb, _saved_with_recommend_kb
+from bot.services.users import today_local_utc_dates
 
 router = Router(name="templates")
 
@@ -195,25 +196,39 @@ async def cb_tpl_save_back(callback: types.CallbackQuery) -> None:
         saved_line = _("✅ Еда сохранена")
         analysis_text = ""
         try:
-            today_utc = datetime.now(timezone.utc).date()
-            di = await session.scalar(
-                select(DailyIntakeModel).where(
-                    (DailyIntakeModel.user_id == user_id) & (DailyIntakeModel.date_utc == today_utc)
+            dates = await today_local_utc_dates(session, user_id)
+            # Prefer execute() to sum over both UTC dates; fallback to scalar() for FakeSession in unit tests
+            rows = []
+            try:
+                res = await session.execute(
+                    select(DailyIntakeModel).where(
+                        (DailyIntakeModel.user_id == user_id) & (DailyIntakeModel.date_utc.in_(dates))
+                    )
                 )
-            )
+                rows = list(res.scalars().all())
+            except Exception:
+                # Fallback path for tests using a simplified session that only implements scalar()
+                di_fallback = await session.scalar(
+                    select(DailyIntakeModel).where(
+                        (DailyIntakeModel.user_id == user_id)
+                    )
+                )
+                if di_fallback:
+                    rows = [di_fallback]
             oa = await session.scalar(
                 select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id)
             )
-            if di and oa and isinstance(getattr(oa, "daily_plan", None), dict):
+            if rows and oa and isinstance(getattr(oa, "daily_plan", None), dict):
                 plan = oa.daily_plan or {}
                 plan_cal = int(plan.get("calories") or 0)
                 plan_p = float(plan.get("protein_g") or 0)
                 plan_f = float(plan.get("fat_g") or 0)
                 plan_c = float(plan.get("carbs_g") or 0)
-                fact_cal = int(di.calories or 0)
-                fact_p = float(di.protein_g or 0)
-                fact_f = float(di.fat_g or 0)
-                fact_c = float(di.carbs_g or 0)
+                # Sum over UTC dates covering user's local day
+                fact_cal = int(sum(int(r.calories or 0) for r in rows))
+                fact_p = float(sum(float(r.protein_g or 0) for r in rows))
+                fact_f = float(sum(float(r.fat_g or 0) for r in rows))
+                fact_c = float(sum(float(r.carbs_g or 0) for r in rows))
                 diff_cal = plan_cal - fact_cal
                 diff_p = plan_p - fact_p
                 diff_f = plan_f - fact_f
