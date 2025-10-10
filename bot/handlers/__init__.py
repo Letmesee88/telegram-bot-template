@@ -1,6 +1,6 @@
 from aiogram import Router
 
-from . import admin, export_users, onboarding, start, foodai
+from . import admin, export_users, onboarding, start, foodai, menu
 from . import templates
 from . import recommendations
 
@@ -16,6 +16,7 @@ def get_handlers_router() -> Router:
     # Templates router for browsing/applying meal templates
     router.include_router(templates.router)
     router.include_router(onboarding.router)
+    router.include_router(menu.router)
     router.include_router(start.router)
     router.include_router(admin.router)
     router.include_router(export_users.router)

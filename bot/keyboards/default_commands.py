@@ -10,14 +10,17 @@ users_commands: dict[str, dict[str, str]] = {
     "en": {
         "start": "start bot",
         "templates": "meal templates",
+        "day": "today stats",
     },
     "uk": {
         "start": "start bot",
         "templates": "шаблони страв",
+        "day": "статистика за сьогодні",
     },
     "ru": {
         "start": "start bot",
         "templates": "шаблоны блюд",
+        "day": "статистика за сегодня",
     },
 }
 

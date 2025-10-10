@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from time import perf_counter
 import re
 from html import escape as _html_escape
 
 from aiogram import Router, types, F
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.filters import StateFilter
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -1279,6 +1279,7 @@ def _saved_with_recommend_kb(meal_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text=_("📌Сохранить еду в шаблон"), callback_data=f"tpl:save:{meal_id}")],
             [InlineKeyboardButton(text=_("🎲 Рекомендуй следующее блюдо"), callback_data=f"rec:start:{meal_id}")],
+            [InlineKeyboardButton(text=_("🗓 Посмотреть день"), callback_data="diary:today:1")],
         ]
     )
 
@@ -1664,3 +1665,5 @@ async def cb_foodai_adjust(callback: types.CallbackQuery) -> None:
 
     await _edit_caption_or_text(callback, text, kb=_edit_kb(meal_id))
     await callback.answer()
+
+
