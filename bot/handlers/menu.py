@@ -139,6 +139,7 @@ async def cmd_day(message: types.Message) -> None:
     kb_rows: list[list[InlineKeyboardButton]] = []
     edit_row: list[InlineKeyboardButton] = []
     nav_row: list[InlineKeyboardButton] = []
+    # Always show edit button
     edit_row.append(InlineKeyboardButton(text=_("✏️ Изменить блюда"), callback_data="de:l:1"))
     kb_rows.append(edit_row)
     if total_pages > 1 and page < total_pages:
@@ -217,7 +218,7 @@ async def cb_diary_today(callback: types.CallbackQuery) -> None:
             p_i = float(meal.protein_g or 0.0)
             f_i = float(meal.fat_g or 0.0)
             c_i = float(meal.carbs_g or 0.0)
-            lines.append(f"{idx}. {title} ({t_local})")
+            lines.append(f"{idx} {title} ({t_local})")
             lines.append(f"🔥 {cal_i} ккал | 🥩 {p_i:.1f} г | 🥑 {f_i:.1f} г | 🍞 {c_i:.1f} г")
             lines.append("")
 

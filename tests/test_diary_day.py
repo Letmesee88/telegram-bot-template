@@ -268,7 +268,13 @@ async def test_cmd_day_exactly_10_meals_no_navigation(monkeypatch: pytest.Monkey
     await menu_module.cmd_day(msg)  # type: ignore[arg-type]
 
     kb = msg.captured.get("reply_markup")
-    assert kb is None
+    assert isinstance(kb, InlineKeyboardMarkup)
+    buttons = [btn for row in kb.inline_keyboard for btn in row]
+    texts = [btn.text for btn in buttons]
+    datas = [btn.callback_data for btn in buttons]
+    # Only the edit button (no navigation on single full page)
+    assert texts == ["✏️ Изменить блюда"]
+    assert datas == ["de:l:1"]
 
 
 @pytest.mark.asyncio
