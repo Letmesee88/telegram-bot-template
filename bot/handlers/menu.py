@@ -137,7 +137,7 @@ async def cmd_day(message: types.Message) -> None:
     kb_rows: list[list[InlineKeyboardButton]] = []
     nav_row: list[InlineKeyboardButton] = []
     if total_pages > 1 and page < total_pages:
-        nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"diary:today:{page+1}"))
+        nav_row.append(InlineKeyboardButton(text=_("Вперёд ▶️"), callback_data=f"diary:today:{page+1}"))
     if nav_row:
         kb_rows.append(nav_row)
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
@@ -250,9 +250,9 @@ async def cb_diary_today(callback: types.CallbackQuery) -> None:
     kb_rows: list[list[InlineKeyboardButton]] = []
     nav_row: list[InlineKeyboardButton] = []
     if total_pages > 1 and page > 1:
-        nav_row.append(InlineKeyboardButton(text="◀️", callback_data=f"diary:today:{page-1}"))
+        nav_row.append(InlineKeyboardButton(text=_("◀️ Назад"), callback_data=f"diary:today:{page-1}"))
     if total_pages > 1 and page < total_pages:
-        nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"diary:today:{page+1}"))
+        nav_row.append(InlineKeyboardButton(text=_("Вперёд ▶️"), callback_data=f"diary:today:{page+1}"))
     if nav_row:
         kb_rows.append(nav_row)
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
