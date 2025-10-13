@@ -144,7 +144,13 @@ async def test_cmd_day_empty_shows_zero_stats_no_meals_no_nav(monkeypatch: pytes
 
     # Validate keyboard: no navigation
     kb = msg.captured.get("reply_markup")
-    assert kb is None
+    assert isinstance(kb, InlineKeyboardMarkup)
+    buttons = [btn for row in kb.inline_keyboard for btn in row]
+    texts = [btn.text for btn in buttons]
+    datas = [btn.callback_data for btn in buttons]
+    # Only the edit button (no navigation)
+    assert texts == ["✏️ Изменить блюда"]
+    assert datas == ["de:l:1"]
 
 
 @pytest.mark.asyncio
@@ -239,8 +245,8 @@ async def test_cb_diary_today_last_page_shows_back_only(monkeypatch: pytest.Monk
     texts = [btn.text for btn in buttons]
     datas = [btn.callback_data for btn in buttons]
 
-    assert texts == ["◀️ Назад"]
-    assert datas == ["diary:today:2"]
+    assert texts == ["✏️ Изменить блюда", "◀️ Назад"]
+    assert datas == ["de:l:1", "diary:today:2"]
 
 
 @pytest.mark.asyncio
@@ -288,8 +294,8 @@ async def test_cmd_day_exactly_20_meals_two_pages(monkeypatch: pytest.MonkeyPatc
     buttons = [btn for row in kb.inline_keyboard for btn in row]
     texts = [btn.text for btn in buttons]
     datas = [btn.callback_data for btn in buttons]
-    assert texts == ["Вперёд ▶️"]
-    assert datas == ["diary:today:2"]
+    assert texts == ["✏️ Изменить блюда", "Вперёд ▶️"]
+    assert datas == ["de:l:1", "diary:today:2"]
 
     # Page 2 should have only back
     cb = DummyCallback(data="diary:today:2", user_id=777)
@@ -297,8 +303,8 @@ async def test_cmd_day_exactly_20_meals_two_pages(monkeypatch: pytest.MonkeyPatc
     kb2 = cb.message.captured.get("reply_markup")
     assert isinstance(kb2, InlineKeyboardMarkup)
     buttons2 = [btn for row in kb2.inline_keyboard for btn in row]
-    assert [btn.text for btn in buttons2] == ["◀️ Назад"]
-    assert [btn.callback_data for btn in buttons2] == ["diary:today:1"]
+    assert [btn.text for btn in buttons2] == ["✏️ Изменить блюда", "◀️ Назад"]
+    assert [btn.callback_data for btn in buttons2] == ["de:l:1", "diary:today:1"]
 
 
 @pytest.mark.asyncio
