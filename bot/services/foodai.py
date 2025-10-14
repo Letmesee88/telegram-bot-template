@@ -568,7 +568,6 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                 async def _call_chat() -> str | None:
                     payload_chat = {
                         "model": model_id,
-                        "temperature": 0,
                         "messages": [
                             {"role": "system", "content": system},
                             {
@@ -581,6 +580,11 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
                             },
                         ],
                     }
+                    try:
+                        if not str(model_id).startswith("gpt-5"):
+                            payload_chat["temperature"] = 0
+                    except Exception:
+                        pass
                     return await _openai_request("chat", payload_chat)
 
                 # Helper: Responses payload call
@@ -1134,16 +1138,27 @@ async def _foodness_text(text: str) -> bool | None:
     primary_model = getattr(settings, "FOODAI_DEFAULT_MODEL", None) or getattr(settings, "FOODAI_VISION_MODEL", None)
     payload = {
         "model": primary_model,
-        "temperature": 0,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": (text or "")[:500]},
         ],
     }
     try:
+        if not str(primary_model).startswith("gpt-5"):
+            payload["temperature"] = 0
+    except Exception:
+        pass
+    try:
         content = await _openai_request("chat", payload)
         if not content and getattr(settings, "FOODAI_VISION_MODEL", None) and settings.FOODAI_VISION_MODEL != primary_model:
             payload["model"] = settings.FOODAI_VISION_MODEL
+            try:
+                if str(payload["model"]).startswith("gpt-5"):
+                    payload.pop("temperature", None)
+                else:
+                    payload["temperature"] = 0
+            except Exception:
+                pass
             content = await _openai_request("chat", payload)
         if not content:
             try:
@@ -1182,6 +1197,7 @@ async def analyze_text(text: str) -> dict[str, Any]:
     If OpenAI provider is enabled, use the model; otherwise fallback to stub.
     """
     if _use_openai() and (text or "").strip():
+        t0_text = time.perf_counter()
         # Lexicon whitelist for short beverage/food names
         lex_hit = _lexicon_is_food_text(text)
         if lex_hit is True:
@@ -1193,7 +1209,7 @@ async def analyze_text(text: str) -> dict[str, Any]:
         else:
             # Strict pre-check; any failure counts as not_food (conservative)
             is_food = await _foodness_text(text)
-        if is_food is False or is_food is None:
+        if is_food is False:
             return {
                 "title": None,
                 "calories": 0,
@@ -1229,7 +1245,86 @@ async def analyze_text(text: str) -> dict[str, Any]:
                 "model": settings.FOODAI_DEFAULT_MODEL,
                 "instructions": system,
                 "reasoning": {"effort": settings.FOODAI_REASONING_EFFORT},
-                "text": {"verbosity": settings.FOODAI_TEXT_VERBOSITY},
+                "text": {
+                    "verbosity": settings.FOODAI_TEXT_VERBOSITY,
+                    "format": {
+                        "type": "json_schema",
+                        "name": "foodai_result",
+                        "strict": True,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": ["string", "null"]},
+                                "calories": {"type": "integer", "minimum": 0},
+                                "protein_g": {"type": "number", "minimum": 0},
+                                "fat_g": {"type": "number", "minimum": 0},
+                                "carbs_g": {"type": "number", "minimum": 0},
+                                "weight_g": {"type": "number", "minimum": 0},
+                                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                                "items": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "name": {"type": "string"},
+                                            "calories": {"type": "integer", "minimum": 0},
+                                            "protein_g": {"type": "number", "minimum": 0},
+                                            "fat_g": {"type": "number", "minimum": 0},
+                                            "carbs_g": {"type": "number", "minimum": 0},
+                                            "weight_g": {"type": "number", "minimum": 0},
+                                            "is_liquid": {"type": "boolean"}
+                                        },
+                                        "required": [
+                                            "name",
+                                            "calories",
+                                            "protein_g",
+                                            "fat_g",
+                                            "carbs_g",
+                                            "weight_g",
+                                            "is_liquid"
+                                        ],
+                                        "additionalProperties": False
+                                    }
+                                },
+                                "references": {
+                                    "type": "object",
+                                    "properties": {
+                                        "sources": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+                                    },
+                                    "required": ["sources"],
+                                    "additionalProperties": False
+                                },
+                                "analysis_text": {"type": ["string", "null"]},
+                                "appearance": {
+                                    "type": "object",
+                                    "properties": {
+                                        "is_packaged": {"type": "boolean"},
+                                        "plate_visible": {"type": "boolean"},
+                                        "plate_diameter_cm": {"type": ["integer", "null"], "minimum": 0}
+                                    },
+                                    "required": ["is_packaged", "plate_visible", "plate_diameter_cm"],
+                                    "additionalProperties": False
+                                },
+                                "not_food": {"type": "boolean"}
+                            },
+                            "required": [
+                                "title",
+                                "calories",
+                                "protein_g",
+                                "fat_g",
+                                "carbs_g",
+                                "weight_g",
+                                "confidence",
+                                "items",
+                                "references",
+                                "analysis_text",
+                                "appearance",
+                                "not_food"
+                            ],
+                            "additionalProperties": False
+                        }
+                    }
+                },
                 "max_output_tokens": 700,
                 "input": [
                     {
@@ -1243,36 +1338,59 @@ async def analyze_text(text: str) -> dict[str, Any]:
             content = await _openai_request("responses", payload)
             # Fallback to Chat API if Responses API failed
             if not content and bool(getattr(settings, "FOODAI_TEXT_FALLBACK_TO_CHAT", True)):
+                _model_id = settings.FOODAI_DEFAULT_MODEL
                 payload_chat = {
-                    "model": settings.FOODAI_DEFAULT_MODEL,
-                    "temperature": 0,
+                    "model": _model_id,
                     "max_tokens": 600,
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": f"{text}\n\nReturn JSON only."},
                     ],
                 }
+                try:
+                    if not str(_model_id).startswith("gpt-5"):
+                        payload_chat["temperature"] = 0
+                except Exception:
+                    pass
                 content = await _openai_request("chat", payload_chat)
         else:
+            _model_id = settings.FOODAI_DEFAULT_MODEL
             payload = {
-                "model": settings.FOODAI_DEFAULT_MODEL,
-                "temperature": 0,
+                "model": _model_id,
                 "max_tokens": 600,
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": text},
                 ],
             }
+            try:
+                if not str(_model_id).startswith("gpt-5"):
+                    payload["temperature"] = 0
+            except Exception:
+                pass
             content = await _openai_request("chat", payload)
 
         if content:
             parsed = _normalize_openai_json(content)
             if parsed:
+                # Do not drop explicit not_food responses even if all macros are zeros
+                is_nf = False
                 try:
-                    if int(parsed.get("calories") or 0) == 0 and float(parsed.get("protein_g") or 0) == 0 and float(parsed.get("fat_g") or 0) == 0 and float(parsed.get("carbs_g") or 0) == 0:
+                    is_nf = bool(parsed.get("not_food"))
+                except Exception:
+                    is_nf = False
+                try:
+                    zeros = (
+                        int(parsed.get("calories") or 0) == 0
+                        and float(parsed.get("protein_g") or 0) == 0
+                        and float(parsed.get("fat_g") or 0) == 0
+                        and float(parsed.get("carbs_g") or 0) == 0
+                    )
+                    if zeros and not is_nf:
                         parsed = None
                 except Exception:
-                    parsed = None
+                    if not is_nf:
+                        parsed = None
                 if parsed:
                     # Optional rewrite
                     try:
@@ -1307,7 +1425,46 @@ async def analyze_text(text: str) -> dict[str, Any]:
                                 parsed["analysis_text"] = txt
                     except Exception:
                         pass
+                    # Final debug log for text analysis
+                    try:
+                        dt_ms = int((time.perf_counter() - t0_text) * 1000)
+                        model_id = getattr(settings, "FOODAI_DEFAULT_MODEL", "")
+                        conf = None
+                        try:
+                            conf = float(parsed.get("confidence") or 0)
+                        except Exception:
+                            conf = 0.0
+                        items_cnt = 0
+                        try:
+                            items_cnt = len(parsed.get("items") or [])
+                        except Exception:
+                            items_cnt = 0
+                        logger.info("foodai.text.final | model={} | total_ms={} | conf={} | items={}", model_id, dt_ms, conf, items_cnt)
+                    except Exception:
+                        pass
                     return parsed
+    # Fallback: if content mentions not_food=true but parsing failed, return a minimal not_food result
+    try:
+        if isinstance(content, str) and '"not_food"' in content and 'true' in content:
+            return {
+                "title": None,
+                "calories": 0,
+                "protein_g": 0.0,
+                "fat_g": 0.0,
+                "carbs_g": 0.0,
+                "weight_g": 0.0,
+                "confidence": 0.0,
+                "items": [],
+                "references": {"sources": [
+                    "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                    "USDA FoodData Central",
+                ]},
+                "analysis_text": None,
+                "appearance": {},
+                "not_food": True,
+            }
+    except Exception:
+        pass
     try:
         foodai_provider_error.labels(source="text", error="provider_unavailable").inc()
     except Exception:

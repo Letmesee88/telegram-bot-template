@@ -698,7 +698,7 @@ async def handle_food_text(message: types.Message, state: FSMContext) -> None:
         logger.info("FoodAI:Text handler entered | user_id={} | len={}", message.from_user.id if message.from_user else None, len(message.text or ""))
     except Exception:
         pass
-    analyzing_msg = await message.answer(_("Анализирую описание…"))
+    analyzing_msg = await message.answer(_("✨Анализирую описание…"))
 
     # Analytics: text analyze started
     # Prometheus: started
