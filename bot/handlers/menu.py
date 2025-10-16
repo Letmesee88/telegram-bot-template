@@ -146,6 +146,8 @@ async def cmd_day(message: types.Message) -> None:
         nav_row.append(InlineKeyboardButton(text=_("Вперёд ▶️"), callback_data=f"diary:today:{page+1}"))
     if nav_row:
         kb_rows.append(nav_row)
+    # Add History button
+    kb_rows.append([InlineKeyboardButton(text=_("📖 История"), callback_data="history:back")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
 
     await message.answer(text, reply_markup=kb)
@@ -264,6 +266,8 @@ async def cb_diary_today(callback: types.CallbackQuery) -> None:
         nav_row.append(InlineKeyboardButton(text=_("Вперёд ▶️"), callback_data=f"diary:today:{page+1}"))
     if nav_row:
         kb_rows.append(nav_row)
+    # Add History button
+    kb_rows.append([InlineKeyboardButton(text=_("📖 История"), callback_data="history:back")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
 
     await _edit_caption_or_text(callback, text, kb=kb)
@@ -417,6 +421,8 @@ async def cb_back_to_day(callback: types.CallbackQuery) -> None:
         nav_row.append(InlineKeyboardButton(text=_("Вперёд ▶️"), callback_data=f"diary:today:{page+1}"))
     if nav_row:
         kb_rows.append(nav_row)
+    # Add History button
+    kb_rows.append([InlineKeyboardButton(text=_("📖 История"), callback_data="history:back")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
 
     await _edit_caption_or_text(callback, text, kb=kb)

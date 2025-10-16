@@ -11,16 +11,19 @@ users_commands: dict[str, dict[str, str]] = {
         "start": "start bot",
         "templates": "meal templates",
         "day": "today stats",
+        "history": "7-day nutrition history",
     },
     "uk": {
         "start": "start bot",
         "templates": "шаблони страв",
         "day": "статистика за сьогодні",
+        "history": "історія харчування за 7 днів",
     },
     "ru": {
         "start": "start bot",
         "templates": "шаблоны блюд",
         "day": "статистика за сегодня",
+        "history": "история питания за 7 дней",
     },
 }
 

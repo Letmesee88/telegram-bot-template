@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, time as dtime
 from time import perf_counter
 import re
 from html import escape as _html_escape
@@ -37,6 +37,7 @@ from bot.handlers.metrics import (
     foodai_edit_failed,
     foodai_edit_duration_ms,
 )
+from bot.services.history import get_add_in_day_target, clear_add_in_day_target
 
 router = Router(name="foodai")
 router.message.filter(FoodAIEnabledFilter())
@@ -83,6 +84,8 @@ async def edit_text_received(message: types.Message, state: FSMContext) -> None:
         return
 
     # Load current meal
+    backdated = False
+    backdate_iso_chosen: str | None = None
     async with sessionmaker() as session:
         meal = await session.get(MealModel, meal_id)
         if not meal or meal.user_id != user_id:
@@ -348,6 +351,8 @@ async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
     best = photos[-1]
     tg_file_id = best.file_id
     tg_file_unique_id = best.file_unique_id
+    # Default: not backdated in photo flow; final resolution happens on save
+    backdated = False
 
     # Step 1: persist draft meal + photo
     async with sessionmaker() as session:
@@ -522,6 +527,12 @@ async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
             )
 
         await session.commit()
+        # Clear backdate target after successful save
+        if backdated:
+            try:
+                await clear_add_in_day_target(user_id)
+            except Exception:
+                pass
 
     # Prepare optional per-meal % of plan for preview
     itogo = None
@@ -1333,15 +1344,31 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
             await callback.answer(_("Уже сохранено"))
             return
 
+        # Check if user is adding into a specific past day (history flow)
+        backdate_iso = await get_add_in_day_target(user_id)
+        target_utc_date = utc_date_now
+        backdated = False
+        if backdate_iso:
+            try:
+                target_local_date = datetime.fromisoformat(backdate_iso).date()
+                target_local_dt = datetime.combine(target_local_date, dtime(12, 0), tz)
+                # Set meal timestamp to selected day at 12:00 local, converted to UTC
+                meal.consumed_at = target_local_dt.astimezone(timezone.utc)
+                target_utc_date = meal.consumed_at.date()
+                backdated = True
+                backdate_iso_chosen = backdate_iso
+            except Exception:
+                backdated = False
+
         di = await session.scalar(
             select(DailyIntakeModel).where(
-                (DailyIntakeModel.user_id == user_id) & (DailyIntakeModel.date_utc == utc_date_now)
+                (DailyIntakeModel.user_id == user_id) & (DailyIntakeModel.date_utc == (target_utc_date))
             )
         )
         if di is None:
             di = DailyIntakeModel(
                 user_id=user_id,
-                date_utc=utc_date_now,
+                date_utc=target_utc_date,
                 calories=0,
                 protein_g=0,
                 fat_g=0,
@@ -1380,8 +1407,45 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
             )
         )
 
-    # Build combined message: Saved line + Day analysis in one message
+    # Build response message
     saved_line = _("✅ Еда сохранена")
+    # If backdated, show explicit day and simpler UI
+    if backdated and backdate_iso_chosen:
+        try:
+            d_disp = datetime.fromisoformat(backdate_iso_chosen).strftime("%d.%m.%Y")
+        except Exception:
+            d_disp = backdate_iso_chosen
+        text = _((f"✅ Еда сохранена в день {d_disp}"))
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text=_("◀️ Назад к дню"), callback_data=f"history:day:{backdate_iso_chosen}")]]
+        )
+        await _edit_caption_or_text(callback, text, kb=kb)
+        # Clear add-in-day target as the backdated save completed successfully
+        try:
+            await clear_add_in_day_target(user_id)
+        except Exception:
+            pass
+        # Analytics: completed add-in-day
+        if analytics.logger and callback.from_user:
+            try:
+                analytics.fire_event(
+                    BaseEvent(
+                        user_id=callback.from_user.id,
+                        event_type="HistoryAddInDayCompleted",
+                        event_properties=EventProperties(
+                            chat_id=callback.message.chat.id if callback.message else None,
+                            chat_type=callback.message.chat.type if callback.message else None,
+                            text=f"date={backdate_iso_chosen}, meal_id={meal_id}",
+                            command=None,
+                        ),
+                        language=getattr(callback.from_user, 'language_code', None),
+                    )
+                )
+            except Exception:
+                pass
+        await callback.answer()
+        return
+
     analysis_text = ""
     try:
         async with sessionmaker() as session:
