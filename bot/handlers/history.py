@@ -61,11 +61,14 @@ async def cmd_history(message: types.Message) -> None:
 
     lines: list[str] = []
     lines.append(_("История питания за 7 дней"))
+    lines.append("")
     lines.append(_("📊 Коротко о главном:"))
     lines.append(_(f"🔥 Средние калории: {avg_cal} ккал"))
     lines.append(_(f"🥩 Средний белок: {avg_p:.1f} г"))
     lines.append(_(f"📅 Дней с записями: {days_with} из 7"))
+    lines.append("")
     lines.append(_(f"✨ Совет: {advice if advice else 'временно недоступен'}"))
+    lines.append("")
 
     kb = _kb_history_days(days_sorted)
     await message.answer("\n".join(lines), reply_markup=kb)
@@ -105,11 +108,14 @@ async def cb_history_back(callback: types.CallbackQuery) -> None:
 
     lines = [
         _("История питания за 7 дней"),
+        "",
         _("📊 Коротко о главном:"),
         _(f"🔥 Средние калории: {avg_cal} ккал"),
         _(f"🥩 Средний белок: {avg_p:.1f} г"),
         _(f"📅 Дней с записями: {days_with} из 7"),
+        "",
         _(f"✨ Совет: {advice if advice else 'временно недоступен'}"),
+        "",
     ]
     kb = _kb_history_days(days_sorted)
     try:
@@ -282,7 +288,7 @@ async def cb_history_add(callback: types.CallbackQuery) -> None:
         d_disp = datetime.fromisoformat(target).strftime("%d.%m.%Y")
     except Exception:
         d_disp = target
-    text = _((f"Добавление еды в {d_disp} 🍗 Отправь фото еды или опиши текстом."))
+    text = _((f"Добавление еды в {d_disp}\n🍗 Отправь фото еды или опиши текстом."))
     kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=_("◀️ Вернуться назад"), callback_data=f"history:day:{target}")]]
     )

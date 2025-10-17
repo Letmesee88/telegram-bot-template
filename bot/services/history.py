@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone, date as date_cls, time as dt
 from sqlalchemy import select
 
 from bot.database.database import sessionmaker
-from bot.database.models import MealModel
+from bot.database.models import MealModel, OnboardingAnswerModel
 from bot.services.users import get_user_tzinfo
 from bot.core.loader import redis_client
 from bot.core.config import settings
@@ -100,7 +100,7 @@ async def get_week_advice(user_id: int, days: List[Dict[str, Any]]) -> str | Non
     except Exception:
         pass
 
-    # Build minimal prompt from aggregates
+    # Build minimal prompt from aggregates (+ user's plan/weight when available)
     try:
         total_days_with = sum(1 for d in days if d.get("has_entries"))
         total_cal = sum(float(d.get("total_cal") or 0.0) for d in days)
@@ -108,14 +108,59 @@ async def get_week_advice(user_id: int, days: List[Dict[str, Any]]) -> str | Non
         avg_cal = (total_cal / total_days_with) if total_days_with else 0.0
         avg_p = (total_p / total_days_with) if total_days_with else 0.0
 
+        # Load user's plan and weight (if available)
+        plan_cal: float | None = None
+        plan_p: float | None = None
+        weight_kg: float | None = None
+
+        try:
+            async with sessionmaker() as session:
+                oa = await session.scalar(select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id))
+                if oa and isinstance(getattr(oa, "daily_plan", None), dict):
+                    plan = oa.daily_plan or {}
+                    try:
+                        plan_cal = float(plan.get("calories") or 0)
+                    except Exception:
+                        plan_cal = None
+                    try:
+                        plan_p = float(plan.get("protein_g") or 0)
+                    except Exception:
+                        plan_p = None
+                # weight may be stored in raw onboarding data
+                try:
+                    data = (oa.data if oa and isinstance(getattr(oa, "data", None), dict) else {}) or {}
+                    w = data.get("weight_kg")
+                    weight_kg = float(w) if w is not None else None
+                except Exception:
+                    weight_kg = None
+        except Exception:
+            plan_cal = plan_p = weight_kg = None
+
+        # Derived protein per kg if weight known
+        avg_p_per_kg: float | None = (avg_p / weight_kg) if (weight_kg and weight_kg > 0) else None
+        target_p_per_kg: float | None = ((plan_p or 0) / weight_kg) if (weight_kg and weight_kg > 0 and plan_p) else None
+
         instructions = (
-            "Ты — ИИ‑нутрициолог. Дай очень короткий совет (1–2 предложения) по питанию за неделю на русском, без markdown. "
-            "Учитывай средние калории и белок, не придумывай фактов, не упоминай уверенность."
+            "Ты — ИИ‑нутрициолог. Дай очень короткий практичный совет (1–2 предложения) на русском, без markdown. "
+            "Учитывай только калории и белок, сравнивай средние с целями плана, если они есть. "
+            "Если известен вес, можно упомянуть белок в г/кг. Не придумывай фактов, не упоминай уверенность."
         )
-        user_text = (
-            f"Средние калории: {int(avg_cal)} ккал. Средний белок: {avg_p:.1f} г. "
-            f"Дней с записями: {total_days_with} из 7. Дай практичный совет."
-        )
+
+        parts: list[str] = []
+        parts.append(f"Средние калории: {int(avg_cal)} ккал. Средний белок: {avg_p:.1f} г.")
+        parts.append(f"Дней с записями: {total_days_with} из 7.")
+        if plan_cal and plan_cal > 0:
+            parts.append(f"Цель калорий: {int(plan_cal)} ккал/день.")
+        if plan_p and plan_p > 0:
+            parts.append(f"Цель белка: {int(plan_p)} г/день.")
+        if weight_kg and weight_kg > 0:
+            parts.append(f"Вес: {weight_kg:g} кг.")
+            if avg_p_per_kg is not None:
+                parts.append(f"Средний белок на кг: {avg_p_per_kg:.1f} г/кг.")
+            if target_p_per_kg is not None:
+                parts.append(f"Цель белка на кг: {target_p_per_kg:.1f} г/кг.")
+        parts.append("Дай практичный совет на неделю, без общих фраз.")
+        user_text = " ".join(parts)
         payload = {
             "model": getattr(settings, "RECOMMENDER_MODEL", "gpt-5-mini"),
             "instructions": instructions,
