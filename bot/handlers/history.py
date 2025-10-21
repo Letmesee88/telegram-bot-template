@@ -18,8 +18,11 @@ from bot.services.history import (
     weekday_ru,
     set_add_in_day_target,
 )
+from bot.services.charts import get_history_chart_png
+import hashlib
 from bot.services.analytics import analytics
 from bot.analytics.types import BaseEvent, EventProperties
+from loguru import logger
 
 router = Router(name="history")
 
@@ -73,6 +76,43 @@ async def cmd_history(message: types.Message) -> None:
     kb = _kb_history_days(days_sorted)
     await message.answer("\n".join(lines), reply_markup=kb)
 
+    # Build and send 7-day summary chart PNG below the text
+    try:
+        # chronological order left->right
+        days_chrono = sorted(days_sorted, key=lambda x: x["date"])
+        x_labels = [f"{weekday_ru(d['date'])} {d['date'].strftime('%d.%m')}" for d in days_chrono]
+        cal = [int(round(float(d.get("total_cal") or 0))) for d in days_chrono]
+        p = [int(round(float(d.get("total_p") or 0.0))) for d in days_chrono]
+        f = [int(round(float(d.get("total_f") or 0.0))) for d in days_chrono]
+        c = [int(round(float(d.get("total_c") or 0.0))) for d in days_chrono]
+
+        # fetch norms from onboarding plan
+        norms: dict[str, int] | None = None
+        try:
+            async with sessionmaker() as session:
+                oa = await session.scalar(select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id))
+                if oa and isinstance(getattr(oa, "daily_plan", None), dict):
+                    plan = oa.daily_plan or {}
+                    norms = {
+                        "cal": int(plan.get("calories") or 0),
+                        "p": int(plan.get("protein_g") or 0),
+                        "f": int(plan.get("fat_g") or 0),
+                        "c": int(plan.get("carbs_g") or 0),
+                    }
+        except Exception:
+            norms = None
+
+        key_str = f"{user_id}:{':'.join(x_labels)}:{','.join(map(str,cal))}:{','.join(map(str,p))}:{','.join(map(str,f))}:{','.join(map(str,c))}:{(norms or {})}"
+        ph = hashlib.sha256(key_str.encode("utf-8")).hexdigest()[:16]
+        png = await get_history_chart_png(user_id, ph, x_labels=x_labels, cal=cal, p=p, f=f, c=c, norms=norms)
+        if png:
+            logger.info("history.png_ready | user_id={} | size={} bytes", user_id, len(png))
+            await message.answer_photo(types.BufferedInputFile(png, filename="history_7d.png"))
+        else:
+            logger.warning("history.png_none | user_id={}", user_id)
+    except Exception as e:
+        logger.warning("history.png_send_failed | user_id={} | err={}", user_id, e or type(e).__name__)
+
     # Analytics
     if analytics.logger and message.from_user:
         try:
@@ -118,15 +158,53 @@ async def cb_history_back(callback: types.CallbackQuery) -> None:
         "",
     ]
     kb = _kb_history_days(days_sorted)
+    edited = False
     try:
         await callback.message.edit_caption(caption="\n".join(lines), reply_markup=kb)
-        return
+        edited = True
     except Exception:
         pass
+    if not edited:
+        try:
+            await callback.message.edit_text(text="\n".join(lines), reply_markup=kb)
+            edited = True
+        except Exception:
+            await callback.message.answer("\n".join(lines), reply_markup=kb)
+
+    # Send chart PNG after updating the message
     try:
-        await callback.message.edit_text(text="\n".join(lines), reply_markup=kb)
-    except Exception:
-        await callback.message.answer("\n".join(lines), reply_markup=kb)
+        days_chrono = sorted(days_sorted, key=lambda x: x["date"])
+        x_labels = [f"{weekday_ru(d['date'])} {d['date'].strftime('%d.%m')}" for d in days_chrono]
+        cal = [int(round(float(d.get("total_cal") or 0))) for d in days_chrono]
+        p = [int(round(float(d.get("total_p") or 0.0))) for d in days_chrono]
+        f = [int(round(float(d.get("total_f") or 0.0))) for d in days_chrono]
+        c = [int(round(float(d.get("total_c") or 0.0))) for d in days_chrono]
+
+        norms: dict[str, int] | None = None
+        try:
+            async with sessionmaker() as session:
+                oa = await session.scalar(select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id))
+                if oa and isinstance(getattr(oa, "daily_plan", None), dict):
+                    plan = oa.daily_plan or {}
+                    norms = {
+                        "cal": int(plan.get("calories") or 0),
+                        "p": int(plan.get("protein_g") or 0),
+                        "f": int(plan.get("fat_g") or 0),
+                        "c": int(plan.get("carbs_g") or 0),
+                    }
+        except Exception:
+            norms = None
+
+        key_str = f"{user_id}:{':'.join(x_labels)}:{','.join(map(str,cal))}:{','.join(map(str,p))}:{','.join(map(str,f))}:{','.join(map(str,c))}:{(norms or {})}"
+        ph = hashlib.sha256(key_str.encode("utf-8")).hexdigest()[:16]
+        png = await get_history_chart_png(user_id, ph, x_labels=x_labels, cal=cal, p=p, f=f, c=c, norms=norms)
+        if png:
+            logger.info("history.png_ready_cb | user_id={} | size={} bytes", user_id, len(png))
+            await callback.message.answer_photo(types.BufferedInputFile(png, filename="history_7d.png"))
+        else:
+            logger.warning("history.png_none_cb | user_id={}", user_id)
+    except Exception as e:
+        logger.warning("history.png_send_failed_cb | user_id={} | err={}", user_id, e or type(e).__name__)
 
 
 @router.callback_query(F.data.regexp(r"^history:day:(\d{4}-\d{2}-\d{2})$"))

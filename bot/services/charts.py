@@ -5,6 +5,12 @@ import math
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional, Tuple, List
+try:
+    from PIL import Image, ImageDraw, ImageFont  # type: ignore
+    _PIL_OK = True
+except Exception:
+    Image = ImageDraw = ImageFont = None  # type: ignore
+    _PIL_OK = False
 
 import aiohttp
 import asyncio
@@ -443,4 +449,208 @@ async def get_plan_chart_png(user_id: int, payload_hash: str, *,
                 return None
     except Exception as e:
         logger.warning("charts.quickchart_session_exception | user_id={} | err={}", user_id, e or type(e).__name__)
+        return None
+
+
+def _history_panel_config(title: str, labels: List[str], values: List[int], *,
+                          bar_color: str, norm_value: Optional[float]) -> dict:
+    bg = getattr(settings, "CHARTS_COLOR_BG", None) or "#0b1220"
+    grid = getattr(settings, "CHARTS_COLOR_GRID", None) or "#203049"
+    axis = getattr(settings, "CHARTS_COLOR_AXIS", None) or "#94a3b8"
+    datasets = [
+        {
+            "type": "bar",
+            "label": title,
+            "data": values,
+            "backgroundColor": bar_color,
+            "borderColor": bar_color,
+            "borderWidth": 1,
+            "datalabels": {
+                "display": True,
+                "anchor": "end",
+                "align": "end",
+                "color": getattr(settings, "CHARTS_COLOR_LABEL_FG", None) or "#1e293b",
+                "backgroundColor": getattr(settings, "CHARTS_COLOR_LABEL_BG", None) or "#ffffff",
+                "borderRadius": 4,
+                "padding": {"left": 6, "right": 6, "top": 2, "bottom": 2},
+                "font": {"weight": "700", "size": 14},
+                "formatter": "function(v){return Math.round(v).toString();}",
+            },
+        }
+    ]
+    if norm_value is not None and float(norm_value) > 0:
+        datasets.append({
+            "type": "line",
+            "label": "Норма",
+            "data": [float(norm_value) for _ in labels],
+            "borderColor": "#ffffff88",
+            "borderDash": [6, 6],
+            "pointRadius": 0,
+            "tension": 0,
+            "datalabels": {
+                "display": True,
+                "align": "right",
+                "anchor": "end",
+                "color": "#e2e8f0",
+                "backgroundColor": "rgba(0,0,0,0)",
+                "formatter": "function(v,ctx){var i=ctx.dataIndex; var n=ctx.dataset.data.length-1; return i===n ? ('Норма: '+Math.round(v)) : '';}",
+                "font": {"weight": "700", "size": 14},
+            },
+        })
+    cfg = {
+        "type": "bar",
+        "data": {"labels": labels, "datasets": datasets},
+        "options": {
+            "responsive": False,
+            "plugins": {
+                "legend": {"display": False},
+                "title": {"display": True, "text": title, "color": "#e2e8f0", "font": {"size": 18}},
+                "tooltip": {"enabled": False},
+            },
+            "scales": {
+                "x": {"ticks": {"color": axis}, "grid": {"color": grid}},
+                "y": {"ticks": {"color": axis}, "grid": {"color": grid}},
+            },
+        },
+        "backgroundColor": bg,
+    }
+    return cfg
+
+
+async def _render_quickchart(config: dict, *, width: int, height: int) -> Optional[bytes]:
+    if settings.CHARTS_PROVIDER != "quickchart":
+        logger.info("charts.skip | reason=provider:{}", settings.CHARTS_PROVIDER)
+        return None
+    url = settings.QUICKCHART_URL.rstrip("/")
+    body = {
+        "chart": config,
+        "width": width,
+        "height": height,
+        "backgroundColor": getattr(settings, "CHARTS_COLOR_BG", None) or "#0b1220",
+        "format": "png",
+        "version": "4",
+        "devicePixelRatio": 1.0,
+    }
+    if getattr(settings, "CHARTS_USE_DATALABELS", True):
+        body["plugins"] = ["chartjs-plugin-datalabels"]
+    timeout = aiohttp.ClientTimeout(total=settings.QUICKCHART_TIMEOUT_SEC)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            try:
+                async with session.post(url, json=body) as resp:
+                    if resp.status == 200:
+                        return await resp.read()
+            except asyncio.TimeoutError:
+                logger.warning("charts.quickchart_timeout_post | timeout_s={}", settings.QUICKCHART_TIMEOUT_SEC)
+            except Exception as e:
+                logger.warning("charts.quickchart_exception_post | err={}", e or type(e).__name__)
+            import json as _json
+            import urllib.parse as _u
+            cfg_str = _json.dumps(config, separators=(",", ":"), ensure_ascii=False)
+            params = {
+                "c": cfg_str,
+                "width": str(width),
+                "height": str(height),
+                "backgroundColor": getattr(settings, "CHARTS_COLOR_BG", None) or "#0b1220",
+                "format": "png",
+                "version": "4",
+                "devicePixelRatio": "1.0",
+            }
+            if getattr(settings, "CHARTS_USE_DATALABELS", True):
+                params["plugins"] = "chartjs-plugin-datalabels"
+            get_url = url + "?" + _u.urlencode(params, quote_via=_u.quote)
+            try:
+                async with session.get(get_url) as resp2:
+                    if resp2.status != 200:
+                        return None
+                    return await resp2.read()
+            except asyncio.TimeoutError:
+                logger.warning("charts.quickchart_timeout_get | timeout_s={}", settings.QUICKCHART_TIMEOUT_SEC)
+                return None
+            except Exception as e:
+                logger.warning("charts.quickchart_exception_get | err={}", e or type(e).__name__)
+                return None
+    except Exception as e:
+        logger.warning("charts.quickchart_session_exception | err={}", e or type(e).__name__)
+        return None
+
+
+@cached(ttl=300, namespace="charts", key_builder=_config_cache_key)
+async def get_history_chart_png(user_id: int, payload_hash: str, *,
+                                x_labels: List[str], cal: List[int], p: List[int], f: List[int], c: List[int],
+                                norms: Optional[dict]) -> Optional[bytes]:
+    if not settings.CHARTS_ENABLED:
+        logger.info("charts.skip | reason=disabled")
+        return None
+    if not _PIL_OK:
+        logger.warning("charts.history_png_pillow_missing | user_id={} | returning None (install Pillow)", user_id)
+        return None
+    w_total, h_total = 1920, 1440
+    margin_lr = 40
+    margin_tb = 40
+    title_h = 80
+    gap = 20
+    panel_w = int((w_total - margin_lr * 2 - gap) / 2)
+    panel_h = int((h_total - margin_tb - title_h - gap - margin_tb - gap) / 2)
+
+    titles = ["Калории", "Белки (г)", "Жиры (г)", "Углеводы (г)"]
+    colors = ["#FF4CC2", "#FC6524", "#FFD900", "#8800FF"]
+    values = [cal, p, f, c]
+    norms_seq = [
+        (norms or {}).get("cal"),
+        (norms or {}).get("p"),
+        (norms or {}).get("f"),
+        (norms or {}).get("c"),
+    ]
+
+    panels: List[Optional[bytes]] = []
+    for i in range(4):
+        cfg = _history_panel_config(titles[i], x_labels, values[i], bar_color=colors[i], norm_value=norms_seq[i])
+        png = await _render_quickchart(cfg, width=panel_w, height=panel_h)
+        panels.append(png)
+
+    try:
+        bg_color_hex = getattr(settings, "CHARTS_COLOR_BG", None) or "#0b1220"
+        if bg_color_hex.startswith("#") and len(bg_color_hex) in {4, 7}:
+            if len(bg_color_hex) == 4:
+                r = int(bg_color_hex[1] * 2, 16); g = int(bg_color_hex[2] * 2, 16); b = int(bg_color_hex[3] * 2, 16)
+            else:
+                r = int(bg_color_hex[1:3], 16); g = int(bg_color_hex[3:5], 16); b = int(bg_color_hex[5:7], 16)
+            bg_rgb = (r, g, b, 255)
+        else:
+            bg_rgb = (11, 18, 32, 255)
+        canvas = Image.new("RGBA", (w_total, h_total), bg_rgb)
+        draw = ImageDraw.Draw(canvas)
+        try:
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 36)
+        except Exception:
+            font = ImageFont.load_default()
+        title_text = "История питания за 7 дней"
+        try:
+            bbox = draw.textbbox((0, 0), title_text, font=font)
+            tw, th = (bbox[2] - bbox[0], bbox[3] - bbox[1])
+        except Exception:
+            # Fallback for older Pillow versions
+            tw, th = (len(title_text) * 10, 24)
+        draw.text(((w_total - tw) // 2, margin_tb + (title_h - th) // 2), title_text, fill=(226, 232, 240, 255), font=font)
+
+        positions = [
+            (margin_lr, margin_tb + title_h + gap),
+            (margin_lr + panel_w + gap, margin_tb + title_h + gap),
+            (margin_lr, margin_tb + title_h + gap + panel_h + gap),
+            (margin_lr + panel_w + gap, margin_tb + title_h + gap + panel_h + gap),
+        ]
+        for idx, png in enumerate(panels):
+            if not png:
+                continue
+            try:
+                img = Image.open(__import__("io").BytesIO(png)).convert("RGBA")
+                canvas.paste(img, positions[idx])
+            except Exception:
+                continue
+        out = __import__("io").BytesIO()
+        canvas.save(out, format="PNG")
+        return out.getvalue()
+    except Exception as e:
+        logger.warning("charts.history_png_compose_failed | err={}", e or type(e).__name__)
         return None
