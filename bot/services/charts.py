@@ -588,7 +588,7 @@ async def get_history_chart_png(user_id: int, payload_hash: str, *,
     w_total, h_total = 1920, 1440
     margin_lr = 40
     margin_tb = 40
-    title_h = 80
+    title_h = 0
     gap = 20
     panel_w = int((w_total - margin_lr * 2 - gap) / 2)
     panel_h = int((h_total - margin_tb - title_h - gap - margin_tb - gap) / 2)
@@ -620,19 +620,6 @@ async def get_history_chart_png(user_id: int, payload_hash: str, *,
         else:
             bg_rgb = (11, 18, 32, 255)
         canvas = Image.new("RGBA", (w_total, h_total), bg_rgb)
-        draw = ImageDraw.Draw(canvas)
-        try:
-            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 36)
-        except Exception:
-            font = ImageFont.load_default()
-        title_text = "История питания за 7 дней"
-        try:
-            bbox = draw.textbbox((0, 0), title_text, font=font)
-            tw, th = (bbox[2] - bbox[0], bbox[3] - bbox[1])
-        except Exception:
-            # Fallback for older Pillow versions
-            tw, th = (len(title_text) * 10, 24)
-        draw.text(((w_total - tw) // 2, margin_tb + (title_h - th) // 2), title_text, fill=(226, 232, 240, 255), font=font)
 
         positions = [
             (margin_lr, margin_tb + title_h + gap),
