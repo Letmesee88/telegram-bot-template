@@ -397,8 +397,10 @@ async def get_plan_chart_png(user_id: int, payload_hash: str, *,
         "version": "4",
         "devicePixelRatio": 1.0,
     }
+    _plugins = ["chartjs-plugin-annotation"]
     if getattr(settings, "CHARTS_USE_DATALABELS", True):
-        body["plugins"] = ["chartjs-plugin-datalabels"]
+        _plugins.insert(0, "chartjs-plugin-datalabels")
+    body["plugins"] = _plugins
 
     timeout = aiohttp.ClientTimeout(total=settings.QUICKCHART_TIMEOUT_SEC)
     try:
@@ -429,8 +431,10 @@ async def get_plan_chart_png(user_id: int, payload_hash: str, *,
                 "version": "4",
                 "devicePixelRatio": "1.0",
             }
+            _pl = ["chartjs-plugin-annotation"]
             if getattr(settings, "CHARTS_USE_DATALABELS", True):
-                params["plugins"] = "chartjs-plugin-datalabels"
+                _pl.insert(0, "chartjs-plugin-datalabels")
+            params["plugins"] = ",".join(_pl)
             # Important: do not mark spaces as safe, fully encode
             get_url = url + "?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
             try:
@@ -453,18 +457,20 @@ async def get_plan_chart_png(user_id: int, payload_hash: str, *,
 
 
 def _history_panel_config(title: str, labels: List[str], values: List[int], *,
-                          bar_color: str, norm_value: Optional[float]) -> dict:
+                         bar_color: str, norm_value: Optional[float]) -> dict:
     bg = getattr(settings, "CHARTS_COLOR_BG", None) or "#0b1220"
     grid = getattr(settings, "CHARTS_COLOR_GRID", None) or "#203049"
     axis = getattr(settings, "CHARTS_COLOR_AXIS", None) or "#94a3b8"
+
+    # Base bar dataset
     datasets = [
         {
             "type": "bar",
             "label": title,
             "data": values,
             "backgroundColor": bar_color,
-            "borderColor": bar_color,
-            "borderWidth": 1,
+            "borderColor": "#ffffff",
+            "borderWidth": 2,
             "datalabels": {
                 "display": True,
                 "anchor": "end",
@@ -472,31 +478,42 @@ def _history_panel_config(title: str, labels: List[str], values: List[int], *,
                 "color": getattr(settings, "CHARTS_COLOR_LABEL_FG", None) or "#1e293b",
                 "backgroundColor": getattr(settings, "CHARTS_COLOR_LABEL_BG", None) or "#ffffff",
                 "borderRadius": 4,
-                "padding": {"left": 6, "right": 6, "top": 2, "bottom": 2},
-                "font": {"weight": "700", "size": 14},
-                "formatter": "function(v){return Math.round(v).toString();}",
+                "padding": {"left": 8, "right": 8, "top": 4, "bottom": 4},
+                "font": {"weight": "700", "size": 20},
             },
         }
     ]
+
+    # Dashed norm line
     if norm_value is not None and float(norm_value) > 0:
         datasets.append({
             "type": "line",
             "label": "Норма",
             "data": [float(norm_value) for _ in labels],
-            "borderColor": "#ffffff88",
+            "borderColor": "#ffffff",
             "borderDash": [6, 6],
             "pointRadius": 0,
             "tension": 0,
-            "datalabels": {
-                "display": True,
-                "align": "right",
-                "anchor": "end",
-                "color": "#e2e8f0",
-                "backgroundColor": "rgba(0,0,0,0)",
-                "formatter": "function(v,ctx){var i=ctx.dataIndex; var n=ctx.dataset.data.length-1; return i===n ? ('Норма: '+Math.round(v)) : '';}",
-                "font": {"weight": "700", "size": 14},
-            },
+            "datalabels": {"display": False},
         })
+
+    # Annotation for single centered label "Норма: N"
+    annotations: dict = {}
+    if norm_value is not None and float(norm_value) > 0 and labels:
+        mid = max(0, min(len(labels) - 1, len(labels) // 2))
+        label_text = f"Норма: {int(round(float(norm_value)))}"
+        annotations["normLabel"] = {
+            "type": "label",
+            "xValue": labels[mid],
+            "yValue": float(norm_value),
+            "content": label_text,
+            "backgroundColor": "rgba(0,0,0,0)",
+            "color": "#e2e8f0",
+            "font": {"size": 22, "weight": "700"},
+            "yAdjust": -15,
+            "textAlign": "center",
+        }
+
     cfg = {
         "type": "bar",
         "data": {"labels": labels, "datasets": datasets},
@@ -504,12 +521,16 @@ def _history_panel_config(title: str, labels: List[str], values: List[int], *,
             "responsive": False,
             "plugins": {
                 "legend": {"display": False},
-                "title": {"display": True, "text": title, "color": "#e2e8f0", "font": {"size": 18}},
+                "title": {"display": True, "text": title, "color": "#ffffff", "font": {"size": 24}},
                 "tooltip": {"enabled": False},
+                "datalabels": {
+                    "display": "function(ctx){var ds=ctx && ctx.dataset || {}; return ds && ds.type === 'bar';}"
+                },
+                "annotation": {"annotations": annotations},
             },
             "scales": {
-                "x": {"ticks": {"color": axis}, "grid": {"color": grid}},
-                "y": {"ticks": {"color": axis}, "grid": {"color": grid}},
+                "x": {"ticks": {"color": axis, "font": {"size": 16}}, "grid": {"color": grid}},
+                "y": {"ticks": {"color": "#ffffff", "font": {"size": 16}}, "grid": {"color": grid}},
             },
         },
         "backgroundColor": bg,
@@ -594,7 +615,7 @@ async def get_history_chart_png(user_id: int, payload_hash: str, *,
     panel_h = int((h_total - margin_tb - title_h - gap - margin_tb - gap) / 2)
 
     titles = ["Калории", "Белки (г)", "Жиры (г)", "Углеводы (г)"]
-    colors = ["#FF4CC2", "#FC6524", "#FFD900", "#8800FF"]
+    colors = ["#FF8FAB", "#FF9770", "#FFD95C", "#96E072"]
     values = [cal, p, f, c]
     norms_seq = [
         (norms or {}).get("cal"),

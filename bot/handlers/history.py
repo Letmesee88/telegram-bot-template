@@ -79,7 +79,7 @@ async def cmd_history(message: types.Message) -> None:
     try:
         # chronological order left->right
         days_chrono = sorted(days_sorted, key=lambda x: x["date"])
-        x_labels = [f"{weekday_ru(d['date'])}\n{d['date'].strftime('%d.%m')}" for d in days_chrono]
+        x_labels = [f"{weekday_ru(d['date'])} {d['date'].strftime('%d.%m')}" for d in days_chrono]
         cal = [int(round(float(d.get("total_cal") or 0))) for d in days_chrono]
         p = [int(round(float(d.get("total_p") or 0.0))) for d in days_chrono]
         f = [int(round(float(d.get("total_f") or 0.0))) for d in days_chrono]
@@ -101,7 +101,7 @@ async def cmd_history(message: types.Message) -> None:
         except Exception:
             norms = None
 
-        key_str = f"{user_id}:{':'.join(x_labels)}:{','.join(map(str,cal))}:{','.join(map(str,p))}:{','.join(map(str,f))}:{','.join(map(str,c))}:{(norms or {})}"
+        key_str = f"v6|{user_id}:{':'.join(x_labels)}:{','.join(map(str,cal))}:{','.join(map(str,p))}:{','.join(map(str,f))}:{','.join(map(str,c))}:{(norms or {})}"
         ph = hashlib.sha256(key_str.encode("utf-8")).hexdigest()[:16]
         png = await get_history_chart_png(user_id, ph, x_labels=x_labels, cal=cal, p=p, f=f, c=c, norms=norms)
         if png:
@@ -183,7 +183,7 @@ async def cb_history_back(callback: types.CallbackQuery) -> None:
 
     try:
         days_chrono = sorted(days_sorted, key=lambda x: x["date"])
-        x_labels = [f"{weekday_ru(d['date'])}\n{d['date'].strftime('%d.%m')}" for d in days_chrono]
+        x_labels = [f"{weekday_ru(d['date'])} {d['date'].strftime('%d.%m')}" for d in days_chrono]
         cal = [int(round(float(d.get("total_cal") or 0))) for d in days_chrono]
         p = [int(round(float(d.get("total_p") or 0.0))) for d in days_chrono]
         f = [int(round(float(d.get("total_f") or 0.0))) for d in days_chrono]
@@ -204,7 +204,7 @@ async def cb_history_back(callback: types.CallbackQuery) -> None:
         except Exception:
             norms = None
 
-        key_str = f"{user_id}:{':'.join(x_labels)}:{','.join(map(str,cal))}:{','.join(map(str,p))}:{','.join(map(str,f))}:{','.join(map(str,c))}:{(norms or {})}"
+        key_str = f"v6|{user_id}:{':'.join(x_labels)}:{','.join(map(str,cal))}:{','.join(map(str,p))}:{','.join(map(str,f))}:{','.join(map(str,c))}:{(norms or {})}"
         ph = hashlib.sha256(key_str.encode("utf-8")).hexdigest()[:16]
         png = await get_history_chart_png(user_id, ph, x_labels=x_labels, cal=cal, p=p, f=f, c=c, norms=norms)
         if png:
