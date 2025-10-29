@@ -43,6 +43,8 @@ def _kb_history_days(days: List[dict[str, Any]]) -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
+    # Append Account button row at the bottom
+    rows.append([InlineKeyboardButton(text=_("💻 Личный кабинет"), callback_data="account:open:history")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -389,10 +391,14 @@ async def cb_history_day(callback: types.CallbackQuery) -> None:
     kb_rows.append([InlineKeyboardButton(text=_("✏️ Изменить блюда"), callback_data="de:l:1")])
     if target_local_date == today_local:
         # Today: only back to history
-        kb_rows.append([InlineKeyboardButton(text=_("📖 К истории"), callback_data="history:back")])
+        kb_rows.append([
+            InlineKeyboardButton(text=_("💻 Личный кабинет"), callback_data="account:open:today"),
+            InlineKeyboardButton(text=_("📖 К истории"), callback_data="history:back"),
+        ])
     else:
         kb_rows.append([
             InlineKeyboardButton(text=_("➕ Добавить еду в этот день"), callback_data=f"history:add:{target_local_date.isoformat()}"),
+            InlineKeyboardButton(text=_("💻 Личный кабинет"), callback_data="account:open:today"),
         ])
         kb_rows.append([InlineKeyboardButton(text=_("📖 К истории"), callback_data="history:back")])
 

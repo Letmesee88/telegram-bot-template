@@ -142,12 +142,15 @@ async def cmd_day(message: types.Message) -> None:
     # Always show edit button
     edit_row.append(InlineKeyboardButton(text=_("✏️ Изменить блюда"), callback_data="de:l:1"))
     kb_rows.append(edit_row)
+    # Add Account and History buttons (two per row)
+    kb_rows.append([
+        InlineKeyboardButton(text=_("💻 Личный кабинет"), callback_data="account:open:today"),
+        InlineKeyboardButton(text=_("📖 История"), callback_data="history:back"),
+    ])
     if total_pages > 1 and page < total_pages:
         nav_row.append(InlineKeyboardButton(text=_("Вперёд ▶️"), callback_data=f"diary:today:{page+1}"))
     if nav_row:
         kb_rows.append(nav_row)
-    # Add History button
-    kb_rows.append([InlineKeyboardButton(text=_("📖 История"), callback_data="history:back")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
 
     await message.answer(text, reply_markup=kb)
@@ -258,16 +261,21 @@ async def cb_diary_today(callback: types.CallbackQuery) -> None:
     kb_rows: list[list[InlineKeyboardButton]] = []
     edit_row: list[InlineKeyboardButton] = []
     nav_row: list[InlineKeyboardButton] = []
+    # Edit row first
     edit_row.append(InlineKeyboardButton(text=_("✏️ Изменить блюда"), callback_data="de:l:1"))
     kb_rows.append(edit_row)
+    # Account + History row
+    kb_rows.append([
+        InlineKeyboardButton(text=_("💻 Личный кабинет"), callback_data="account:open:today"),
+        InlineKeyboardButton(text=_("📖 История"), callback_data="history:back"),
+    ])
+    # Navigation last
     if total_pages > 1 and page > 1:
         nav_row.append(InlineKeyboardButton(text=_("◀️ Назад"), callback_data=f"diary:today:{page-1}"))
     if total_pages > 1 and page < total_pages:
         nav_row.append(InlineKeyboardButton(text=_("Вперёд ▶️"), callback_data=f"diary:today:{page+1}"))
     if nav_row:
         kb_rows.append(nav_row)
-    # Add History button
-    kb_rows.append([InlineKeyboardButton(text=_("📖 История"), callback_data="history:back")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
 
     await _edit_caption_or_text(callback, text, kb=kb)
@@ -417,12 +425,15 @@ async def cb_back_to_day(callback: types.CallbackQuery) -> None:
     nav_row: list[InlineKeyboardButton] = []
     edit_row.append(InlineKeyboardButton(text=_("✏️ Изменить блюда"), callback_data="de:l:1"))
     kb_rows.append(edit_row)
+    # Add Account and History buttons (two per row)
+    kb_rows.append([
+        InlineKeyboardButton(text=_("💻 Личный кабинет"), callback_data="account:open:today"),
+        InlineKeyboardButton(text=_("📖 История"), callback_data="history:back"),
+    ])
     if total_pages > 1 and page < total_pages:
         nav_row.append(InlineKeyboardButton(text=_("Вперёд ▶️"), callback_data=f"diary:today:{page+1}"))
     if nav_row:
         kb_rows.append(nav_row)
-    # Add History button
-    kb_rows.append([InlineKeyboardButton(text=_("📖 История"), callback_data="history:back")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
 
     await _edit_caption_or_text(callback, text, kb=kb)

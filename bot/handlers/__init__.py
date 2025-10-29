@@ -4,6 +4,7 @@ from . import admin, export_users, onboarding, start, foodai, menu
 from . import history
 from . import templates
 from . import recommendations
+from . import account
 
 
 def get_handlers_router() -> Router:
@@ -19,6 +20,7 @@ def get_handlers_router() -> Router:
     router.include_router(onboarding.router)
     router.include_router(menu.router)
     router.include_router(history.router)
+    router.include_router(account.router)
     router.include_router(start.router)
     router.include_router(admin.router)
     router.include_router(export_users.router)
