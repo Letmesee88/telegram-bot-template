@@ -46,6 +46,63 @@ def _kb_history_days(days: List[dict[str, Any]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _truncate_wordwise(s: str, limit: int) -> str:
+    if len(s) <= limit:
+        return s
+    if limit <= 1:
+        return "…"
+    t = s[:limit]
+    sp = t.rfind(" ")
+    if sp > 0:
+        t = t[:sp]
+    else:
+        t = s[: max(0, limit - 1)]
+    return t.rstrip() + "…"
+
+
+def _compose_caption(lines: list[str], max_len: int = 1024) -> str:
+    adv_idx = -1
+    for i, l in enumerate(lines):
+        if l.startswith("✨ Совет:"):
+            adv_idx = i
+            break
+    if adv_idx == -1:
+        cap = "\n".join(lines)
+        if len(cap) <= max_len:
+            return cap
+        return _truncate_wordwise(cap, max_len - 1)
+
+    pre = "\n".join(lines[:adv_idx]).rstrip("\n")
+    post_lines = lines[adv_idx + 1 :]
+    post = "\n".join(post_lines).lstrip("\n")
+
+    parts_count = (1 if pre else 0) + 1 + (1 if post else 0)
+    newlines = parts_count - 1
+    budget = max_len - len(pre) - len(post) - newlines
+    if budget < 0:
+        budget = 0
+
+    adv_line = lines[adv_idx]
+    prefix = "✨ Совет: "
+    if adv_line.startswith(prefix):
+        rest = adv_line[len(prefix) :].lstrip()
+        allowed = max(0, budget - len(prefix))
+        if allowed <= 0:
+            adv_final = prefix[: max(0, budget - 1)] + ("…" if budget > 0 else "")
+        else:
+            adv_final = prefix + _truncate_wordwise(rest, allowed)
+    else:
+        adv_final = _truncate_wordwise(adv_line, budget)
+
+    parts = []
+    if pre:
+        parts.append(pre)
+    parts.append(adv_final)
+    if post:
+        parts.append(post)
+    return "\n".join(parts)
+
+
 @router.message(Command("history"))
 async def cmd_history(message: types.Message) -> None:
     if not message.from_user:
@@ -101,7 +158,7 @@ async def cmd_history(message: types.Message) -> None:
         except Exception:
             norms = None
 
-        key_str = f"v6|{user_id}:{':'.join(x_labels)}:{','.join(map(str,cal))}:{','.join(map(str,p))}:{','.join(map(str,f))}:{','.join(map(str,c))}:{(norms or {})}"
+        key_str = f"v8|{user_id}:{':'.join(x_labels)}:{','.join(map(str,cal))}:{','.join(map(str,p))}:{','.join(map(str,f))}:{','.join(map(str,c))}:{(norms or {})}"
         ph = hashlib.sha256(key_str.encode("utf-8")).hexdigest()[:16]
         png = await get_history_chart_png(user_id, ph, x_labels=x_labels, cal=cal, p=p, f=f, c=c, norms=norms)
         if png:
@@ -110,9 +167,7 @@ async def cmd_history(message: types.Message) -> None:
                 await placeholder.delete()
             except Exception:
                 pass
-            caption = "\n".join(lines)
-            if len(caption) > 1024:
-                caption = caption[:1021] + "…"
+            caption = _compose_caption(lines, 1024)
             await message.answer_photo(
                 types.BufferedInputFile(png, filename="history_7d.png"),
                 caption=caption,
@@ -204,7 +259,7 @@ async def cb_history_back(callback: types.CallbackQuery) -> None:
         except Exception:
             norms = None
 
-        key_str = f"v6|{user_id}:{':'.join(x_labels)}:{','.join(map(str,cal))}:{','.join(map(str,p))}:{','.join(map(str,f))}:{','.join(map(str,c))}:{(norms or {})}"
+        key_str = f"v8|{user_id}:{':'.join(x_labels)}:{','.join(map(str,cal))}:{','.join(map(str,p))}:{','.join(map(str,f))}:{','.join(map(str,c))}:{(norms or {})}"
         ph = hashlib.sha256(key_str.encode("utf-8")).hexdigest()[:16]
         png = await get_history_chart_png(user_id, ph, x_labels=x_labels, cal=cal, p=p, f=f, c=c, norms=norms)
         if png:
@@ -213,9 +268,7 @@ async def cb_history_back(callback: types.CallbackQuery) -> None:
                 await callback.message.delete()
             except Exception:
                 pass
-            caption = "\n".join(lines)
-            if len(caption) > 1024:
-                caption = caption[:1021] + "…"
+            caption = _compose_caption(lines, 1024)
             await callback.message.answer_photo(
                 types.BufferedInputFile(png, filename="history_7d.png"),
                 caption=caption,
@@ -224,13 +277,13 @@ async def cb_history_back(callback: types.CallbackQuery) -> None:
         else:
             logger.warning("history.png_none_cb | user_id={}", user_id)
             try:
-                await callback.message.edit_caption(caption="\n".join(lines), reply_markup=kb)
+                await callback.message.edit_caption(caption=_compose_caption(lines, 1024), reply_markup=kb)
             except Exception:
                 await callback.message.edit_text(text="\n".join(lines), reply_markup=kb)
     except Exception as e:
         logger.warning("history.png_send_failed_cb | user_id={} | err={}", user_id, e or type(e).__name__)
         try:
-            await callback.message.edit_caption(caption="\n".join(lines), reply_markup=kb)
+            await callback.message.edit_caption(caption=_compose_caption(lines, 1024), reply_markup=kb)
         except Exception:
             try:
                 await callback.message.edit_text(text="\n".join(lines), reply_markup=kb)

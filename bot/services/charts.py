@@ -463,12 +463,24 @@ def _history_panel_config(title: str, labels: List[str], values: List[int], *,
     axis = getattr(settings, "CHARTS_COLOR_AXIS", None) or "#94a3b8"
 
     # Base bar dataset
+    # Convert solid hex color to rgba with 80% opacity for bar fill
+    bar_bg = bar_color
+    try:
+        hc = (bar_color or "").lstrip("#")
+        if len(hc) == 3:
+            r = int(hc[0] * 2, 16); g = int(hc[1] * 2, 16); b = int(hc[2] * 2, 16)
+            bar_bg = f"rgba({r},{g},{b},0.8)"
+        elif len(hc) >= 6:
+            r = int(hc[0:2], 16); g = int(hc[2:4], 16); b = int(hc[4:6], 16)
+            bar_bg = f"rgba({r},{g},{b},0.8)"
+    except Exception:
+        pass
     datasets = [
         {
             "type": "bar",
             "label": title,
             "data": values,
-            "backgroundColor": bar_color,
+            "backgroundColor": bar_bg,
             "borderColor": "#ffffff",
             "borderWidth": 2,
             "datalabels": {
@@ -510,7 +522,7 @@ def _history_panel_config(title: str, labels: List[str], values: List[int], *,
             "backgroundColor": "rgba(0,0,0,0)",
             "color": "#e2e8f0",
             "font": {"size": 22, "weight": "700"},
-            "yAdjust": -15,
+            "yAdjust": -18,
             "textAlign": "center",
         }
 
