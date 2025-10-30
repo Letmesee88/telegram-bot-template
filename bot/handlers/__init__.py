@@ -5,6 +5,7 @@ from . import history
 from . import templates
 from . import recommendations
 from . import account
+from . import weight
 
 
 def get_handlers_router() -> Router:
@@ -21,6 +22,7 @@ def get_handlers_router() -> Router:
     router.include_router(menu.router)
     router.include_router(history.router)
     router.include_router(account.router)
+    router.include_router(weight.router)
     router.include_router(start.router)
     router.include_router(admin.router)
     router.include_router(export_users.router)

@@ -11,6 +11,12 @@ from bot.analytics.types import BaseEvent, EventProperties
 router = Router(name="account")
 
 
+def _kb_account() -> types.InlineKeyboardMarkup:
+    rows: list[list[types.InlineKeyboardButton]] = []
+    rows.append([types.InlineKeyboardButton(text=_("⚖️ Мой вес"), callback_data="weight:open:account")])
+    return types.InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @router.message(Command("account"))
 async def cmd_account(message: types.Message) -> None:
     if not message.from_user:
@@ -18,7 +24,7 @@ async def cmd_account(message: types.Message) -> None:
     user_id = message.from_user.id
 
     text = await get_account_summary_text(user_id)
-    await message.answer(text)
+    await message.answer(text, reply_markup=_kb_account())
 
     if analytics.logger and message.from_user:
         try:
@@ -38,7 +44,7 @@ async def cmd_account(message: types.Message) -> None:
             pass
 
 
-@router.callback_query(F.data.regexp(r"^account:open(?::(today|history))?$"))
+@router.callback_query(F.data.regexp(r"^account:open(?::(today|history|weight))?$"))
 async def cb_account_open(callback: types.CallbackQuery) -> None:
     if not callback.from_user:
         return
@@ -53,7 +59,7 @@ async def cb_account_open(callback: types.CallbackQuery) -> None:
 
     text = await get_account_summary_text(user_id)
     try:
-        await callback.message.answer(text)
+        await callback.message.answer(text, reply_markup=_kb_account())
     except Exception:
         await callback.answer(_("Личный кабинет"), show_alert=False)
 

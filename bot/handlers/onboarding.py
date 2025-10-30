@@ -39,6 +39,8 @@ from bot.services.adjust import (
     rephrase_explanation_cached,
 )
 from bot.core.config import settings
+from bot.services.weight import save_weight
+from bot.core.loader import redis_client
 from bot.handlers import start as start_module
 from bot.services.charts import get_plan_chart_png
 from datetime import date
@@ -168,6 +170,17 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
 
             data_json = payload.model_dump(mode="json")
             data_json["activity_level"] = level.value
+            try:
+                if existing is None:
+                    data_json["start_weight_kg"] = float(payload.weight_kg)
+                else:
+                    prev = existing.data if isinstance(getattr(existing, "data", None), dict) else {}
+                    if prev.get("start_weight_kg") is None:
+                        data_json["start_weight_kg"] = float(payload.weight_kg)
+                    else:
+                        data_json["start_weight_kg"] = prev.get("start_weight_kg")
+            except Exception:
+                pass
             if llm_used and llm_obj is not None:
                 try:
                     data_json["activity_llm"] = {
@@ -897,6 +910,33 @@ async def cb_final_ok(call: CallbackQuery, state: FSMContext) -> None:
             await session.commit()
     except Exception as e:
         logger.exception("onboarding.final.ok.update_user_failed | user_id={} | error={}", getattr(call.from_user, 'id', None), e)
+
+    # Variant A: persist onboarding weight into weight_logs and invalidate account cache
+    try:
+        user_id = getattr(call.from_user, 'id', None)
+        if user_id:
+            async with sessionmaker() as session:
+                oa = await session.scalar(select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id))
+            weight_val = None
+            try:
+                if oa and isinstance(getattr(oa, 'data', None), dict):
+                    w = oa.data.get("weight_kg")
+                    if w is not None:
+                        weight_val = float(w)
+            except Exception:
+                weight_val = None
+            if weight_val is not None and 30.0 <= weight_val <= 300.0:
+                try:
+                    await save_weight(user_id, round(weight_val, 1))
+                except Exception:
+                    pass
+            # Invalidate account cache regardless
+            try:
+                await redis_client.delete(f"account:summary:{user_id}")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning("onboarding.final.ok.weight_persist_failed | user_id={} | err={}", getattr(call.from_user, 'id', None), e)
 
     await call.answer()
     await state.clear()

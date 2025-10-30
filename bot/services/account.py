@@ -10,6 +10,7 @@ from bot.database.database import sessionmaker
 from bot.database.models import MealModel, OnboardingAnswerModel, UserModel
 from bot.services.users import get_user_tzinfo
 from bot.core.config import settings
+from bot.services.weight import get_current_weight, get_start_weight, get_goal_weight, compute_progress
 
 
 async def _aggregate_last30_days_cal(user_id: int) -> tuple[int, int]:
@@ -91,44 +92,23 @@ async def get_account_summary_text(user_id: int) -> str:
         deviation = "Нет данных"
         norm_text = "Нет данных"
 
-    start_w = None
-    current_w = None
-    goal_w = None
-
-    try:
-        # start weight may be stored explicitly or equal to initial weight
-        start_w = data.get("start_weight_kg")
-        if start_w is None:
-            start_w = data.get("weight_kg")
-        current_w = data.get("weight_kg")
-        goal_w = data.get("goal_weight_kg")
-        start_w = float(start_w) if start_w is not None else None
-        current_w = float(current_w) if current_w is not None else None
-        goal_w = float(goal_w) if goal_w is not None else None
-    except Exception:
-        start_w = current_w = goal_w = None
+    # Resolve weights using weight service (logs-aware with onboarding fallbacks)
+    start_w = await get_start_weight(user_id)
+    current_w = await get_current_weight(user_id)
+    goal_w = await get_goal_weight(user_id)
 
     weight_block_lines: list[str] = []
     if current_w is not None and goal_w is not None and start_w is not None and (goal_w != start_w):
-        if goal_w < start_w:
-            numerator = max(0.0, start_w - (current_w))
-            denom = max(0.0, start_w - goal_w)
-            progress = (numerator / denom) * 100.0 if denom > 0 else 0.0
-            left = max(0.0, current_w - goal_w)
-        else:
-            numerator = max(0.0, (current_w) - start_w)
-            denom = max(0.0, goal_w - start_w)
-            progress = (numerator / denom) * 100.0 if denom > 0 else 0.0
-            left = max(0.0, goal_w - current_w)
-        progress_disp = f"{progress:.0f}%"
+        progress = compute_progress(start_w, current_w, goal_w) or 0.0
+        left = max(0.0, (goal_w - current_w)) if goal_w >= current_w else max(0.0, (current_w - goal_w))
         left_disp = f"{left:.1f} кг"
         weight_block_lines.append(f"Текущий: {current_w:.1f} кг → Цель: {goal_w:.1f} кг")
-        weight_block_lines.append(f"Прогресс: {progress_disp} до цели | Осталось: {left_disp}")
+        weight_block_lines.append(f"Осталось: {left_disp}")
     else:
         cw = f"{current_w:.1f} кг" if current_w is not None else "Нет данных"
         gw = f"{goal_w:.1f} кг" if goal_w is not None else "Нет данных"
         weight_block_lines.append(f"Текущий: {cw} → Цель: {gw}")
-        weight_block_lines.append("Прогресс: Нет данных | Осталось: Нет данных")
+        weight_block_lines.append("Осталось: Нет данных")
 
     user = await _load_user(user_id)
     days_with_us_text = "Нет данных"
@@ -160,16 +140,8 @@ async def get_account_summary_text(user_id: int) -> str:
     # progress achievement
     progress_text = "Начало пути — первый шаг сделан 💪"
     try:
-        # reuse computed progress if available
         if current_w is not None and goal_w is not None and start_w is not None and (goal_w != start_w):
-            if goal_w < start_w:
-                numerator = max(0.0, start_w - (current_w))
-                denom = max(0.0, start_w - goal_w)
-                progress_val = (numerator / denom) * 100.0 if denom > 0 else 0.0
-            else:
-                numerator = max(0.0, (current_w) - start_w)
-                denom = max(0.0, goal_w - start_w)
-                progress_val = (numerator / denom) * 100.0 if denom > 0 else 0.0
+            progress_val = compute_progress(start_w, current_w, goal_w) or 0.0
             if progress_val < 25:
                 progress_text = "Начало пути — первый шаг сделан 💪"
             elif progress_val < 50:
