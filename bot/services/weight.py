@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from bot.database.database import sessionmaker
+from bot.core.loader import redis_client
 from bot.database.models import WeightLogModel, OnboardingAnswerModel
 from bot.services.users import get_user_tzinfo
 
@@ -64,6 +65,11 @@ async def save_weight(user_id: int, value_kg: float) -> Tuple[float, date]:
             )
             session.add(wl)
         await session.commit()
+    # Invalidate account summary cache so UI reflects the change immediately
+    try:
+        await redis_client.delete(f"account:summary:{user_id}")
+    except Exception:
+        pass
     return float(value_kg), local_date
 
 
