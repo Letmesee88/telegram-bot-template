@@ -190,36 +190,151 @@ def _pick_variant(seed: int, options: list[str]) -> str:
         return options[0] if options else ""
 
 
-async def _llm_parse_adjustment(text: str, *, lang_hint: Optional[str]) -> Optional[ParsedAdjustment]:
+def _extract_explicit_macros_from_text(text: str) -> dict:
+    """Extract explicit grams for protein/fat/carbs from user text.
+    Returns dict with optional keys: protein_g, fat_g, carbs_g (ints).
+    """
+    try:
+        import re
+        s = (text or "").lower()
+        # Normalize decimal comma to dot, then cast to int later
+        def _find(patterns: list[tuple[str, str]]) -> Optional[int]:
+            for pat, unit in patterns:
+                m = re.search(pat, s)
+                if m:
+                    val = m.group(1).replace(',', '.')
+                    try:
+                        return int(round(float(val)))
+                    except Exception:
+                        continue
+            return None
+
+        # Patterns: both "углеводы 270 г" and "270 г углеводов"
+        carbs = _find([
+            (r"(?:углевод\w*|carb\w*)[^0-9]{0,12}(\d+(?:[\.,]\d+)?)\s*г", "g"),
+            (r"(\d+(?:[\.,]\d+)?)\s*г[^a-zа-я]{0,12}(?:углевод\w*|carb\w*)", "g"),
+        ])
+        prot = _find([
+            (r"(?:белк\w*|protein\w*)[^0-9]{0,12}(\d+(?:[\.,]\d+)?)\s*г", "g"),
+            (r"(\d+(?:[\.,]\d+)?)\s*г[^a-zа-я]{0,12}(?:белк\w*|protein\w*)", "g"),
+        ])
+        fat = _find([
+            (r"(?:жир\w*|fat\w*)[^0-9]{0,12}(\d+(?:[\.,]\d+)?)\s*г", "g"),
+            (r"(\d+(?:[\.,]\d+)?)\s*г[^a-zа-я]{0,12}(?:жир\w*|fat\w*)", "g"),
+        ])
+        out: dict = {}
+        if prot is not None:
+            out["protein_g"] = prot
+        if fat is not None:
+            out["fat_g"] = fat
+        if carbs is not None:
+            out["carbs_g"] = carbs
+        return out
+    except Exception:
+        return {}
+
+
+def _is_veggies_request(text: str) -> bool:
+    try:
+        import re
+        s = (text or "").lower()
+        return bool(re.search(r"(овощ|клетчат|зелень)", s))
+    except Exception:
+        return False
+
+
+def _extract_weekly_rate(text: str) -> Optional[float]:
+    """Extract weekly rate in kg/week from text, e.g. '0.7 кг в неделю' or '1 кг/нед'."""
+    try:
+        import re
+        s = (text or "").lower()
+        m = re.search(r"(\d+(?:[\.,]\d+)?)\s*(кг\s*/\s*нед|кг/нед|кг\s+в\s+нед|кг\s+в\s+неделю)", s)
+        if not m:
+            m = re.search(r"скорост[ьи]|темп\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)\s*кг", s)
+        if m:
+            val = (m.group(1) if m.lastindex else m.group(0)).replace(",", ".")
+            rate = float(val)
+            if rate > 0:
+                return rate
+    except Exception:
+        return None
+    return None
+
+
+def _extract_deadline_date(text: str) -> Optional[str]:
+    """Extract ISO date 'YYYY-MM-DD' from phrases like 'к 01.03.2026' or 'к 01.03'."""
+    try:
+        import re
+        from datetime import date as _date
+        s = (text or "").lower()
+        m = re.search(r"\b(\d{1,2})[\.\/\-](\d{1,2})(?:[\.\/\-](\d{4}))?\b", s)
+        if not m:
+            return None
+        d, mth, yr = int(m.group(1)), int(m.group(2)), m.group(3)
+        today = _date.today()
+        year = int(yr) if yr else today.year
+        try:
+            target = _date(year, mth, d)
+        except Exception:
+            return None
+        if not yr:
+            # If no year provided and date already passed this year, assume next year
+            if target <= today:
+                try:
+                    target = _date(today.year + 1, mth, d)
+                except Exception:
+                    return None
+        return target.isoformat()
+    except Exception:
+        return None
+
+
+def _respect_only_specified(text: str, pa: Optional['ParsedAdjustment']) -> Optional['ParsedAdjustment']:
+    """If user specified exactly one macro in grams, force only that macro and drop others from custom_target_g."""
+    if not pa:
+        return pa
+    try:
+        exp = _extract_explicit_macros_from_text(text)
+        keys = [k for k in ("protein_g", "fat_g", "carbs_g") if k in exp]
+        if len(keys) == 1:
+            k = keys[0]
+            # Ensure macros object
+            cst = {k: int(exp[k])}
+            pa.macros = {"scheme": "custom", "custom_target_g": cst}
+        return pa
+    except Exception:
+        return pa
+
+
+async def _llm_parse_adjustment(text: str, *, lang_hint: Optional[str], base_ctx: Optional[dict] = None) -> Optional[ParsedAdjustment]:
     if not settings.ADJUST_LLM_ENABLED:
         return None
     if not settings.OPENAI_API_KEY:
         return None
 
     system = (
-        "Ты — опытный нутрициолог. Твоя задача: из свободного текста пользователя выделить намерение и вернуть строго JSON по схеме:"
+        "Ты — опытный нутрициолог. Получишь BASE_CONTEXT (текущий план и цель) и USER_REQUEST. Верни строго JSON по схеме:"
         " intents, activity_override, calories, macros, dietary_restrictions, confidence, rationale, version.\n"
-        "- intents: один или несколько тегов из [lower_calories, raise_calories, keto, low_carb, high_protein, custom_macros, activity_down, activity_up, lactose_free, gluten_free, sugar_free, low_fodmap_candidate, reduce_protein, reduce_fat, increase_fat, advice_only] \n"
-        "- activity_override: null или один из ['sedentary','light','moderate','active','athlete'] при явном указании активности.\n"
-        "- calories: {mode: 'absolute'|'delta'|'percent'|null, value: number|null} (delta=±ккал в день, percent=±% от ТЕКУЩЕЙ цели). Допускай '200 ккал', '+200', '-10%'.\n"
-        "- macros: {scheme: 'keto'|'low_carb'|'high_protein'|'balanced'|'custom'|null, custom_target_g: {protein_g:int|null, fat_g:int|null, carbs_g:int|null}|null }\n"
-        "- dietary_restrictions: массив тегов ['lactose_free','gluten_free','sugar_free','low_fodmap_candidate']\n"
-        "- confidence: 0..1 (обычно 0.3..0.9)\n"
-        "- rationale: краткое объяснение на русском (300–400 символов)\n"
-        "- version: 'nutri_v1'\n"
-        "Правила безопасности (не нарушай): белок ≥1.2 г/кг (при похудении/поддержании) или ≥1.6 г/кг (при наборе), жир ≥0.8 г/кг (0.6 г/кг только при явном запросе на снижение жира), углеводы ≥100 г/день (кроме явного кето). "
-        "Если запрос экстремальный (кето/0 жиров/крайне низкие угли) — мягко откажи и предложи безопасную альтернативу.\n"
-        "Не выдумывай числа без явного запроса; если пользователь говорит общими словами — ставь схему (например, low_carb), а custom_target_g оставь null. "
-        "Калории меняй только при явном запросе или жалобе на голод/избыток. Обрабатывай опечатки ('ккла'≈'ккал').\n"
-        "Примеры (вход → JSON):\n"
-        "- 'убери углеводы' → intents:[low_carb], macros.scheme:'low_carb'\n"
-        "- 'кето' → intents:[keto], macros.scheme:'keto'\n"
-        "- 'добавь 200 ккал' → intents:[raise_calories], calories:{mode:'delta', value:200}\n"
-        "- 'минус 10%' → intents:[lower_calories], calories:{mode:'percent', value:-10}\n"
-        "- 'мало двигаюсь' → intents:[activity_down], activity_override:'light'\n"
-        "- 'совсем не двигаюсь' → activity_override:'sedentary'\n"
-        "- 'белка 170 жиры 60' → macros:{scheme:'custom', custom_target_g:{protein_g:170, fat_g:60, carbs_g:null}}\n"
-        "- 'хочу играть в футбол' → intents:[advice_only] (без изменения калорий/макросов)\n"
+        "- intents: теги из [lower_calories, raise_calories, keto, low_carb, high_protein, custom_macros, activity_down, activity_up, lactose_free, gluten_free, sugar_free, low_fodmap_candidate, reduce_protein, reduce_fat, increase_fat, advice_only].\n"
+        "- activity_override: null или ['sedentary','light','moderate','active','athlete'] при явном указании.\n"
+        "- calories: {mode: 'absolute'|'delta'|'percent'|'rate_per_week'|'deadline'|null, value:number|string|null}. percent=±% от base_plan.calories. delta=±ккал. rate_per_week=кг/нед, deadline='YYYY-MM-DD'.\n"
+        "- macros: {scheme:'keto'|'low_carb'|'high_protein'|'balanced'|'custom'|null, custom_target_g:{protein_g:int|null, fat_g:int|null, carbs_g:int|null}|null}.\n"
+        "- НЕ выдумывай числа. Используй BASE_CONTEXT для вычислений при процентах.\n"
+        "Правила:\n"
+        "1) Проценты по калориям: 'быстрее похудеть/ускорить' без чисел → calories:{mode:'percent', value:-10}. 'чуть' → -5. 'очень/максимально' → -15.\n"
+        "2) Проценты по одному макро: 'углеводы -10%' → macros.scheme='custom', custom_target_g:{carbs_g: round(base_plan.carbs_g*0.9)}. Аналогично для белка/жиров. Другие макро не указывать. Калории в этом случае НЕ заполнять.\n"
+        "3) Ровно один макро в граммах/процентах → укажи только его (custom_target_g), остальные null.\n"
+        "4) Активность: 'сидячая/программист' → 'sedentary'|'light'; 'тренируюсь часто/3-4 раза' → 'moderate'|'active'|'athlete'. Если запрос только про активность — calories/macros не менять.\n"
+        "5) 'кето' только при явном слове 'кето'/'keto'. Овощи/клетчатка/зелень → advice_only.\n"
+        "6) Скорость/дедлайн: '0.5 кг/нед' → calories:{mode:'rate_per_week', value:0.5}; 'к 01.03.2026' → calories:{mode:'deadline', value:'2026-03-01'}.\n"
+        "7) Похудение: не повышай жир без явного 'increase_fat' (озвучи в rationale).\n"
+        "- safety (описать, не применять числа): белок/жир/угли минимум — оставь применение на бэкенд.\n"
+        "Примеры:\n"
+        "- 'уменьши углеводы на 10%'; base_plan.carbs_g=194 → macros:{scheme:'custom', custom_target_g:{carbs_g:175}}, calories:null\n"
+        "- 'хочу быстрее похудеть' → intents:[lower_calories], calories:{mode:'percent', value:-10}\n"
+        "- 'к 01.03.2026' → calories:{mode:'deadline', value:'2026-03-01'}\n"
+        "- 'сидячая работа' → activity_override:'sedentary', calories:null, macros:null\n"
+        "- 'больше овощей' → intents:[advice_only], calories:null, macros:null\n"
     )
 
     user = {
@@ -277,7 +392,8 @@ async def _llm_parse_adjustment(text: str, *, lang_hint: Optional[str]) -> Optio
             {
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": (f"lang: {lang_hint}\n" if lang_hint else "") + (text or "").strip()}
+                    {"type": "input_text", "text": ("BASE_CONTEXT:\n" + json.dumps(base_ctx, ensure_ascii=False) if base_ctx else "BASE_CONTEXT:\n{}")},
+                    {"type": "input_text", "text": (f"USER_REQUEST:\nlang: {lang_hint}\n" if lang_hint else "USER_REQUEST:\n") + (text or "").strip()},
                 ],
             }
         ],
@@ -329,6 +445,7 @@ async def _llm_parse_adjustment(text: str, *, lang_hint: Optional[str]) -> Optio
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": system},
+                {"role": "user", "content": ("BASE_CONTEXT:\n" + json.dumps(base_ctx, ensure_ascii=False) if base_ctx else "BASE_CONTEXT:\n{}")},
                 user,
             ],
         }
@@ -599,16 +716,64 @@ def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: Parsed
     tdee = float(plan0.tdee)
 
     # 2) calories change
-    # If activity was overridden, use recalculated plan0.calories as baseline; otherwise keep base_plan.calories
-    base_cal = plan0.calories if ao is not None else base_plan.calories
-    cal_target = _apply_calorie_change(base_cal, tdee, data.goal, parsed.calories or {}) if parsed.calories else base_cal
+    # IMPORTANT: Do not change calories when only activity changes; keep user's base calories
+    base_cal = base_plan.calories
+    # Apply calories with support for special modes (weekly rate / deadline date)
+    if parsed.calories:
+        mode = str((parsed.calories.get("mode") or "")).lower()
+        val = parsed.calories.get("value")
+        if mode in {"absolute", "delta", "percent"}:
+            cal_target = _apply_calorie_change(base_cal, tdee, data.goal, parsed.calories or {})
+        elif mode == "rate_per_week":
+            try:
+                rate = max(0.0, float(val or 0.0))
+                if rate > 0:
+                    delta = rate * 7700.0 / 7.0
+                    target = (tdee - delta) if data.goal == Goal.lose else (tdee + delta)
+                    cal_target = _clamp_calories(data.goal, tdee, target)
+                else:
+                    cal_target = base_cal
+            except Exception:
+                cal_target = base_cal
+        elif mode in {"deadline", "deadline_date"}:
+            try:
+                from datetime import date as _date
+                if not data.goal_weight_kg or not data.weight_kg:
+                    cal_target = base_cal
+                else:
+                    iso = (val or "").strip()
+                    target_date = _date.fromisoformat(iso)
+                    today = _date.today()
+                    days = max(1, (target_date - today).days)
+                    weeks = max(0.1, days / 7.0)
+                    kg_left = abs(float(data.weight_kg) - float(data.goal_weight_kg))
+                    if kg_left <= 0:
+                        cal_target = base_cal
+                    else:
+                        rate = kg_left / weeks
+                        delta = rate * 7700.0 / 7.0
+                        target = (tdee - delta) if data.goal == Goal.lose else (tdee + delta)
+                        cal_target = _clamp_calories(data.goal, tdee, target)
+            except Exception:
+                cal_target = base_cal
+        else:
+            cal_target = base_cal
+    else:
+        cal_target = base_cal
 
     # 3) macros scheme
     scheme = None
     custom = None
+    single_macro_requested = False
     if parsed.macros:
         scheme = parsed.macros.get("scheme")
         custom = parsed.macros.get("custom_target_g")
+        if scheme == "custom" and isinstance(custom, dict):
+            try:
+                specified = sum(1 for k in ("protein_g","fat_g","carbs_g") if custom.get(k) is not None)
+                single_macro_requested = (specified == 1)
+            except Exception:
+                single_macro_requested = False
 
     # Mode B: partial custom — keep unspecified macros from current plan; carbs as remainder when None
     if scheme == "custom" and isinstance(custom, dict):
@@ -616,7 +781,11 @@ def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: Parsed
             custom["protein_g"] = int(base_plan.protein_g)
         if custom.get("fat_g") is None:
             custom["fat_g"] = int(base_plan.fat_g)
-        # if carbs missing -> keep None to allocate remainder below in _recompute_macros
+        # If only one macro was explicitly requested, don't allocate remainder: keep carbs at base
+        if single_macro_requested:
+            if custom.get("carbs_g") is None:
+                custom["carbs_g"] = int(base_plan.carbs_g)
+        # else: if carbs missing -> keep None to allocate remainder below in _recompute_macros
 
     # Low-carb by strength may set only carbs_g; keep other macros from current plan to avoid jumps
     if scheme == "low_carb" and isinstance(custom, dict) and custom.get("carbs_g") is not None:
@@ -628,6 +797,7 @@ def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: Parsed
     intents_set = set(parsed.intents or [])
     reduce_fat_req = ("reduce_fat" in intents_set)
     is_keto_req = ((scheme or "") == "keto") or ("keto" in intents_set)
+    increase_fat_req = ("increase_fat" in intents_set)
 
     # If user didn't request calories/macros changes, keep existing macros unchanged
     if (parsed.macros is None) and (parsed.calories is None):
@@ -645,18 +815,31 @@ def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: Parsed
             is_keto_req,
         )
 
-    # UX guard: if user requested to reduce fat, we must not end up increasing fat above current plan
-    # Keep fat at most base value and rebalance by carbs upwards (respecting carb minima)
-    if reduce_fat_req and fat_g > int(base_plan.fat_g):
-        base_fat = int(base_plan.fat_g)
-        fat_g = base_fat
-        # Recompute carbs to maintain calories; do not violate keto/non-keto minimums
-        carb_min = 20 if is_keto_req else 100
-        c_cal = int(cal_target) - (int(protein_g) * 4 + int(fat_g) * 9)
-        carbs_new = max(carb_min, int(round(c_cal / 4)))
-        if carbs_new != carbs_g:
-            clamped = True
-            carbs_g = carbs_new
+    # single_macro_requested was computed before augmentation
+
+    # Additional guard: during weight loss, do not increase fat above base without explicit request
+    if data.goal == Goal.lose and (not increase_fat_req) and fat_g > int(base_plan.fat_g):
+        base_fat_val = int(base_plan.fat_g)
+        fat_g = base_fat_val
+        if not single_macro_requested:
+            # Try to reallocate to carbs only if it doesn't contradict low_carb intent; otherwise allow slight extra deficit
+            carb_min = 20 if is_keto_req else 100
+            # maintain within cal_target when possible, but do not increase carbs if explicitly low_carb was requested and carbs would rise
+            c_cal = int(cal_target) - (int(protein_g) * 4 + int(fat_g) * 9)
+            carbs_new = max(carb_min, int(round(max(0, c_cal) / 4)))
+            if ('low_carb' in intents_set) and carbs_new > carbs_g:
+                # keep carbs as is; accept extra deficit
+                pass
+            else:
+                if carbs_new != carbs_g:
+                    clamped = True
+                    carbs_g = carbs_new
+
+    # If user fixed exactly one macro via custom, let calories drop instead of compensating with other macros
+    if single_macro_requested:
+        total_cal = int(protein_g) * 4 + int(fat_g) * 9 + int(carbs_g) * 4
+        if total_cal < int(cal_target):
+            cal_target = total_cal
 
     # 4) weekly rate (rough) and eta keep from plan0 when possible
     weekly_rate_kg = _calc_weekly_rate(tdee, cal_target, data.goal)
@@ -864,8 +1047,18 @@ def parse_adjustment_heuristic(text: str) -> Optional[ParsedAdjustment]:
         activity_override = "active"
         intents.append("activity_up")
 
+    # explicit grams for macros (respect-only-specified pathway for offline mode)
+    grams = _extract_explicit_macros_from_text(text)
+    if grams:
+        # Keep only those explicitly provided; do not invent others
+        macros = {"scheme": "custom", "custom_target_g": grams}
+
     # sports / non-plan advice-only
     if re.search(r"(игра(ть)?\s+в\s+футбол|в\s+футбол|бегать|пробежк|в\s+зал|тренировк|спорт)", s):
+        if "advice_only" not in intents:
+            intents.append("advice_only")
+    # veggies/fiber → advice_only
+    if _is_veggies_request(text):
         if "advice_only" not in intents:
             intents.append("advice_only")
 
@@ -895,17 +1088,60 @@ def _cache_key(user_id: int, text: str, lang_hint: Optional[str] = None) -> str:
     return f"user={user_id}:t={h}"
 
 
-@cached(ttl=86400, namespace="adjust_llm_v3", key_builder=_cache_key)
-async def parse_adjustment_cached(user_id: int, text: str, *, lang_hint: Optional[str]) -> Optional[ParsedAdjustment]:
-    # Prefer LLM; if it fails/returns None, fallback to heuristic so user always gets a result.
-    res = await _llm_parse_adjustment(text, lang_hint=lang_hint)
-    if res is None:
-        res = parse_adjustment_heuristic(text)
-    # Expand with conversational heuristics regardless of LLM
-    if res is not None:
-        res = _expand_conversational_heuristics(text, res)
-        # Mode B post-processing (gating keto, strength defaults)
-        res = _apply_strength_defaults(res, text=text)
+def _cache_key(user_id: int, text: str, lang_hint: Optional[str] = None, plan_key: Optional[str] = None, base_ctx: Optional[dict] = None) -> str:
+    h = _privacy_hash(text) or "0"
+    pk = (plan_key or "0")
+    return f"user={user_id}:t={h}:plan={pk}"
+
+
+@cached(ttl=3600, namespace="adjust_llm_v3", key_builder=_cache_key)
+async def parse_adjustment_cached(user_id: int, text: str, *, lang_hint: Optional[str], plan_key: Optional[str] = None, base_ctx: Optional[dict] = None) -> Optional[ParsedAdjustment]:
+    # LLM-only mode: no local parsers/post-processing; rely on prompt rules and BASE_CONTEXT
+    llm_only = (str(getattr(settings, "ADJUST_ENGINE_MODE", "")).lower() == "llm_only")
+    res = await _llm_parse_adjustment(text, lang_hint=lang_hint, base_ctx=base_ctx)
+    if not llm_only:
+        if res is None:
+            res = parse_adjustment_heuristic(text)
+        if res is not None:
+            res = _expand_conversational_heuristics(text, res)
+            res = _apply_strength_defaults(res, text=text)
+            res = _respect_only_specified(text, res)
+            if _is_veggies_request(text):
+                try:
+                    intents = set(getattr(res, 'intents', []) or [])
+                    intents.add('advice_only')
+                    res.intents = list(intents)
+                    res.activity_override = None
+                    res.calories = None
+                    res.macros = None
+                except Exception:
+                    pass
+            try:
+                if res:
+                    has_keto_word = _has_explicit_keto(text)
+                    intents2 = set(getattr(res, 'intents', []) or [])
+                    if ('keto' in intents2) and not has_keto_word:
+                        intents2.discard('keto')
+                        intents2.add('low_carb')
+                        res.intents = list(intents2)
+                    m = getattr(res, 'macros', None)
+                    if isinstance(m, dict) and (m.get('scheme') == 'keto') and not has_keto_word:
+                        m['scheme'] = 'low_carb'
+                        res.macros = m
+            except Exception:
+                pass
+            try:
+                has_cal = isinstance(getattr(res, 'calories', None), dict) and (res.calories or {}).get('mode')
+                if not has_cal:
+                    rate = _extract_weekly_rate(text)
+                    if rate:
+                        res.calories = {"mode": "rate_per_week", "value": float(rate)}
+                    else:
+                        deadline = _extract_deadline_date(text)
+                        if deadline:
+                            res.calories = {"mode": "deadline", "value": deadline}
+            except Exception:
+                pass
     return res
 
 

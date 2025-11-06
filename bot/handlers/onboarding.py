@@ -1102,11 +1102,44 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
                 await message.answer(_("Данные онбординга повреждены. Попробуй заново: /start"))
                 return
 
-            # 3) Парсинг корректировки через LLM (с кешем)
+            # 3) Парсинг корректировки через LLM (с кешем). Ключ завязан на текущем плане, чтобы одинаковая фраза при изменившемся плане парсилась заново
+            try:
+                plan_key_str = f"{int(base_plan.calories)}:{int(base_plan.protein_g)}:{int(base_plan.fat_g)}:{int(base_plan.carbs_g)}"
+            except Exception:
+                plan_key_str = "0:0:0:0"
+            try:
+                plan_key = hashlib.sha256(plan_key_str.encode('utf-8')).hexdigest()[:16]
+            except Exception:
+                plan_key = None
+            # Build base context for LLM (LLM-only mode)
+            try:
+                base_ctx = {
+                    "base_plan": {
+                        "calories": int(base_plan.calories),
+                        "protein_g": int(base_plan.protein_g),
+                        "fat_g": int(base_plan.fat_g),
+                        "carbs_g": int(base_plan.carbs_g),
+                    },
+                    "goal": payload.goal.value if hasattr(payload.goal, 'value') else str(payload.goal),
+                    "weight_kg": float(payload.weight_kg),
+                    "goal_weight_kg": float(payload.goal_weight_kg) if payload.goal_weight_kg is not None else None,
+                    "activity_level": payload.activity_level.value if hasattr(payload.activity_level, 'value') else str(payload.activity_level),
+                }
+            except Exception:
+                base_ctx = None
             parsed = await parse_adjustment_cached(
-                user_id, text, lang_hint=getattr(message.from_user, 'language_code', None)
+                user_id,
+                text,
+                lang_hint=getattr(message.from_user, 'language_code', None),
+                plan_key=plan_key,
+                base_ctx=base_ctx,
             )
             if not parsed:
+                # In llm_only mode, do not use local heuristics; ask user to rephrase
+                if str(getattr(settings, "ADJUST_ENGINE_MODE", "")).lower() == "llm_only":
+                    await message.answer(
+                        _("Не до конца понял запрос. Сформулируй одной фразой, например: \n• 'уменьши углеводы на 10%' \n• 'хочу быстрее похудеть' \n• 'к 01.03.2026' \n• 'мало двигаюсь — поставь низкую активность'"))
+                    return
                 # Heuristic fallback for top intents (offline, RU)
                 h = parse_adjustment_heuristic(text)
                 if h:

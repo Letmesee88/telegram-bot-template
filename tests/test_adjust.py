@@ -1,4 +1,5 @@
 import pytest
+from bot.core.config import settings
 
 from bot.schemas.onboarding import OnboardingData, DailyPlan, ActivityLevel, Goal
 from bot.services.adjust import (
@@ -56,7 +57,9 @@ def test_heuristic_percent_minus():
     assert float(parsed.calories["value"]) == -10.0
 
 
-def test_apply_strength_defaults_when_no_units_for_calories():
+def test_apply_strength_defaults_when_no_units_for_calories(monkeypatch):
+    # Force hybrid mode for this test to exercise strength defaults
+    monkeypatch.setattr(settings, "ADJUST_ENGINE_MODE", "hybrid", raising=False)
     # No explicit numbers -> should remain None here; strength defaults handled only when mode is None
     pa = ParsedAdjustment(
         intents=["raise_calories"],

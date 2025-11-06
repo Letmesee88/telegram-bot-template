@@ -227,7 +227,8 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     # Adjustment engine mode:
     # - deterministic: LLM только классифицирует намерения, все числа считает код
     # - hybrid: LLM может подсказывать числа, но мы валидируем и пересчитываем по правилам
-    ADJUST_ENGINE_MODE: str = "hybrid"  # deterministic|hybrid
+    # - llm_only: чистый LLM, локальные эвристики отключены; код применяет только безопасные клампы
+    ADJUST_ENGINE_MODE: str = "llm_only"  # deterministic|hybrid|llm_only
 
     # Градуировка силы изменения (используется в hybrid-режиме)
     # Калории: проценты уменьшения/увеличения
