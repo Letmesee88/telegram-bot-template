@@ -6,6 +6,7 @@ from . import templates
 from . import recommendations
 from . import account
 from . import weight
+from . import settings
 
 
 def get_handlers_router() -> Router:
@@ -18,6 +19,8 @@ def get_handlers_router() -> Router:
     router.include_router(foodai.router_edit)
     # Templates router for browsing/applying meal templates
     router.include_router(templates.router)
+    # Settings screen (⚙️)
+    router.include_router(settings.router)
     router.include_router(onboarding.router)
     router.include_router(menu.router)
     router.include_router(history.router)

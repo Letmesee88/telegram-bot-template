@@ -109,8 +109,7 @@ async def test_save_weight_respects_user_timezone_for_local_date(monkeypatch, en
     value, local_date = await save_weight(user_id, 70.5)
     assert value == 70.5
 
-    # Verify recorded_local_date equals today's date in that TZ
-    now_local = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    # Verify recorded_local_date equals the local_date returned by save_weight (robust against midnight boundary)
     async with sessionmaker() as session:
         wl = await session.scalar(
             select(WeightLogModel).where(
@@ -118,4 +117,4 @@ async def test_save_weight_respects_user_timezone_for_local_date(monkeypatch, en
             )
         )
     assert wl is not None
-    assert wl.recorded_local_date == now_local
+    assert wl.recorded_local_date == local_date

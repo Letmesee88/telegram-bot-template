@@ -14,6 +14,7 @@ router = Router(name="account")
 def _kb_account() -> types.InlineKeyboardMarkup:
     rows: list[list[types.InlineKeyboardButton]] = []
     rows.append([types.InlineKeyboardButton(text=_("⚖️ Мой вес"), callback_data="weight:open:account")])
+    rows.append([types.InlineKeyboardButton(text=_("⚙️ Настройки"), callback_data="settings:open")])
     return types.InlineKeyboardMarkup(inline_keyboard=rows)
 
 
