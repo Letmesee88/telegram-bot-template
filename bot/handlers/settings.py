@@ -17,6 +17,7 @@ from bot.analytics.types import BaseEvent, EventProperties, Plan
 from sqlalchemy import select
 from bot.database.models import OnboardingAnswerModel
 from bot.schemas.onboarding import DailyPlan, OnboardingData, Goal
+from bot.services.plan import calculate_daily_plan
 from bot.services.adjust import parse_adjustment_cached, apply_adjustment, parse_adjustment_heuristic, rephrase_explanation_cached
 from bot.core.config import settings
 from bot.services.weight import get_current_weight
@@ -149,10 +150,25 @@ async def cb_settings_open_daily_norm(callback: types.CallbackQuery) -> None:
 
     dp_json = dict(existing.daily_plan or {})
     data_json = dict(existing.data or {})
+    # Safely extract displayed values even if daily_plan is partial
+    cal_val = None
+    p_val = None
+    f_val = None
+    c_val = None
     try:
-        plan = DailyPlan.model_validate(dp_json)
+        plan_obj = DailyPlan.model_validate(dp_json)
+        cal_val = int(getattr(plan_obj, 'calories', 0) or 0)
+        p_val = int(getattr(plan_obj, 'protein_g', 0) or 0)
+        f_val = int(getattr(plan_obj, 'fat_g', 0) or 0)
+        c_val = int(getattr(plan_obj, 'carbs_g', 0) or 0)
     except Exception:
-        plan = DailyPlan(calories=int(dp_json.get("calories") or 0), protein_g=int(dp_json.get("protein_g") or 0), fat_g=int(dp_json.get("fat_g") or 0), carbs_g=int(dp_json.get("carbs_g") or 0))
+        try:
+            cal_val = int(dp_json.get("calories") or 0)
+            p_val = int(dp_json.get("protein_g") or 0)
+            f_val = int(dp_json.get("fat_g") or 0)
+            c_val = int(dp_json.get("carbs_g") or 0)
+        except Exception:
+            cal_val = p_val = f_val = c_val = 0
 
     goal_weight = data_json.get("goal_weight_kg")
     try:
@@ -177,10 +193,10 @@ async def cb_settings_open_daily_norm(callback: types.CallbackQuery) -> None:
 
     text = (
         "📊 Суточная норма\n\n"
-        f"🔥 Калории: {int(getattr(plan, 'calories', 0) or 0)} ккал\n"
-        f"🥩 Белки: {int(getattr(plan, 'protein_g', 0) or 0)} г\n"
-        f"🥑 Жиры: {int(getattr(plan, 'fat_g', 0) or 0)} г\n"
-        f"🍞 Углеводы: {int(getattr(plan, 'carbs_g', 0) or 0)} г\n\n"
+        f"🔥 Калории: {cal_val} ккал\n"
+        f"🥩 Белки: {p_val} г\n"
+        f"🥑 Жиры: {f_val} г\n"
+        f"🍞 Углеводы: {c_val} г\n\n"
         f"🎯 Цель: {goal_str} | До цели: {remain_str}"
     )
     kb = InlineKeyboardMarkup(
@@ -254,12 +270,8 @@ async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> 
 
             data_json = dict(existing.data or {})
             dp_json = dict(existing.daily_plan or {})
-            try:
-                base_plan_dict = data_json.get("base_plan") or dp_json
-                base_plan = DailyPlan.model_validate(base_plan_dict)
-            except Exception:
-                base_plan = DailyPlan.model_validate(dp_json)
-                data_json["base_plan"] = base_plan.model_dump(mode="json")
+
+            # 2) Validate payload first
             try:
                 payload = OnboardingData.model_validate(data_json)
             except Exception as e:
@@ -267,6 +279,34 @@ async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> 
                 await message.answer(_("Данные повреждены. Попробуй заново: /start"))
                 await state.clear()
                 return
+
+            # 3) Build base_plan with robust fallbacks
+            try:
+                base_plan_dict = data_json.get("base_plan") or dp_json
+                base_plan = DailyPlan.model_validate(base_plan_dict)
+            except Exception:
+                try:
+                    base_plan = DailyPlan.model_validate(dp_json)
+                    data_json["base_plan"] = base_plan.model_dump(mode="json")
+                except Exception:
+                    # Compute from payload to ensure full fields present
+                    try:
+                        calc = calculate_daily_plan(payload)
+                        base_plan = calc
+                        data_json["base_plan"] = {
+                            "calories": int(getattr(calc, "calories", 0) or 0),
+                            "protein_g": int(getattr(calc, "protein_g", 0) or 0),
+                            "fat_g": int(getattr(calc, "fat_g", 0) or 0),
+                            "carbs_g": int(getattr(calc, "carbs_g", 0) or 0),
+                            "sources": list(getattr(calc, "sources", []) or []),
+                            "tdee": int(getattr(calc, "tdee", 0) or 0),
+                            "weekly_rate_kg": float(getattr(calc, "weekly_rate_kg", 0.0) or 0.0),
+                            "eta_date": getattr(calc, "eta_date", None),
+                        }
+                    except Exception:
+                        # Last resort: use calculate_daily_plan even if data_json is imperfect
+                        calc = calculate_daily_plan(payload)
+                        base_plan = calc
 
             try:
                 plan_key_str = f"{int(base_plan.calories)}:{int(base_plan.protein_g)}:{int(base_plan.fat_g)}:{int(base_plan.carbs_g)}"
