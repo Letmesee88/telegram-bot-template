@@ -209,6 +209,20 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     RECOMMENDER_RATE_LIMIT_WINDOW_SEC: int = 2
     RECOMMENDER_RATE_LIMIT_MAX: int = 1
 
+    # =====================
+    # Daily Reports settings
+    # =====================
+    DAILY_REPORTS_ENABLED: bool = True
+    DAILY_REPORTS_HOUR: int = 8
+    DAILY_REPORTS_JITTER_MIN: int = 60
+    DAILY_REPORTS_BATCH_LIMIT: int = 200
+    DAILY_REPORTS_LLM_CONCURRENCY: int = 50
+    DAILY_REPORTS_LLM_TIMEOUT_SEC: int = 10
+    DAILY_REPORTS_TELEGRAM_RPS: int = 10
+    DAILY_REPORTS_MODEL: str | None = None
+    DAILY_REPORTS_FALLBACK_ENABLED: bool = True
+    DAILY_REPORTS_REQUIRE_PREMIUM: bool = False
+
     # Adjustment (onboarding final corrections) LLM settings
     ADJUST_LLM_ENABLED: bool = True
     ADJUST_LLM_MODEL: str | None = "gpt-4o-mini"

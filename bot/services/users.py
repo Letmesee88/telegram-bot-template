@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 from datetime import datetime, timezone, timedelta, time as dtime
+import random
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, update
@@ -8,6 +9,7 @@ from sqlalchemy import func, select, update
 from bot.cache.redis import build_key, cached, clear_cache
 from bot.database.models import UserModel
 import bot.core.config as cfg
+from bot.core.loader import redis_client
 
 if TYPE_CHECKING:
     from aiogram.types import User
@@ -29,6 +31,8 @@ async def add_user(
 
     # Auto-grant admin flag if user ID is listed in ADMIN_USER_IDS
     is_admin_env = user_id in cfg.settings.ADMIN_USER_IDS
+    # Admins are always premium
+    premium_effective = bool(is_premium or is_admin_env)
 
     new_user = UserModel(
         id=user_id,
@@ -36,7 +40,7 @@ async def add_user(
         last_name=last_name,
         username=username,
         language_code=language_code,
-        is_premium=is_premium,
+        is_premium=premium_effective,
         referrer=referrer,
         is_admin=is_admin_env,
     )
@@ -107,6 +111,35 @@ async def set_timezone(session: "AsyncSession", user_id: int, tz_name: str) -> N
     await session.execute(stmt)
     await session.commit()
     await clear_cache(get_timezone, user_id)
+    # Immediately reschedule daily report for new timezone
+    try:
+        if getattr(cfg.settings, "DAILY_REPORTS_ENABLED", True):
+            # Subscription gating: if premium required and user is not premium — do not schedule
+            if getattr(cfg.settings, "DAILY_REPORTS_REQUIRE_PREMIUM", False):
+                from bot.database.models import UserModel  # local import to avoid cycles
+                is_prem = await session.scalar(select(UserModel.is_premium).where(UserModel.id == user_id))
+                if not bool(is_prem):
+                    return
+            # Compute next local 08:00 with jitter
+            tzinfo = None
+            try:
+                if (tz_name or "").upper() in ("UTC", "Z"):
+                    tzinfo = timezone.utc
+                else:
+                    tzinfo = ZoneInfo(tz_name)
+            except Exception:
+                tzinfo = timezone.utc
+            now_local = datetime.now(tzinfo)
+            target = datetime.combine(now_local.date(), dtime(int(getattr(cfg.settings, "DAILY_REPORTS_HOUR", 8) or 8), 0), tzinfo)
+            if now_local >= target:
+                target = target + timedelta(days=1)
+            jitter_min = int(getattr(cfg.settings, "DAILY_REPORTS_JITTER_MIN", 60) or 60)
+            target = target + timedelta(minutes=random.randint(0, max(0, jitter_min)))
+            epoch = int(target.astimezone(timezone.utc).timestamp())
+            await redis_client.zadd("reports:schedule", {user_id: epoch})
+    except Exception:
+        # Best-effort; failure here should not break user flow
+        pass
 
 
 async def get_user_tzinfo(session: "AsyncSession", user_id: int):
@@ -153,9 +186,13 @@ async def is_admin(session: AsyncSession, user_id: int) -> bool:
 
 
 async def set_is_admin(session: AsyncSession, user_id: int, is_admin: bool) -> None:
-    stmt = update(UserModel).where(UserModel.id == user_id).values(is_admin=is_admin)
-
-    await session.execute(stmt)
+    if is_admin:
+        # Admins are always premium
+        stmt = update(UserModel).where(UserModel.id == user_id).values(is_admin=True, is_premium=True)
+        await session.execute(stmt)
+    else:
+        stmt = update(UserModel).where(UserModel.id == user_id).values(is_admin=False)
+        await session.execute(stmt)
     await session.commit()
     # Invalidate cached admin flag so changes are visible immediately
     await clear_cache(is_admin, user_id)

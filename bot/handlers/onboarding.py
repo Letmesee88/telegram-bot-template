@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from time import perf_counter
+import random
+from datetime import datetime, timedelta, timezone, time as dtime
+from zoneinfo import ZoneInfo
+
 from aiogram import F, Router
 from aiogram.enums import ChatAction
 
@@ -208,6 +212,31 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
                 )
                 session.add(record)
             await session.commit()
+            try:
+                if getattr(settings, "DAILY_REPORTS_ENABLED", True):
+                    async with sessionmaker() as s2:
+                        if getattr(settings, "DAILY_REPORTS_REQUIRE_PREMIUM", False):
+                            prem = await s2.scalar(select(UserModel.is_premium).where(UserModel.id == user_id))
+                            if not bool(prem):
+                                raise Exception("skip")
+                        tz_name = await s2.scalar(select(UserModel.timezone).where(UserModel.id == user_id)) or settings.DEFAULT_TZ
+                    try:
+                        if (tz_name or "").upper() in ("UTC", "Z"):
+                            tzinfo = timezone.utc
+                        else:
+                            tzinfo = ZoneInfo(tz_name)
+                    except Exception:
+                        tzinfo = timezone.utc
+                    now_local = datetime.now(tzinfo)
+                    target = datetime.combine(now_local.date(), dtime(int(getattr(settings, "DAILY_REPORTS_HOUR", 8) or 8), 0), tzinfo)
+                    if now_local >= target:
+                        target = target + timedelta(days=1)
+                    jitter_min = int(getattr(settings, "DAILY_REPORTS_JITTER_MIN", 60) or 60)
+                    target = target + timedelta(minutes=random.randint(0, max(0, jitter_min)))
+                    epoch = int(target.astimezone(timezone.utc).timestamp())
+                    await redis_client.zadd("reports:schedule", {user_id: epoch})
+            except Exception:
+                pass
             # Analytics: Adjust Applied
             try:
                 if analytics.logger:

@@ -15,6 +15,7 @@ from bot.handlers.metrics import MetricsView
 from bot.keyboards.default_commands import remove_default_commands, set_default_commands
 from bot.middlewares import register_middlewares
 from bot.middlewares.prometheus import prometheus_middleware_factory
+from bot.background.report_scheduler import scheduler
 
 
 async def on_startup() -> None:
@@ -66,6 +67,13 @@ async def on_startup() -> None:
     logger.info(f"Privacy Mode - {states[not bot_info.can_read_all_group_messages]}")
     logger.info(f"Inline Mode  - {states[bot_info.supports_inline_queries]}")
 
+    # Start background daily reports scheduler
+    try:
+        asyncio.create_task(scheduler.start(bot))
+        logger.info("daily report scheduler started")
+    except Exception as e:
+        logger.warning(f"failed to start report scheduler: {e}")
+
     logger.info("bot started")
 
 
@@ -76,6 +84,13 @@ async def on_shutdown() -> None:
 
     await dp.storage.close()
     await dp.fsm.storage.close()
+
+    # Stop background scheduler
+    try:
+        await scheduler.stop()
+        logger.info("daily report scheduler stopped")
+    except Exception:
+        pass
 
     await bot.delete_webhook()
     await bot.session.close()

@@ -208,3 +208,33 @@ recommender_duration_ms = prometheus_client.Histogram(
     ["meal_type"],
     buckets=[50, 100, 200, 400, 800, 1600, 3200, 6400, 12800],
 )
+
+# ===== Daily reports metrics =====
+# Keep labels low-cardinality
+daily_report_started = prometheus_client.Counter(
+    "daily_report_started_total",
+    "Daily report generation started",
+)
+daily_report_sent = prometheus_client.Counter(
+    "daily_report_sent_total",
+    "Daily report sent successfully",
+)
+daily_report_failed = prometheus_client.Counter(
+    "daily_report_failed_total",
+    "Daily report failed",
+    ["reason"],  # reason: llm|telegram|db|other
+)
+daily_report_fallback = prometheus_client.Counter(
+    "daily_report_fallback_total",
+    "Daily report used fallback content",
+)
+daily_report_duration_ms = prometheus_client.Histogram(
+    "daily_report_duration_ms",
+    "Daily report end-to-end duration in ms",
+    buckets=[50, 100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600],
+)
+daily_report_queue_lag_seconds = prometheus_client.Histogram(
+    "daily_report_queue_lag_seconds",
+    "Seconds between scheduled time and start of processing",
+    buckets=[1, 5, 10, 30, 60, 120, 300, 600, 1200, 3600],
+)

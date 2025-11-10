@@ -5,6 +5,7 @@ from .meals import MealModel, MealItemModel, MealPhotoModel, DailyIntakeModel
 from .recommendation_log import RecommendationLogModel
 from .templates import MealTemplateModel, MealTemplateItemModel
 from .weight import WeightLogModel
+from .daily_report import DailyReportLogModel
 
 __all__ = [
     "Base",
@@ -18,4 +19,5 @@ __all__ = [
     "MealTemplateModel",
     "MealTemplateItemModel",
     "WeightLogModel",
+    "DailyReportLogModel",
 ]
