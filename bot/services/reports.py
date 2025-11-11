@@ -450,7 +450,7 @@ async def assemble_and_send_report(bot: Bot, user_id: int, *, scheduled_epoch: O
         # Simple heuristic fallback based on deficits/excess
         msgs: list[str] = []
         if plan.get("protein_g", 0) > 0 and fact.get("protein_g", 0) < plan.get("protein_g", 0) * 0.85:
-            msgs.append("Добавь завтра белковый завтрак: яйца, творог, йогурт или курицу.")
+            msgs.append("Добавь белковый завтрак: яйца, творог, йогурт или курицу.")
         if fact.get("calories", 0) > plan.get("calories", 0) * 1.05:
             msgs.append("Сократи быстрые углеводы и сладкие напитки — они легко разгоняют калории.")
         if not msgs:
