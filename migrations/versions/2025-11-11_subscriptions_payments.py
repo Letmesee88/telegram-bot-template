@@ -53,7 +53,7 @@ def upgrade() -> None:
         op.create_table(
             "subscriptions",
             sa.Column("id", sa.Integer(), primary_key=True, nullable=False),
-            sa.Column("user_id", sa.BigInteger(), sa.ForeignKey("users.id"), nullable=False, index=True),
+            sa.Column("user_id", sa.BigInteger(), sa.ForeignKey("users.id"), nullable=False),
             sa.Column("status", subscription_status_enum, nullable=False, server_default="active"),
             sa.Column("plan", subscription_plan_enum, nullable=False, server_default="month"),
             sa.Column("payment_method_id", sa.String(length=128), nullable=True),
@@ -62,9 +62,9 @@ def upgrade() -> None:
             sa.Column("canceled_at_utc", sa.DateTime(timezone=True), nullable=True),
             sa.Column("created_at", sa.DateTime(), server_default=sa.text("TIMEZONE('utc', now())"), nullable=False),
         )
-        op.create_index("ix_subscriptions_user_id", "subscriptions", ["user_id"], unique=False)
-        op.create_index("ix_subscriptions_status", "subscriptions", ["status"], unique=False)
-        op.create_index("ix_subscriptions_plan", "subscriptions", ["plan"], unique=False)
+        op.execute("CREATE INDEX IF NOT EXISTS ix_subscriptions_user_id ON subscriptions (user_id)")
+        op.execute("CREATE INDEX IF NOT EXISTS ix_subscriptions_status ON subscriptions (status)")
+        op.execute("CREATE INDEX IF NOT EXISTS ix_subscriptions_plan ON subscriptions (plan)")
 
     if not inspector.has_table("payments"):
         op.create_table(
@@ -83,10 +83,10 @@ def upgrade() -> None:
             sa.Column("created_at", sa.DateTime(), server_default=sa.text("TIMEZONE('utc', now())"), nullable=False),
             sa.Column("captured_at_utc", sa.DateTime(timezone=True), nullable=True),
         )
-        op.create_index("ix_payments_user_id", "payments", ["user_id"], unique=False)
-        op.create_index("ix_payments_subscription_id", "payments", ["subscription_id"], unique=False)
-        op.create_index("ix_payments_status", "payments", ["status"], unique=False)
-        op.create_index("ix_payments_yk_payment_id", "payments", ["yk_payment_id"], unique=True)
+        op.execute("CREATE INDEX IF NOT EXISTS ix_payments_user_id ON payments (user_id)")
+        op.execute("CREATE INDEX IF NOT EXISTS ix_payments_subscription_id ON payments (subscription_id)")
+        op.execute("CREATE INDEX IF NOT EXISTS ix_payments_status ON payments (status)")
+        op.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_payments_yk_payment_id ON payments (yk_payment_id)")
 
 
 def downgrade() -> None:
