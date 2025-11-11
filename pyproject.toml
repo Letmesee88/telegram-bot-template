@@ -35,6 +35,7 @@ bot = [
     "prometheus-client>=0.21.1,<1.0.0",
     "tzdata>=2024.1,<2026.0",
     "Pillow>=10.4.0,<12.0.0",
+    "yookassa>=3.8,<4.0",
 ]
 admin = [
     "gunicorn>=23.0.0,<24.0.0",

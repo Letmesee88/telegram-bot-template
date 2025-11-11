@@ -303,6 +303,26 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     QUICKCHART_TIMEOUT_SEC: float = 5
 
     # =====================
+    # Payments / Subscriptions (YooKassa)
+    # =====================
+    # YooKassa credentials (Sandbox/Prod via ENV)
+    YOOKASSA_SHOP_ID: str | None = None
+    YOOKASSA_SECRET_KEY: str | None = None
+    # Public webhook URL configured in YooKassa dashboard
+    YOOKASSA_WEBHOOK_URL: str | None = None  # e.g. https://calorissimo.ru/yookassa/webhook
+
+    # Pricing (RUB)
+    PRICE_TRIAL_RUB: int = 10
+    PRICE_MONTH_RUB: int = 750
+    PRICE_YEAR_RUB: int = 2500
+
+    # Subscription engine flags
+    SUBSCRIPTION_AUTORENEW_ENABLED: bool = True
+    SUBSCRIPTION_TRIAL_NEXT_PLAN: str = "year"  # after trial succeeds
+    # Local time (MSK by business requirement) when renewal retries should run
+    SUBSCRIPTION_RETRY_LOCAL_HOUR: int = 10
+
+    # =====================
     # Plan safety limits (weight change and calorie caps)
     # =====================
     # Faster-but-not-extreme defaults, configurable via ENV

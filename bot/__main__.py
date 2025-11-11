@@ -101,6 +101,7 @@ async def on_shutdown() -> None:
 async def setup_webhook() -> None:
     from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application  # noqa: PLC0415
     from aiohttp.web import AppRunner, TCPSite  # noqa: PLC0415
+    from bot.handlers.yookassa_webhook import YooKassaWebhookView  # noqa: PLC0415
 
     await bot.set_webhook(
         settings.webhook_url,
@@ -114,6 +115,8 @@ async def setup_webhook() -> None:
         secret_token=settings.WEBHOOK_SECRET,
     )
     webhook_requests_handler.register(app, path=settings.WEBHOOK_PATH)
+    # Register YooKassa webhook route alongside Telegram webhook
+    app.router.add_route("POST", "/yookassa/webhook", YooKassaWebhookView)
     setup_application(app, dp, bot=bot)
 
     runner = AppRunner(app)
@@ -123,6 +126,20 @@ async def setup_webhook() -> None:
 
     await asyncio.Event().wait()
 
+
+async def setup_aux_http_server() -> None:
+    """Start a lightweight aiohttp server in polling mode to accept external webhooks (YooKassa)."""
+    from aiohttp.web import AppRunner, TCPSite  # noqa: PLC0415
+    from bot.handlers.yookassa_webhook import YooKassaWebhookView  # noqa: PLC0415
+
+    # Register YooKassa webhook route
+    app.router.add_route("POST", "/yookassa/webhook", YooKassaWebhookView)
+
+    runner = AppRunner(app)
+    await runner.setup()
+    site = TCPSite(runner, host=settings.WEBHOOK_HOST, port=settings.WEBHOOK_PORT)
+    await site.start()
+    logger.info(f"aux http server started on {settings.WEBHOOK_HOST}:{settings.WEBHOOK_PORT} (polling mode)")
 
 async def main() -> None:
     if settings.SENTRY_DSN:
@@ -156,6 +173,11 @@ async def main() -> None:
     if settings.USE_WEBHOOK:
         await setup_webhook()
     else:
+        # Start auxiliary HTTP server for external webhooks (e.g., YooKassa)
+        try:
+            await setup_aux_http_server()
+        except Exception as e:
+            logger.warning(f"failed to start aux http server: {e}")
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 

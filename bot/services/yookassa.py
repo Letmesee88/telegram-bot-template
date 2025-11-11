@@ -1,0 +1,91 @@
+from __future__ import annotations
+import asyncio
+from dataclasses import dataclass
+from decimal import Decimal
+from uuid import uuid4
+
+from loguru import logger
+from yookassa import Configuration, Payment
+
+from bot.core.config import settings
+from bot.database.database import sessionmaker
+from bot.database.models import PaymentModel
+
+
+@dataclass
+class CreatedPayment:
+    payment_id: str
+    confirmation_url: str
+    idempotence_key: str
+
+
+def _configure() -> None:
+    if not settings.YOOKASSA_SHOP_ID or not settings.YOOKASSA_SECRET_KEY:
+        raise RuntimeError("YooKassa credentials are not configured")
+    Configuration.configure(settings.YOOKASSA_SHOP_ID, settings.YOOKASSA_SECRET_KEY)
+
+
+def _amount_for_plan(plan: str) -> Decimal:
+    plan = plan.lower()
+    if plan == "trial":
+        return Decimal(str(settings.PRICE_TRIAL_RUB))
+    if plan == "month":
+        return Decimal(str(settings.PRICE_MONTH_RUB))
+    if plan == "year":
+        return Decimal(str(settings.PRICE_YEAR_RUB))
+    raise ValueError(f"unknown plan: {plan}")
+
+
+async def create_payment(user_id: int, plan: str, next_plan: str | None = None, return_url: str | None = None) -> CreatedPayment:
+    _configure()
+
+    plan = plan.lower()
+    amount = _amount_for_plan(plan)
+    idem = uuid4().hex
+
+    payload: dict = {
+        "amount": {"value": str(amount), "currency": "RUB"},
+        "capture": True,
+        "confirmation": {"type": "redirect"},
+        "description": f"Calorissimo {plan}",
+        "metadata": {
+            "user_id": user_id,
+            "plan": plan,
+        },
+        # Force card and save PM for recurrent billing
+        "payment_method_data": {"type": "bank_card"},
+        "save_payment_method": True,
+    }
+
+    if next_plan:
+        payload["metadata"]["next_plan"] = next_plan
+
+    if return_url:
+        payload["confirmation"]["return_url"] = return_url
+
+    logger.info(f"YK create payment: user={user_id} plan={plan} amount={amount}")
+    yk_payment = await asyncio.to_thread(Payment.create, payload, idempotency_key=idem)
+
+    payment_id: str = getattr(yk_payment, "id")
+    confirmation = getattr(yk_payment, "confirmation", None)
+    confirmation_url: str = getattr(confirmation, "confirmation_url", None) if confirmation else None
+    if not confirmation_url:
+        raise RuntimeError("No confirmation_url returned by YooKassa")
+
+    async with sessionmaker() as session:
+        p = PaymentModel(
+            user_id=user_id,
+            subscription_id=None,
+            yk_payment_id=payment_id,
+            idempotence_key=idem,
+            payment_method_id=None,
+            amount_value=amount,
+            currency="RUB",
+            status="pending",
+            description=f"Calorissimo {plan}",
+            metadata={"user_id": user_id, "plan": plan, "next_plan": next_plan} if next_plan else {"user_id": user_id, "plan": plan},
+        )
+        session.add(p)
+        await session.commit()
+
+    return CreatedPayment(payment_id=payment_id, confirmation_url=confirmation_url, idempotence_key=idem)
