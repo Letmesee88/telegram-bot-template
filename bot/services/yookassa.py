@@ -83,7 +83,7 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
             currency="RUB",
             status="pending",
             description=f"Calorissimo {plan}",
-            metadata={"user_id": user_id, "plan": plan, "next_plan": next_plan} if next_plan else {"user_id": user_id, "plan": plan},
+            meta={"user_id": user_id, "plan": plan, "next_plan": next_plan} if next_plan else {"user_id": user_id, "plan": plan},
         )
         session.add(p)
         await session.commit()

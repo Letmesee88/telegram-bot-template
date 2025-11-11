@@ -105,7 +105,7 @@ class YooKassaWebhookView(View):
                 currency=currency,
                 status="succeeded",
                 description=getattr(yk_payment, "description", None),
-                metadata=dict(metadata),
+                meta=dict(metadata),
                 captured_at_utc=datetime.now(timezone.utc),
             )
             session.add(p)

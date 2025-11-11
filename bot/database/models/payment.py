@@ -34,7 +34,7 @@ class PaymentModel(Base):
     )
 
     description: Mapped[Optional[str]] = mapped_column(String(128))
-    metadata: Mapped[Optional[dict]] = mapped_column(JSONB)
+    meta: Mapped[Optional[dict]] = mapped_column("metadata", JSONB)
 
     created_at: Mapped[created_at]
     captured_at_utc: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
