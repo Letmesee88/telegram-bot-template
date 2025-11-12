@@ -150,7 +150,6 @@ class YooKassaWebhookView(View):
                 if p is not None:
                     p.subscription_id = s.id
                 elif existing_db_id is not None:
-                    from sqlalchemy import update
                     await session.execute(
                         update(PaymentModel).where(PaymentModel.id == existing_db_id).values(subscription_id=s.id)
                     )
