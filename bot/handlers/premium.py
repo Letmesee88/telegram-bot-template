@@ -4,6 +4,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram import F
 
 from bot.services.yookassa import create_payment
+from loguru import logger
 
 
 router = Router(name="premium")
@@ -31,5 +32,6 @@ async def buy_plan(call: types.CallbackQuery) -> None:
     try:
         cp = await create_payment(user_id=user_id, plan=plan)
         await call.message.answer(f"Ссылка на оплату: {cp.confirmation_url}")
-    except Exception:
+    except Exception as e:
+        logger.error(f"create_payment failed: {e}")
         await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
