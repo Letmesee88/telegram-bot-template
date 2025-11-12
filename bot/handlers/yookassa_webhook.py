@@ -89,26 +89,49 @@ class YooKassaWebhookView(View):
             return Response(text="OK")
 
         async with sessionmaker() as session:
-            exists = await session.execute(
+            res = await session.execute(
                 PaymentModel.__table__.select().where(PaymentModel.yk_payment_id == payment_id)
             )
-            if exists.first():
-                return Response(text="OK")
+            row_existing = res.first()
+            p = None
+            existing_db_id = None
+            if row_existing:
+                from sqlalchemy import update
 
-            p = PaymentModel(
-                user_id=user_id,
-                subscription_id=None,
-                yk_payment_id=payment_id,
-                idempotence_key=None,
-                payment_method_id=payment_method_id,
-                amount_value=amount_value,
-                currency=currency,
-                status="succeeded",
-                description=getattr(yk_payment, "description", None),
-                meta=dict(metadata),
-                captured_at_utc=datetime.now(timezone.utc),
-            )
-            session.add(p)
+                current_payment = row_existing[0]
+                existing_db_id = current_payment.id
+                # If we've already processed this payment as succeeded, do nothing
+                if getattr(current_payment, "status", None) == "succeeded":
+                    return Response(text="OK")
+                # Update existing pending record to succeeded with final details
+                await session.execute(
+                    update(PaymentModel)
+                    .where(PaymentModel.id == current_payment.id)
+                    .values(
+                        amount_value=amount_value,
+                        currency=currency,
+                        status="succeeded",
+                        description=getattr(yk_payment, "description", None),
+                        meta=dict(metadata),
+                        payment_method_id=payment_method_id,
+                        captured_at_utc=datetime.now(timezone.utc),
+                    )
+                )
+            else:
+                p = PaymentModel(
+                    user_id=user_id,
+                    subscription_id=None,
+                    yk_payment_id=payment_id,
+                    idempotence_key=None,
+                    payment_method_id=payment_method_id,
+                    amount_value=amount_value,
+                    currency=currency,
+                    status="succeeded",
+                    description=getattr(yk_payment, "description", None),
+                    meta=dict(metadata),
+                    captured_at_utc=datetime.now(timezone.utc),
+                )
+                session.add(p)
 
             sub = await session.execute(
                 SubscriptionModel.__table__.select().where(SubscriptionModel.user_id == user_id)
@@ -127,7 +150,14 @@ class YooKassaWebhookView(View):
                 )
                 session.add(s)
                 await session.flush()
-                p.subscription_id = s.id
+                # Link payment to created subscription
+                if p is not None:
+                    p.subscription_id = s.id
+                elif existing_db_id is not None:
+                    from sqlalchemy import update
+                    await session.execute(
+                        update(PaymentModel).where(PaymentModel.id == existing_db_id).values(subscription_id=s.id)
+                    )
                 exp_dt = new_exp
             else:
                 from sqlalchemy import update
@@ -145,7 +175,12 @@ class YooKassaWebhookView(View):
                         expires_at_utc=new_exp,
                     )
                 )
-                p.subscription_id = current.id
+                if p is not None:
+                    p.subscription_id = current.id
+                elif existing_db_id is not None:
+                    await session.execute(
+                        update(PaymentModel).where(PaymentModel.id == existing_db_id).values(subscription_id=current.id)
+                    )
                 exp_dt = new_exp
 
             await session.commit()
