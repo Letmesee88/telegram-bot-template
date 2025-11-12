@@ -43,6 +43,7 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
     amount = _amount_for_plan(plan)
     idem = uuid4().hex
     amount_value = format(amount, ".2f")
+    ret_url = return_url or getattr(settings, "WEBHOOK_BASE_URL", None)
 
     payload: dict = {
         "amount": {"value": amount_value, "currency": "RUB"},
@@ -61,8 +62,8 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
     if next_plan:
         payload["metadata"]["next_plan"] = next_plan
 
-    if return_url:
-        payload["confirmation"]["return_url"] = return_url
+    if ret_url:
+        payload["confirmation"]["return_url"] = ret_url
 
     logger.info(f"YK create payment: user={user_id} plan={plan} amount={amount}")
     try:
