@@ -130,11 +130,11 @@ class YooKassaWebhookView(View):
                 session.add(p)
 
             sub = await session.execute(
-                SubscriptionModel.__table__.select().where(SubscriptionModel.user_id == user_id)
+                select(SubscriptionModel).where(SubscriptionModel.user_id == user_id)
             )
-            row = sub.first()
+            current = sub.scalar_one_or_none()
             now = datetime.now(timezone.utc)
-            if row is None:
+            if current is None:
                 new_exp = _add_duration(plan, now)
                 s = SubscriptionModel(
                     user_id=user_id,
@@ -155,7 +155,6 @@ class YooKassaWebhookView(View):
                     )
                 exp_dt = new_exp
             else:
-                current = row[0]
                 base = current.expires_at_utc if current.expires_at_utc and current.expires_at_utc > now else now
                 new_exp = _add_duration(plan, base)
                 await session.execute(
