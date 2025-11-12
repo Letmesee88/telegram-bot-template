@@ -11,6 +11,7 @@ from bot.core.config import settings
 from bot.core.loader import bot
 from bot.database.database import sessionmaker
 from bot.database.models import PaymentModel, SubscriptionModel
+from sqlalchemy import select, update
 
 
 def _ensure_yk_configured() -> bool:
@@ -90,23 +91,18 @@ class YooKassaWebhookView(View):
 
         async with sessionmaker() as session:
             res = await session.execute(
-                PaymentModel.__table__.select().where(PaymentModel.yk_payment_id == payment_id)
+                select(PaymentModel).where(PaymentModel.yk_payment_id == payment_id)
             )
-            row_existing = res.first()
+            current_payment = res.scalar_one_or_none()
             p = None
             existing_db_id = None
-            if row_existing:
-                from sqlalchemy import update
-
-                current_payment = row_existing[0]
+            if current_payment is not None:
                 existing_db_id = current_payment.id
-                # If we've already processed this payment as succeeded, do nothing
                 if getattr(current_payment, "status", None) == "succeeded":
                     return Response(text="OK")
-                # Update existing pending record to succeeded with final details
                 await session.execute(
                     update(PaymentModel)
-                    .where(PaymentModel.id == current_payment.id)
+                    .where(PaymentModel.id == existing_db_id)
                     .values(
                         amount_value=amount_value,
                         currency=currency,
@@ -160,8 +156,6 @@ class YooKassaWebhookView(View):
                     )
                 exp_dt = new_exp
             else:
-                from sqlalchemy import update
-
                 current = row[0]
                 base = current.expires_at_utc if current.expires_at_utc and current.expires_at_utc > now else now
                 new_exp = _add_duration(plan, base)
