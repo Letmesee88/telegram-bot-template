@@ -42,9 +42,10 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
     plan = plan.lower()
     amount = _amount_for_plan(plan)
     idem = uuid4().hex
+    amount_value = format(amount, ".2f")
 
     payload: dict = {
-        "amount": {"value": str(amount), "currency": "RUB"},
+        "amount": {"value": amount_value, "currency": "RUB"},
         "capture": True,
         "confirmation": {"type": "redirect"},
         "description": f"Calorissimo {plan}",
@@ -64,7 +65,11 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
         payload["confirmation"]["return_url"] = return_url
 
     logger.info(f"YK create payment: user={user_id} plan={plan} amount={amount}")
-    yk_payment = await asyncio.to_thread(Payment.create, payload, idempotency_key=idem)
+    try:
+        yk_payment = await asyncio.to_thread(Payment.create, payload, idempotency_key=idem)
+    except Exception as e:
+        logger.error(f"YK create payment failed: {e}")
+        raise
 
     payment_id: str = getattr(yk_payment, "id")
     confirmation = getattr(yk_payment, "confirmation", None)
