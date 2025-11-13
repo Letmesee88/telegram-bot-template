@@ -325,7 +325,18 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
                 if len(caption) <= 1024:
                     await message.answer_photo(BufferedInputFile(png, filename="goal_plan.png"), caption=caption, reply_markup=kb)
                     await state.set_state(OnboardingStates.review)
+                    return
+                else:
+                    await message.answer_photo(BufferedInputFile(png, filename="goal_plan.png"), caption=lines[0])
+                    await message.answer(caption, reply_markup=kb, disable_web_page_preview=True)
+                    await state.set_state(OnboardingStates.review)
+                    return
+    except Exception as e:
+        logger.warning("charts.send_failed_caption | user_id={} | err={}", payload.user_id, e)
 
+    # Фолбэк: если график отключен или не загрузился — шлём текстом
+    await message.answer("\n".join(lines), reply_markup=kb, disable_web_page_preview=True)
+    await state.set_state(OnboardingStates.review)
 @router.callback_query(F.data == "sale:back:final")
 async def sale_back_final(call: CallbackQuery, state: FSMContext) -> None:
     try:
@@ -523,18 +534,6 @@ async def sale_pay_year(call: CallbackQuery, state: FSMContext) -> None:
     ])
     await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
     await call.answer()
-                    return
-                else:
-                    await message.answer_photo(BufferedInputFile(png, filename="goal_plan.png"), caption=lines[0])
-                    await message.answer(caption, reply_markup=kb, disable_web_page_preview=True)
-                    await state.set_state(OnboardingStates.review)
-                    return
-    except Exception as e:
-        logger.warning("charts.send_failed_caption | user_id={} | err={}", payload.user_id, e)
-
-    # Фолбэк: если график отключен или не загрузился — шлём текстом
-    await message.answer("\n".join(lines), reply_markup=kb, disable_web_page_preview=True)
-    await state.set_state(OnboardingStates.review)
 
 
 # =====================
