@@ -49,6 +49,8 @@ from bot.handlers import start as start_module
 from bot.services.charts import get_plan_chart_png
 from datetime import date
 import hashlib
+from bot.services.yookassa import create_payment
+from bot.services.users import get_user_tzinfo
 
 router = Router()
 
@@ -323,6 +325,204 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
                 if len(caption) <= 1024:
                     await message.answer_photo(BufferedInputFile(png, filename="goal_plan.png"), caption=caption, reply_markup=kb)
                     await state.set_state(OnboardingStates.review)
+
+@router.callback_query(F.data == "sale:back:final")
+async def sale_back_final(call: CallbackQuery, state: FSMContext) -> None:
+    try:
+        await _finalize_and_show(call.message, state, call.from_user.id)
+    except Exception:
+        pass
+    await call.answer()
+
+
+@router.callback_query(F.data == "sale:cont1")
+async def sale_cont1(call: CallbackQuery, state: FSMContext) -> None:
+    text = (
+        "🥗 БЖУ —  это основа для красивой фигуры\n\n"
+        "Считать только калории = рыхлое тело без рельефа.\n\n"
+        "🎯 Для качественного преображения придерживайся:\n"
+        "• Белки: 25-30% — защищают мышцы от сжигания, надолго утоляют голод\n"
+        "• Жиры: 20-25% — регулируют гормональный фон, отвечают за здоровье кожи и волос\n"
+        "• Углеводы: 45-55% — обеспечивают силой для спорта и ясностью ума\n\n"
+        "Пропорции можно адаптировать под свои потребности\n\n"
+        "✨ Твои бонусы:\n"
+        "• Упругая подтянутая фигура\n"
+        "• Стабильный уровень энергии и позитивный настрой\n"
+        "• Здоровая кожа и сияющие волосы\n"
+        "• Никаких срывов — белок держит сытость под контролем\n\n"
+        "💡 Суть: грамотный баланс БЖУ формирует не просто цифру на весах, а красоту твоего тела!"
+    )
+    kb = _ikb([[ ("Супер", "sale:cont2") ]])
+    try:
+        await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await call.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await call.answer()
+
+
+@router.callback_query(F.data == "sale:cont2")
+async def sale_cont2(call: CallbackQuery, state: FSMContext) -> None:
+    text = (
+        "✨ Я помогу тебе достичь идеальной фигуры через:\n\n"
+        "Простой учёт калорий:\n"
+        "• Просто фотографируешь еду и присылаешь\n"
+        "• Или пишешь текстом\n\n"
+        "Личный ИИ-диетолог:\n"
+        "• Ежедневно оценивает твой рацион и даёт советы\n"
+        "• Подбирает аппетитные рецепты с правильным БЖУ"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💥 10 руб. за 3 дня", callback_data="sale:trial")],
+        [InlineKeyboardButton(text="💎 Выбрать тариф", callback_data="sale:choose")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:back:final")],
+    ])
+    try:
+        await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await call.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await call.answer()
+
+
+@router.callback_query(F.data == "sale:trial")
+async def sale_trial(call: CallbackQuery, state: FSMContext) -> None:
+    # Compute trial end in user's TZ
+    try:
+        async with sessionmaker() as session:
+            tz = await get_user_tzinfo(session, call.from_user.id)
+    except Exception:
+        tz = timezone.utc
+    end_dt = (datetime.now(tz) + timedelta(days=3)).strftime("%d.%m.%Y %H:%M")
+    text = (
+        "💥 Пробный доступ всего за 10 рублей\n\n"
+        "✨ 3 дня полного доступа ко всем функциям Calorissimo AI\n\n"
+        "🤖 Персональный ИИ-нутрициолог\n\n"
+        "📊 Анализ питания и рекомендации\n\n"
+        f"• Пробный период до: {end_dt}\n\n"
+        "• После пробного периода годовая подписка продлится за 2500 рублей"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оплатить 10 рублей", callback_data="sale:pay:trial")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:cont2")],
+    ])
+    try:
+        await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await call.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await call.answer()
+
+
+@router.callback_query(F.data == "sale:choose")
+async def sale_choose(call: CallbackQuery, state: FSMContext) -> None:
+    text = (
+        "Выбери тариф:\n\n"
+        "Месячная подписка — 750 руб/месяц\n"
+        "• Ежемесячная оплата\n\n"
+        "Годовая подписка — 2500 руб/в год ( или всего 210 руб/мес.)\n"
+        "• Экономия 6 500 руб/ в год\n"
+        "• Оплата раз в год\n\n"
+        "Подписку можно отменить в любой удобный момент в Личном кабинете бота"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="750 руб/мес", callback_data="sale:buy:month")],
+        [InlineKeyboardButton(text="2500 руб/в год", callback_data="sale:buy:year")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:cont2")],
+    ])
+    try:
+        await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await call.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await call.answer()
+
+
+@router.callback_query(F.data == "sale:buy:month")
+async def sale_buy_month(call: CallbackQuery, state: FSMContext) -> None:
+    text = (
+        "💎 Оплата подписки\n\n"
+        "План: Месячная подписка\n"
+        "Стоимость: 750 руб/месяц\n"
+        "Период: 30 дней\n\n"
+        "После оплаты подписка будет автоматически продлеваться."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оплатить 750 руб", callback_data="sale:pay:month")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:choose")],
+    ])
+    try:
+        await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await call.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await call.answer()
+
+
+@router.callback_query(F.data == "sale:buy:year")
+async def sale_buy_year(call: CallbackQuery, state: FSMContext) -> None:
+    text = (
+        "💎 Оплата подписки\n\n"
+        "План: Годовая подписка\n"
+        "Стоимость:  2500 руб/в год\n"
+        "Период: 365 дней\n\n"
+        "После оплаты подписка будет автоматически продлеваться."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оплатить 2500 руб", callback_data="sale:pay:year")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:choose")],
+    ])
+    try:
+        await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await call.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await call.answer()
+
+
+@router.callback_query(F.data == "sale:pay:trial")
+async def sale_pay_trial(call: CallbackQuery, state: FSMContext) -> None:
+    user_id = call.from_user.id
+    try:
+        cp = await create_payment(user_id=user_id, plan="trial")
+    except Exception as e:
+        await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
+        await call.answer()
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оплатить 10 руб", url=cp.confirmation_url)],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:trial")],
+    ])
+    await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    await call.answer()
+
+
+@router.callback_query(F.data == "sale:pay:month")
+async def sale_pay_month(call: CallbackQuery, state: FSMContext) -> None:
+    user_id = call.from_user.id
+    try:
+        cp = await create_payment(user_id=user_id, plan="month")
+    except Exception:
+        await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
+        await call.answer()
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оплатить 750 руб", url=cp.confirmation_url)],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:buy:month")],
+    ])
+    await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    await call.answer()
+
+
+@router.callback_query(F.data == "sale:pay:year")
+async def sale_pay_year(call: CallbackQuery, state: FSMContext) -> None:
+    user_id = call.from_user.id
+    try:
+        cp = await create_payment(user_id=user_id, plan="year")
+    except Exception:
+        await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
+        await call.answer()
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оплатить 2500 руб", url=cp.confirmation_url)],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:buy:year")],
+    ])
+    await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    await call.answer()
                     return
                 else:
                     await message.answer_photo(BufferedInputFile(png, filename="goal_plan.png"), caption=lines[0])
@@ -921,59 +1121,30 @@ async def speed_and_finish(message: Message, state: FSMContext) -> None:
     ])
     await message.answer(_("Как быстро хочешь достичь цели?"), reply_markup=kb)
 
-
 # =====================
 # Финальный экран: OK / Adjust
 # =====================
 
 @router.callback_query(OnboardingStates.review, F.data == "final:ok")
 async def cb_final_ok(call: CallbackQuery, state: FSMContext) -> None:
-    # Активируем FoodAI для пользователя (временный гейтинг до оплаты)
-    try:
-        async with sessionmaker() as session:
-            await session.execute(
-                update(UserModel)
-                .where(UserModel.id == call.from_user.id)
-                .values(foodai_enabled_at=func.now())
-            )
-            await session.commit()
-    except Exception as e:
-        logger.exception("onboarding.final.ok.update_user_failed | user_id={} | error={}", getattr(call.from_user, 'id', None), e)
-
-    # Variant A: persist onboarding weight into weight_logs and invalidate account cache
-    try:
-        user_id = getattr(call.from_user, 'id', None)
-        if user_id:
-            async with sessionmaker() as session:
-                oa = await session.scalar(select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id))
-            weight_val = None
-            try:
-                if oa and isinstance(getattr(oa, 'data', None), dict):
-                    w = oa.data.get("weight_kg")
-                    if w is not None:
-                        weight_val = float(w)
-            except Exception:
-                weight_val = None
-            if weight_val is not None and 30.0 <= weight_val <= 300.0:
-                try:
-                    await save_weight(user_id, round(weight_val, 1))
-                except Exception:
-                    pass
-            # Invalidate account cache regardless
-            try:
-                await redis_client.delete(f"account:summary:{user_id}")
-            except Exception:
-                pass
-    except Exception as e:
-        logger.warning("onboarding.final.ok.weight_persist_failed | user_id={} | err={}", getattr(call.from_user, 'id', None), e)
-
-    await call.answer()
-    await state.clear()
-    await call.message.answer(
-        _(
-            "Готово! Я активировал распознавание еды (FoodAI). Отправь фото блюда — я проанализирую калории и БЖУ."
-        )
+    # Гейтинг: запускаем продажи согласно ТЗ
+    text = (
+        "💜 Секрет идеальной фигуры: считай калории\n\n"
+        "Хочешь увидеть результат? Ешь меньше, чем тратишь — для похудения. Ешь больше — для набора массы. Ешь столько же — для поддержания формы. Организм сам отреагирует на твой выбор.\n\n"
+        "🧮 Легкая математика: всего -200 калорий в день = -7-10 кг через год. +200 калорий = +7-10 кг набора. 0 калорий = стабильный вес\n\n"
+        "✅ Почему калории — это работает:\n"
+        "• Правильное питание дает 80% успеха, физ нагрузки — только 20%\n"
+        "• Никаких запретов на вкусности — просто соблюдай меру\n"
+        "• Безопасный метод, который не наносит урон здоровью\n"
+        "• Ты сам потянешься к полезной еде — она насыщает качественнее\n\n"
+        "🎯 Контроль калорий — универсальный инструмент для любой цели: похудеть, набрать массу или сохранить результат"
     )
+    kb = _ikb([[ ("Продолжим", "sale:cont1") ]])
+    try:
+        await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await call.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await call.answer()
 
 
 @router.callback_query(OnboardingStates.review, F.data == "final:adjust")

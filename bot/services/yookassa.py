@@ -40,6 +40,13 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
     _configure()
 
     plan = plan.lower()
+    # Derive default next_plan if not explicitly provided
+    eff_next_plan = next_plan
+    if not eff_next_plan:
+        if plan == "trial":
+            eff_next_plan = "year"
+        elif plan in {"month", "year"}:
+            eff_next_plan = plan
     amount = _amount_for_plan(plan)
     idem = uuid4().hex
     amount_value = format(amount, ".2f")
@@ -59,13 +66,13 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
         "save_payment_method": True,
     }
 
-    if next_plan:
-        payload["metadata"]["next_plan"] = next_plan
+    if eff_next_plan:
+        payload["metadata"]["next_plan"] = eff_next_plan
 
     if ret_url:
         payload["confirmation"]["return_url"] = ret_url
 
-    logger.info(f"YK create payment: user={user_id} plan={plan} amount={amount}")
+    logger.info(f"YK create payment: user={user_id} plan={plan} next_plan={eff_next_plan} amount={amount}")
     try:
         yk_payment = await asyncio.to_thread(Payment.create, payload, idempotency_key=idem)
     except Exception as e:
@@ -89,7 +96,7 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
             currency="RUB",
             status="pending",
             description=f"Calorissimo {plan}",
-            meta={"user_id": user_id, "plan": plan, "next_plan": next_plan} if next_plan else {"user_id": user_id, "plan": plan},
+            meta={"user_id": user_id, "plan": plan, "next_plan": eff_next_plan} if eff_next_plan else {"user_id": user_id, "plan": plan},
         )
         session.add(p)
         await session.commit()

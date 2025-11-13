@@ -27,6 +27,10 @@ class SubscriptionModel(Base):
     )
 
     payment_method_id: Mapped[Optional[str]] = mapped_column(String(128))
+    # Whether to auto-renew at period end (UX toggle; actual rebilling comes next release)
+    auto_renew: Mapped[bool] = mapped_column(default=True)
+    # Deferred plan change that takes effect at the end of current period
+    next_plan: Mapped[Optional[str]] = mapped_column(String(16))
 
     started_at_utc: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("TIMEZONE('utc', now())"), nullable=False

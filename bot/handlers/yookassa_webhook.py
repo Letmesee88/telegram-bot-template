@@ -10,8 +10,9 @@ from yookassa import Configuration, Payment
 from bot.core.config import settings
 from bot.core.loader import bot
 from bot.database.database import sessionmaker
-from bot.database.models import PaymentModel, SubscriptionModel
-from sqlalchemy import select, update
+from bot.database.models import PaymentModel, SubscriptionModel, UserModel
+from sqlalchemy import select, update, func
+from bot.services.users import get_user_tzinfo
 
 
 def _ensure_yk_configured() -> bool:
@@ -50,6 +51,44 @@ class YooKassaWebhookView(View):
             return Response(text="OK")
 
         event = payload.get("event")
+        # Handle cancelation explicitly: notify user and mark payment canceled if known
+        if event == "payment.canceled":
+            obj = payload.get("object") or {}
+            payment_id = obj.get("id")
+            try:
+                yk_payment = await asyncio.to_thread(Payment.find_one, payment_id) if payment_id else None
+            except Exception:
+                yk_payment = None
+            user_id = None
+            if yk_payment is not None:
+                try:
+                    md = getattr(yk_payment, "metadata", {}) or {}
+                    uid = md.get("user_id")
+                    user_id = int(uid) if uid is not None else None
+                except Exception:
+                    user_id = None
+            # Best-effort DB update
+            if payment_id:
+                async with sessionmaker() as session:
+                    try:
+                        res = await session.execute(select(PaymentModel).where(PaymentModel.yk_payment_id == payment_id))
+                        pm = res.scalar_one_or_none()
+                        if pm and getattr(pm, "status", None) != "canceled":
+                            await session.execute(
+                                update(PaymentModel)
+                                .where(PaymentModel.id == pm.id)
+                                .values(status="canceled")
+                            )
+                            await session.commit()
+                    except Exception:
+                        pass
+            if user_id:
+                try:
+                    await bot.send_message(user_id, "❌ Что-то пошло не так. Попробуйте еще раз.")
+                except Exception:
+                    pass
+            return Response(text="OK")
+
         if event != "payment.succeeded":
             return Response(text="OK")
 
@@ -178,7 +217,27 @@ class YooKassaWebhookView(View):
             await session.commit()
 
         try:
-            until = exp_dt.astimezone(timezone.utc).strftime("%d.%m.%Y")
+            # Format in user's timezone (fallback to DEFAULT_TZ/UTC handled by service)
+            async with sessionmaker() as session:
+                tzinfo = await get_user_tzinfo(session, user_id)
+            until = exp_dt.astimezone(tzinfo).strftime("%d.%m.%Y")
+            # Enable premium access and FoodAI for the user (idempotent)
+            async with sessionmaker() as session:
+                try:
+                    await session.execute(
+                        update(UserModel)
+                        .where(UserModel.id == user_id)
+                        .values(is_premium=True)
+                    )
+                    # Set foodai_enabled_at only if NULL
+                    await session.execute(
+                        update(UserModel)
+                        .where(UserModel.id == user_id, UserModel.foodai_enabled_at.is_(None))
+                        .values(foodai_enabled_at=func.now())
+                    )
+                    await session.commit()
+                except Exception:
+                    pass
             await bot.send_message(user_id, f"Оплата получена ✅\nПодписка активна до {until}")
         except Exception as e:
             logger.warning(f"notify user failed: {e}")
