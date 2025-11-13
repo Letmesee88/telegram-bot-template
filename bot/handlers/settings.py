@@ -558,13 +558,55 @@ async def cb_daily_norm_final_adjust(callback: types.CallbackQuery, state: FSMCo
 async def cb_settings_open_subscription(callback: types.CallbackQuery) -> None:
     if not callback.from_user:
         return
-    text = (
-        "💎 Подписка\n\n"
-        "Функционал подписки будет доступен позже."
-    )
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open")]]
-    )
+    user_id = callback.from_user.id
+    # Load subscription and user tz
+    async with sessionmaker() as session:
+        sub = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
+        tzinfo = await get_user_tzinfo(session, user_id)
+
+    def fmt(dt):
+        try:
+            return dt.astimezone(tzinfo).strftime("%d.%m.%Y %H:%M") if dt else "—"
+        except Exception:
+            return "—"
+
+    lines: list[str] = []
+    lines.append("💎 Подписка")
+    lines.append("")
+    kb_rows: list[list[InlineKeyboardButton]] = []
+
+    if sub and sub.status == "active" and sub.expires_at_utc:
+        lines.append(f"Статус: активна")
+        lines.append(f"План: {sub.plan}")
+        lines.append(f"Активна до: {fmt(sub.expires_at_utc)}")
+        if sub.next_plan:
+            lines.append(f"Следующий план: {sub.next_plan}")
+        lines.append("")
+        auto_text = "Автопродление: Вкл" if bool(getattr(sub, "auto_renew", True)) else "Автопродление: Выкл"
+        kb_rows.append([InlineKeyboardButton(text=auto_text, callback_data="subscription:auto_renew:toggle")])
+        # Offer deferred plan change (no payment now)
+        targets: list[str] = []
+        if sub.plan != "month":
+            targets.append("month")
+        if sub.plan != "year":
+            targets.append("year")
+        if sub.plan != "trial":
+            pass
+        if targets:
+            btns = [InlineKeyboardButton(text=("Сменить на Месяц" if t == "month" else "Сменить на Год"), callback_data=f"subscription:set_next:{t}") for t in targets]
+            kb_rows.append(btns)
+        kb_rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open")])
+    else:
+        lines.append("У тебя нет активной подписки.")
+        lines.append("")
+        lines.append("Выбери вариант:")
+        kb_rows.append([InlineKeyboardButton(text="💥 10 руб. за 3 дня (trial)", callback_data="subscription:buy:trial")])
+        kb_rows.append([InlineKeyboardButton(text="750 руб/мес", callback_data="subscription:buy:month")])
+        kb_rows.append([InlineKeyboardButton(text="2500 руб/год", callback_data="subscription:buy:year")])
+        kb_rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open")])
+
+    text = "\n".join(lines)
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     try:
         await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
     except Exception:
@@ -573,7 +615,7 @@ async def cb_settings_open_subscription(callback: types.CallbackQuery) -> None:
         if analytics.logger and callback.from_user:
             analytics.fire_event(
                 BaseEvent(
-                    user_id=callback.from_user.id,
+                    user_id=user_id,
                     event_type="Settings:ClickSubscription",
                     event_properties=EventProperties(text="Settings:ClickSubscription"),
                     plan=Plan(branch="Settings", source="Bot", version="v1"),
@@ -581,6 +623,96 @@ async def cb_settings_open_subscription(callback: types.CallbackQuery) -> None:
             )
     except Exception:
         pass
+    await callback.answer()
+
+
+@router.callback_query(F.data == "subscription:auto_renew:toggle")
+async def cb_subscription_toggle_autorenew(callback: types.CallbackQuery) -> None:
+    if not callback.from_user:
+        return
+    user_id = callback.from_user.id
+    async with sessionmaker() as session:
+        sub = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
+        if sub is None:
+            await callback.answer()
+            return
+        new_val = not bool(getattr(sub, "auto_renew", True))
+        await session.execute(
+            update(SubscriptionModel).where(SubscriptionModel.id == sub.id).values(auto_renew=new_val)
+        )
+        await session.commit()
+    await cb_settings_open_subscription(callback)
+
+
+@router.callback_query(F.data.startswith("subscription:set_next:"))
+async def cb_subscription_set_next(callback: types.CallbackQuery) -> None:
+    if not callback.from_user:
+        return
+    plan = (callback.data or "").split(":")[-1]
+    if plan not in {"month", "year"}:
+        await callback.answer()
+        return
+    user_id = callback.from_user.id
+    async with sessionmaker() as session:
+        sub = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
+        if sub is None:
+            await callback.answer()
+            return
+        await session.execute(
+            update(SubscriptionModel).where(SubscriptionModel.id == sub.id).values(next_plan=plan)
+        )
+        await session.commit()
+    await cb_settings_open_subscription(callback)
+
+
+@router.callback_query(F.data == "subscription:buy:trial")
+async def cb_subscription_buy_trial(callback: types.CallbackQuery) -> None:
+    if not callback.from_user:
+        return
+    from bot.services.yookassa import create_payment
+    user_id = callback.from_user.id
+    try:
+        cp = await create_payment(user_id=user_id, plan="trial")
+    except Exception:
+        await callback.message.answer("Ошибка при создании платежа. Попробуй позже.")
+        await callback.answer()
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Оплатить 10 руб", url=cp.confirmation_url)], [InlineKeyboardButton(text="◀️ Вернуться", callback_data="settings:open:subscription")]])
+    await callback.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "subscription:buy:month")
+async def cb_subscription_buy_month(callback: types.CallbackQuery) -> None:
+    if not callback.from_user:
+        return
+    from bot.services.yookassa import create_payment
+    user_id = callback.from_user.id
+    try:
+        cp = await create_payment(user_id=user_id, plan="month")
+    except Exception:
+        await callback.message.answer("Ошибка при создании платежа. Попробуй позже.")
+        await callback.answer()
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Оплатить 750 руб", url=cp.confirmation_url)], [InlineKeyboardButton(text="◀️ Вернуться", callback_data="settings:open:subscription")]])
+    await callback.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "subscription:buy:year")
+async def cb_subscription_buy_year(callback: types.CallbackQuery) -> None:
+    if not callback.from_user:
+        return
+    from bot.services.yookassa import create_payment
+    user_id = callback.from_user.id
+    try:
+        cp = await create_payment(user_id=user_id, plan="year")
+    except Exception:
+        await callback.message.answer("Ошибка при создании платежа. Попробуй позже.")
+        await callback.answer()
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Оплатить 2500 руб", url=cp.confirmation_url)], [InlineKeyboardButton(text="◀️ Вернуться", callback_data="settings:open:subscription")]])
+    await callback.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
     await callback.answer()
 
 
