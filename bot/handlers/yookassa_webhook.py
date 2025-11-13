@@ -194,7 +194,17 @@ class YooKassaWebhookView(View):
                     )
                 exp_dt = new_exp
             else:
-                base = current.expires_at_utc if current.expires_at_utc and current.expires_at_utc > now else now
+                # Stack duration only when the plan remains the same and the current subscription
+                # is still active in the future. If user changes plan (e.g., year -> month),
+                # start counting from now to avoid inflating expiry by stacking onto a far-future date.
+                if (
+                    current.expires_at_utc
+                    and current.expires_at_utc > now
+                    and (current.plan == plan)
+                ):
+                    base = current.expires_at_utc
+                else:
+                    base = now
                 new_exp = _add_duration(plan, base)
                 await session.execute(
                     update(SubscriptionModel)
