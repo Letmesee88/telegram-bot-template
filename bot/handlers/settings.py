@@ -14,13 +14,14 @@ from bot.keyboards.templates import categories_browse_kb
 from bot.services.account import get_account_summary_text
 from bot.services.analytics import analytics
 from bot.analytics.types import BaseEvent, EventProperties, Plan
-from sqlalchemy import select
-from bot.database.models import OnboardingAnswerModel
+from sqlalchemy import select, update
+from bot.database.models import OnboardingAnswerModel, SubscriptionModel
 from bot.schemas.onboarding import DailyPlan, OnboardingData, Goal
 from bot.services.plan import calculate_daily_plan
 from bot.services.adjust import parse_adjustment_cached, apply_adjustment, parse_adjustment_heuristic, rephrase_explanation_cached
 from bot.core.config import settings
 from bot.services.weight import get_current_weight
+from bot.services.users import get_user_tzinfo
 from loguru import logger
 from bot.core.loader import redis_client
 import hashlib
