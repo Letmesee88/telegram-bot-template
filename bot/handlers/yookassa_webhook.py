@@ -51,10 +51,12 @@ class YooKassaWebhookView(View):
             return Response(text="OK")
 
         event = payload.get("event")
+        obj = payload.get("object") or {}
+        pid = obj.get("id")
+        logger.info(f"yk.webhook.received | event={event} | payment_id={pid}")
         # Handle cancelation explicitly: notify user and mark payment canceled if known
         if event == "payment.canceled":
-            obj = payload.get("object") or {}
-            payment_id = obj.get("id")
+            payment_id = pid
             try:
                 yk_payment = await asyncio.to_thread(Payment.find_one, payment_id) if payment_id else None
             except Exception:
@@ -67,6 +69,7 @@ class YooKassaWebhookView(View):
                     user_id = int(uid) if uid is not None else None
                 except Exception:
                     user_id = None
+            logger.info(f"yk.webhook.canceled | payment_id={payment_id} | user_id={user_id}")
             # Best-effort DB update
             if payment_id:
                 async with sessionmaker() as session:
@@ -80,16 +83,19 @@ class YooKassaWebhookView(View):
                                 .values(status="canceled")
                             )
                             await session.commit()
+                            logger.info(f"yk.webhook.canceled.db_updated | payment_db_id={getattr(pm, 'id', None)}")
                     except Exception:
                         pass
             if user_id:
                 try:
                     await bot.send_message(user_id, "❌ Что-то пошло не так. Попробуйте еще раз.")
+                    logger.info(f"yk.webhook.canceled.notified | user_id={user_id}")
                 except Exception:
                     pass
             return Response(text="OK")
 
         if event != "payment.succeeded":
+            logger.info(f"yk.webhook.ignored | event={event} | payment_id={pid}")
             return Response(text="OK")
 
         if not _ensure_yk_configured():
@@ -125,7 +131,7 @@ class YooKassaWebhookView(View):
 
         expected = _expected_amount(plan)
         if expected <= 0 or amount_value != expected:
-            logger.warning(f"amount mismatch: got {amount_value} expected {expected} plan={plan}")
+            logger.warning(f"yk.webhook.succeeded.amount_mismatch | got={amount_value} expected={expected} plan={plan} payment_id={payment_id}")
             return Response(text="OK")
 
         async with sessionmaker() as session:
@@ -254,6 +260,7 @@ class YooKassaWebhookView(View):
                 "Начинай путь к своей цели прямо сейчас! Что ты ел сегодня? Напиши текстом всё, что помнишь — мы сразу начнём считать твои калории. Есть фотографии блюд? Отправляй их тоже!"
             )
             await bot.send_message(user_id, success_text)
+            logger.info(f"yk.webhook.succeeded.notified | user_id={user_id}")
         except Exception as e:
             logger.warning(f"notify user failed: {e}")
 
