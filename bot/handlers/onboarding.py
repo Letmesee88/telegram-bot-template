@@ -498,13 +498,8 @@ async def sale_pay_trial(call: CallbackQuery, state: FSMContext) -> None:
         [InlineKeyboardButton(text="Оплатить 10 рублей", url=cp.confirmation_url)],
         [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:trial")],
     ])
-    # Replace the callback button with URL in the same message
-    try:
-        await call.message.edit_reply_markup(reply_markup=kb)
-    except Exception:
-        await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
-    # Open YooKassa link immediately on first click
-    await call.answer(url=cp.confirmation_url)
+    await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    await call.answer()
 
 
 @router.callback_query(F.data == "sale:pay:month")
@@ -520,11 +515,8 @@ async def sale_pay_month(call: CallbackQuery, state: FSMContext) -> None:
         [InlineKeyboardButton(text="Оплатить 750 руб", url=cp.confirmation_url)],
         [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:buy:month")],
     ])
-    try:
-        await call.message.edit_reply_markup(reply_markup=kb)
-    except Exception:
-        await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
-    await call.answer(url=cp.confirmation_url)
+    await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    await call.answer()
 
 
 @router.callback_query(F.data == "sale:pay:year")
@@ -540,11 +532,8 @@ async def sale_pay_year(call: CallbackQuery, state: FSMContext) -> None:
         [InlineKeyboardButton(text="Оплатить 2500 руб", url=cp.confirmation_url)],
         [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:buy:year")],
     ])
-    try:
-        await call.message.edit_reply_markup(reply_markup=kb)
-    except Exception:
-        await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
-    await call.answer(url=cp.confirmation_url)
+    await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    await call.answer()
 
 
 # =====================
