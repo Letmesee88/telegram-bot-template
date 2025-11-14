@@ -57,18 +57,33 @@ class YooKassaWebhookView(View):
         # Handle cancelation explicitly: notify user and mark payment canceled if known
         if event == "payment.canceled":
             payment_id = pid
-            try:
-                yk_payment = await asyncio.to_thread(Payment.find_one, payment_id) if payment_id else None
-            except Exception:
-                yk_payment = None
+            # Prefer user_id from webhook payload metadata to avoid extra API calls
             user_id = None
-            if yk_payment is not None:
+            try:
+                md = obj.get("metadata") or {}
+                if isinstance(md, dict) and md.get("user_id") is not None:
+                    user_id = int(md.get("user_id"))
+            except Exception:
+                user_id = None
+
+            if user_id is None and payment_id:
+                # Fallback: fetch payment from YooKassa API to extract metadata.user_id
+                yk_payment = None
                 try:
-                    md = getattr(yk_payment, "metadata", {}) or {}
-                    uid = md.get("user_id")
-                    user_id = int(uid) if uid is not None else None
-                except Exception:
-                    user_id = None
+                    if _ensure_yk_configured():
+                        yk_payment = await asyncio.to_thread(Payment.find_one, payment_id)
+                    else:
+                        logger.warning("yookassa not configured; skip find_one for payment.canceled")
+                except Exception as e:
+                    logger.warning(f"yookassa find_one failed for canceled: {e}")
+                    yk_payment = None
+                if yk_payment is not None:
+                    try:
+                        md = getattr(yk_payment, "metadata", {}) or {}
+                        uid = md.get("user_id")
+                        user_id = int(uid) if uid is not None else None
+                    except Exception:
+                        user_id = None
             logger.info(f"yk.webhook.canceled | payment_id={payment_id} | user_id={user_id}")
             # Best-effort DB update
             if payment_id:

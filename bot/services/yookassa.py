@@ -84,6 +84,7 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
     confirmation_url: str = getattr(confirmation, "confirmation_url", None) if confirmation else None
     if not confirmation_url:
         raise RuntimeError("No confirmation_url returned by YooKassa")
+    logger.info(f"YK payment created: id={payment_id} idem={idem} url={confirmation_url}")
 
     async with sessionmaker() as session:
         p = PaymentModel(
@@ -100,5 +101,6 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
         )
         session.add(p)
         await session.commit()
+        logger.info(f"YK payment persisted: id={payment_id} status=pending user={user_id} plan={plan} amount={amount}")
 
     return CreatedPayment(payment_id=payment_id, confirmation_url=confirmation_url, idempotence_key=idem)
