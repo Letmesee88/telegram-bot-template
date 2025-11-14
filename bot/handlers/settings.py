@@ -7,6 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import asyncio
 import re
+from datetime import datetime, timezone
 
 from bot.database.database import sessionmaker
 from bot.services.templates import list_categories_with_counts
@@ -89,6 +90,237 @@ async def _render_settings(callback: types.CallbackQuery) -> None:
 @router.callback_query(F.data == "settings:open")
 async def cb_settings_open(callback: types.CallbackQuery) -> None:
     await _render_settings(callback)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "subscription:change_plan")
+async def cb_subscription_change_plan(callback: types.CallbackQuery) -> None:
+    if not callback.from_user:
+        return
+    user_id = callback.from_user.id
+    async with sessionmaker() as session:
+        sub = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
+        tzinfo = await get_user_tzinfo(session, user_id)
+    if not sub or not sub.expires_at_utc:
+        await cb_settings_open_subscription(callback)
+        return
+    plan_map = {"trial": "Пробный доступ", "month": "Месячная подписка", "year": "Годовая подписка"}
+    target = "year" if sub.plan == "month" else "month"
+    title = "🔄 Смена плана подписки"
+    now_utc = datetime.now(timezone.utc)
+    try:
+        cur_until = sub.expires_at_utc.astimezone(tzinfo).strftime("%d.%m.%Y")
+    except Exception:
+        cur_until = "—"
+    lines = [
+        title,
+        "",
+        f"Текущий план: {plan_map.get(sub.plan, sub.plan)}",
+        f"📅 Действует до: {cur_until}",
+        "",
+    ]
+    if target == "year":
+        lines += [
+            "Предлагаемый план: Годовая подписка",
+            "",
+            "💰 Стоимость: 2500 руб/год",
+            "",
+            "При смене на годовой план:",
+            "• Вы сэкономите 6 500 рублей в год",
+            "• Не нужно беспокоиться о ежемесячных платежах",
+            "• Все функции остаются доступными",
+        ]
+        cta = "💎 Перейти на годовую подписку"
+    else:
+        lines += [
+            "Предлагаемый план: Месячная подписка",
+            "",
+            "💰 Стоимость: 750 руб/месяц",
+        ]
+        cta = "💎 Перейти на месячную подписку"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=cta, callback_data=f"subscription:change_plan_confirm:{target}")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
+    ])
+    text = "\n".join(lines)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "subscription:autorenew:disable")
+async def cb_subscription_autorenew_disable(callback: types.CallbackQuery) -> None:
+    if not callback.from_user:
+        return
+    user_id = callback.from_user.id
+    async with sessionmaker() as session:
+        sub = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
+        if not sub or not sub.expires_at_utc:
+            await callback.answer()
+            return
+        await session.execute(update(SubscriptionModel).where(SubscriptionModel.id == sub.id).values(auto_renew=False))
+        await session.commit()
+        tzinfo = await get_user_tzinfo(session, user_id)
+        until = sub.expires_at_utc.astimezone(tzinfo)
+    now_utc = datetime.now(timezone.utc).astimezone(tzinfo)
+    days_left = max(0, (until.date() - now_utc.date()).days)
+    lines = [
+        "✅ Автопродление отключено",
+        "",
+        f"Подписка остается активной до {until.strftime('%d.%m.%Y')}",
+        f"Осталось дней: {days_left}",
+        "",
+        "Автоматическое продление больше не будет происходить.",
+        "Вы можете возобновить подписку в любое время.",
+        "",
+        "Спасибо за использование Calorissimo ai! 🍬",
+    ]
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="↔️ Сменить план", callback_data="subscription:change_plan")],
+        [InlineKeyboardButton(text="✅ Включить автопродление", callback_data="subscription:autorenew:enable")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
+    ])
+    text = "\n".join(lines)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "subscription:autorenew:enable")
+async def cb_subscription_autorenew_enable(callback: types.CallbackQuery) -> None:
+    if not callback.from_user:
+        return
+    user_id = callback.from_user.id
+    async with sessionmaker() as session:
+        sub = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
+        if not sub or not sub.expires_at_utc:
+            await callback.answer()
+            return
+        await session.execute(update(SubscriptionModel).where(SubscriptionModel.id == sub.id).values(auto_renew=True))
+        await session.commit()
+        tzinfo = await get_user_tzinfo(session, user_id)
+        until = sub.expires_at_utc.astimezone(tzinfo)
+    now_utc = datetime.now(timezone.utc).astimezone(tzinfo)
+    days_left = max(0, (until.date() - now_utc.date()).days)
+    lines = [
+        "✅ Автопродление включено",
+        "",
+        f"Подписка будет автоматически продлена {until.strftime('%d.%m.%Y')}",
+        f"Осталось дней: {days_left}",
+        "",
+        "Спасибо, что остаетесь с нами! 🎉",
+    ]
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="↔️ Сменить план", callback_data="subscription:change_plan")],
+        [InlineKeyboardButton(text="❌ Отключить подписку", callback_data="subscription:autorenew:disable")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
+    ])
+    text = "\n".join(lines)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("subscription:change_plan_confirm:"))
+async def cb_subscription_change_plan_confirm(callback: types.CallbackQuery) -> None:
+    if not callback.from_user:
+        return
+    target = (callback.data or "").split(":")[-1]
+    if target not in {"month", "year"}:
+        await callback.answer()
+        return
+    user_id = callback.from_user.id
+    async with sessionmaker() as session:
+        sub = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
+        tzinfo = await get_user_tzinfo(session, user_id)
+    if not sub or not sub.expires_at_utc:
+        await cb_settings_open_subscription(callback)
+        return
+    plan_map = {"trial": "Пробный доступ", "month": "Месячная подписка", "year": "Годовая подписка"}
+    cur_plan = plan_map.get(sub.plan, sub.plan)
+    new_plan = plan_map.get(target, target)
+    until = sub.expires_at_utc.astimezone(tzinfo).strftime("%d.%m.%Y")
+    lines = [
+        "✅ Подтверждение смены плана",
+        "",
+        f"Сейчас: {cur_plan}",
+        f"На: {new_plan}",
+        "",
+        "📅 Когда произойдет смена:",
+        f"В конце текущего периода ({until})",
+    ]
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить смену", callback_data=f"subscription:change_plan_apply:{target}")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="subscription:change_plan")],
+    ])
+    text = "\n".join(lines)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("subscription:change_plan_apply:"))
+async def cb_subscription_change_plan_apply(callback: types.CallbackQuery) -> None:
+    if not callback.from_user:
+        return
+    target = (callback.data or "").split(":")[-1]
+    if target not in {"month", "year"}:
+        await callback.answer()
+        return
+    user_id = callback.from_user.id
+    async with sessionmaker() as session:
+        sub = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
+        tzinfo = await get_user_tzinfo(session, user_id)
+        if not sub:
+            await callback.answer()
+            return
+        await session.execute(
+            update(SubscriptionModel).where(SubscriptionModel.id == sub.id).values(next_plan=target)
+        )
+        await session.commit()
+    plan_map = {"trial": "Пробный доступ", "month": "Месячная подписка", "year": "Годовая подписка"}
+    new_plan = plan_map.get(target, target)
+    until = "—"
+    try:
+        async with sessionmaker() as session:
+            sub2 = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
+            if sub2 and sub2.expires_at_utc:
+                tzinfo = await get_user_tzinfo(session, user_id)
+                until = sub2.expires_at_utc.astimezone(tzinfo).strftime("%d.%m.%Y")
+    except Exception:
+        pass
+    lines = [
+        "🎉 План успешно изменен!",
+        "",
+        f"Новый план: {new_plan}",
+        f"📅 Дата списания: {until}",
+        "✅ Смена плана завершена!",
+        "",
+        "Следующий платеж будет по новому тарифу.",
+    ]
+    # Actions after success
+    async with sessionmaker() as session:
+        sub = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
+    kb_rows = [[InlineKeyboardButton(text="↔️ Сменить план", callback_data="subscription:change_plan")]]
+    if sub and bool(getattr(sub, "auto_renew", True)):
+        kb_rows.append([InlineKeyboardButton(text="❌ Отключить подписку", callback_data="subscription:autorenew:disable")])
+    else:
+        kb_rows.append([InlineKeyboardButton(text="✅ Включить автопродление", callback_data="subscription:autorenew:enable")])
+    kb_rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    text = "\n".join(lines)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
     await callback.answer()
 
 
@@ -572,32 +804,41 @@ async def cb_settings_open_subscription(callback: types.CallbackQuery) -> None:
             return "—"
 
     lines: list[str] = []
-    lines.append("💎 Подписка")
-    lines.append("")
     kb_rows: list[list[InlineKeyboardButton]] = []
 
     if sub and sub.status == "active" and sub.expires_at_utc:
-        lines.append(f"Статус: активна")
-        lines.append(f"План: {sub.plan}")
-        lines.append(f"Активна до: {fmt(sub.expires_at_utc)}")
-        if sub.next_plan:
-            lines.append(f"Следующий план: {sub.next_plan}")
+        # Friendly names and status
+        plan_map = {"trial": "Пробный доступ", "month": "Месячная подписка", "year": "Годовая подписка"}
+        status_text = "Пробная" if sub.plan == "trial" else "Активная"
+        now_utc = datetime.now(timezone.utc)
+        try:
+            days_left = max(0, (sub.expires_at_utc.astimezone(tzinfo).date() - now_utc.astimezone(tzinfo).date()).days)
+        except Exception:
+            days_left = 0
+
+        lines.append("💎 Управление подпиской")
         lines.append("")
-        auto_text = "Автопродление: Вкл" if bool(getattr(sub, "auto_renew", True)) else "Автопродление: Выкл"
-        kb_rows.append([InlineKeyboardButton(text=auto_text, callback_data="subscription:auto_renew:toggle")])
-        # Offer deferred plan change (no payment now)
-        targets: list[str] = []
-        if sub.plan != "month":
-            targets.append("month")
-        if sub.plan != "year":
-            targets.append("year")
-        if sub.plan != "trial":
-            pass
-        if targets:
-            btns = [InlineKeyboardButton(text=("Сменить на Месяц" if t == "month" else "Сменить на Год"), callback_data=f"subscription:set_next:{t}") for t in targets]
-            kb_rows.append(btns)
+        lines.append(f"✅ Статус: {status_text}")
+        lines.append(f"📦 План: {plan_map.get(sub.plan, sub.plan)}")
+        lines.append(f"📅 Действует до: {fmt(sub.expires_at_utc)}")
+        lines.append(f"🔄 Автопродление: {'Включено' if bool(getattr(sub, 'auto_renew', True)) else 'Выключено'}")
+        lines.append(f"☀️ Дней осталось: {days_left}")
+        if sub.next_plan:
+            lines.append(f"Предстоящая смена плана: {plan_map.get(sub.next_plan, sub.next_plan)}")
+        lines.append("")
+
+        # Actions
+        kb_rows.append([InlineKeyboardButton(text="↔️ Сменить план", callback_data="subscription:change_plan")])
+        if bool(getattr(sub, "auto_renew", True)):
+            kb_rows.append([InlineKeyboardButton(text="❌ Отключить подписку", callback_data="subscription:autorenew:disable")])
+        else:
+            kb_rows.append([InlineKeyboardButton(text="✅ Включить автопродление", callback_data="subscription:autorenew:enable")])
         kb_rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open")])
+        text = "\n".join(lines)
+        kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     else:
+        lines.append("💎 Управление подпиской")
+        lines.append("")
         lines.append("У тебя нет активной подписки.")
         lines.append("")
         lines.append("Выбери вариант:")
@@ -605,9 +846,8 @@ async def cb_settings_open_subscription(callback: types.CallbackQuery) -> None:
         kb_rows.append([InlineKeyboardButton(text="750 руб/мес", callback_data="subscription:buy:month")])
         kb_rows.append([InlineKeyboardButton(text="2500 руб/год", callback_data="subscription:buy:year")])
         kb_rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open")])
-
-    text = "\n".join(lines)
-    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+        text = "\n".join(lines)
+        kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     try:
         await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
     except Exception:

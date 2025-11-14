@@ -230,7 +230,7 @@ class YooKassaWebhookView(View):
             # Format in user's timezone (fallback to DEFAULT_TZ/UTC handled by service)
             async with sessionmaker() as session:
                 tzinfo = await get_user_tzinfo(session, user_id)
-            until = exp_dt.astimezone(tzinfo).strftime("%d.%m.%Y")
+            _ = exp_dt.astimezone(tzinfo)  # compute to ensure tz is valid, but not shown per spec
             # Enable premium access and FoodAI for the user (idempotent)
             async with sessionmaker() as session:
                 try:
@@ -248,7 +248,12 @@ class YooKassaWebhookView(View):
                     await session.commit()
                 except Exception:
                     pass
-            await bot.send_message(user_id, f"Оплата получена ✅\nПодписка активна до {until}")
+            success_text = (
+                "🎉 Подписка успешно оформлена!\n\n"
+                "Супер! Теперь тебе доступны все возможности Calorissimo AI без ограничений\n\n"
+                "Начинай путь к своей цели прямо сейчас! Что ты ел сегодня? Напиши текстом всё, что помнишь — мы сразу начнём считать твои калории. Есть фотографии блюд? Отправляй их тоже!"
+            )
+            await bot.send_message(user_id, success_text)
         except Exception as e:
             logger.warning(f"notify user failed: {e}")
 
