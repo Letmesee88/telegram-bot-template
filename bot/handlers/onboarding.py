@@ -503,7 +503,8 @@ async def sale_pay_trial(call: CallbackQuery, state: FSMContext) -> None:
         await call.message.edit_reply_markup(reply_markup=kb)
     except Exception:
         await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
-    await call.answer()
+    # Open YooKassa link immediately on first click
+    await call.answer(url=cp.confirmation_url)
 
 
 @router.callback_query(F.data == "sale:pay:month")
@@ -523,7 +524,7 @@ async def sale_pay_month(call: CallbackQuery, state: FSMContext) -> None:
         await call.message.edit_reply_markup(reply_markup=kb)
     except Exception:
         await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
-    await call.answer()
+    await call.answer(url=cp.confirmation_url)
 
 
 @router.callback_query(F.data == "sale:pay:year")
@@ -543,7 +544,7 @@ async def sale_pay_year(call: CallbackQuery, state: FSMContext) -> None:
         await call.message.edit_reply_markup(reply_markup=kb)
     except Exception:
         await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
-    await call.answer()
+    await call.answer(url=cp.confirmation_url)
 
 
 # =====================
