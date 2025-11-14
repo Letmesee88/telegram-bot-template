@@ -498,7 +498,10 @@ async def sale_pay_trial(call: CallbackQuery, state: FSMContext) -> None:
         [InlineKeyboardButton(text="Оплатить 10 рублей", url=cp.confirmation_url)],
         [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:trial")],
     ])
-    await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    try:
+        await call.message.edit_text("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
     await call.answer()
 
 
@@ -515,7 +518,10 @@ async def sale_pay_month(call: CallbackQuery, state: FSMContext) -> None:
         [InlineKeyboardButton(text="Оплатить 750 руб", url=cp.confirmation_url)],
         [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:buy:month")],
     ])
-    await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    try:
+        await call.message.edit_text("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
     await call.answer()
 
 
@@ -532,7 +538,10 @@ async def sale_pay_year(call: CallbackQuery, state: FSMContext) -> None:
         [InlineKeyboardButton(text="Оплатить 2500 руб", url=cp.confirmation_url)],
         [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:buy:year")],
     ])
-    await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    try:
+        await call.message.edit_text("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
     await call.answer()
 
 
