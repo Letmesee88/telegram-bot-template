@@ -61,9 +61,23 @@ async def _render_settings(callback: types.CallbackQuery) -> None:
         return
     user_id = callback.from_user.id
     n = await _templates_total_count(user_id)
+    # Build subscription topline (Variant A)
+    async with sessionmaker() as session:
+        sub = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
+        tzinfo = await get_user_tzinfo(session, user_id)
+    def _fmt(dt):
+        try:
+            return dt.astimezone(tzinfo).strftime("%d.%m.%Y %H:%M") if dt else "—"
+        except Exception:
+            return "—"
+    plan_map_short = {"trial": "Пробная", "month": "Месячная", "year": "Годовая"}
+    if sub and sub.status == "active" and sub.expires_at_utc:
+        line_sub = f"💎 Подписка: {plan_map_short.get(sub.plan, sub.plan)} • до {_fmt(sub.expires_at_utc)}"
+    else:
+        line_sub = "💎 Подписка: ❌ не активна"
     text = (
         "⚙️ Настройки\n\n"
-        f"💎 Подписка: ❌ не активна\n"
+        f"{line_sub}\n"
         f"📝 Шаблонов блюд: {n}"
     )
     kb = _kb_settings()
@@ -809,8 +823,8 @@ async def cb_settings_open_subscription(callback: types.CallbackQuery) -> None:
     kb_rows: list[list[InlineKeyboardButton]] = []
 
     if sub and sub.status == "active" and sub.expires_at_utc:
-        # Friendly names and status
-        plan_map = {"trial": "Пробный доступ", "month": "Месячная подписка", "year": "Годовая подписка"}
+        # Friendly names and status (short labels for the subscription screen)
+        plan_map = {"trial": "Пробная", "month": "Месячная", "year": "Годовая"}
         status_text = "Пробная" if sub.plan == "trial" else "Активная"
         now_utc = datetime.now(timezone.utc)
         try:
