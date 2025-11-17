@@ -105,7 +105,9 @@ async def cb_subscription_change_plan(callback: types.CallbackQuery) -> None:
         await cb_settings_open_subscription(callback)
         return
     plan_map = {"trial": "Пробный доступ", "month": "Месячная подписка", "year": "Годовая подписка"}
-    target = "year" if sub.plan == "month" else "month"
+    base_plan = getattr(sub, "next_plan", None)
+    base_plan = base_plan if base_plan in {"month", "year"} else sub.plan
+    target = "year" if base_plan == "month" else "month"
     title = "🔄 Смена плана подписки"
     now_utc = datetime.now(timezone.utc)
     try:
@@ -823,8 +825,6 @@ async def cb_settings_open_subscription(callback: types.CallbackQuery) -> None:
         lines.append(f"📅 Действует до: {fmt(sub.expires_at_utc)}")
         lines.append(f"🔄 Автопродление: {'Включено' if bool(getattr(sub, 'auto_renew', True)) else 'Выключено'}")
         lines.append(f"☀️ Дней осталось: {days_left}")
-        if sub.next_plan:
-            lines.append(f"Предстоящая смена плана: {plan_map.get(sub.next_plan, sub.next_plan)}")
         lines.append("")
 
         # Actions
