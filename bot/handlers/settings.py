@@ -67,7 +67,7 @@ async def _render_settings(callback: types.CallbackQuery) -> None:
         tzinfo = await get_user_tzinfo(session, user_id)
     def _fmt(dt):
         try:
-            return dt.astimezone(tzinfo).strftime("%d.%m.%Y %H:%M") if dt else "—"
+            return dt.astimezone(tzinfo).strftime("%d.%m.%Y") if dt else "—"
         except Exception:
             return "—"
     plan_map_short = {"trial": "Пробная", "month": "Месячная", "year": "Годовая"}
