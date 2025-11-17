@@ -84,7 +84,20 @@ class YooKassaWebhookView(View):
                         user_id = int(uid) if uid is not None else None
                     except Exception:
                         user_id = None
-            logger.info(f"yk.webhook.canceled | payment_id={payment_id} | user_id={user_id}")
+            # Cancellation diagnostic info from YooKassa (if provided)
+            cd = obj.get("cancellation_details") or {}
+            try:
+                logger.info(
+                    f"yk.webhook.canceled | payment_id={payment_id} | user_id={user_id}"
+                )
+                party = cd.get("party") if isinstance(cd, dict) else None
+                reason = cd.get("reason") if isinstance(cd, dict) else None
+                if party or reason:
+                    logger.info(
+                        f"yk.webhook.canceled.details | party={party} | reason={reason}"
+                    )
+            except Exception:
+                pass
             # Best-effort DB update
             if payment_id:
                 async with sessionmaker() as session:
@@ -92,10 +105,17 @@ class YooKassaWebhookView(View):
                         res = await session.execute(select(PaymentModel).where(PaymentModel.yk_payment_id == payment_id))
                         pm = res.scalar_one_or_none()
                         if pm and getattr(pm, "status", None) != "canceled":
+                            # Merge cancellation_details into metadata for analytics/support
+                            try:
+                                existing_meta = dict(getattr(pm, "meta", {}) or {})
+                                if isinstance(cd, dict) and cd:
+                                    existing_meta["cancellation_details"] = cd
+                            except Exception:
+                                existing_meta = getattr(pm, "meta", None)
                             await session.execute(
                                 update(PaymentModel)
                                 .where(PaymentModel.id == pm.id)
-                                .values(status="canceled")
+                                .values(status="canceled", meta=existing_meta)
                             )
                             await session.commit()
                             logger.info(f"yk.webhook.canceled.db_updated | payment_db_id={getattr(pm, 'id', None)}")
