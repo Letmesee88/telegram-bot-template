@@ -8,7 +8,7 @@ from loguru import logger
 from yookassa import Configuration, Payment
 
 from bot.core.config import settings
-from bot.core.loader import bot
+from bot.core.loader import bot, redis_client
 from bot.database.database import sessionmaker
 from bot.database.models import PaymentModel, SubscriptionModel, UserModel
 from sqlalchemy import select, update, func
@@ -59,10 +59,20 @@ class YooKassaWebhookView(View):
             payment_id = pid
             # Prefer user_id from webhook payload metadata to avoid extra API calls
             user_id = None
+            is_rebill = False
+            sub_id_from_meta = None
+            period_key = None
             try:
                 md = obj.get("metadata") or {}
                 if isinstance(md, dict) and md.get("user_id") is not None:
                     user_id = int(md.get("user_id"))
+                is_rebill = bool(md.get("rebill"))
+                sub_id_from_meta = md.get("subscription_id")
+                try:
+                    sub_id_from_meta = int(sub_id_from_meta) if sub_id_from_meta is not None else None
+                except Exception:
+                    sub_id_from_meta = None
+                period_key = md.get("period_key")
             except Exception:
                 user_id = None
 
@@ -121,9 +131,98 @@ class YooKassaWebhookView(View):
                             logger.info(f"yk.webhook.canceled.db_updated | payment_db_id={getattr(pm, 'id', None)}")
                     except Exception:
                         pass
+            # If it's a rebill cancellation, immediately close access and schedule retry (unless permanent)
+            if is_rebill and sub_id_from_meta and period_key:
+                try:
+                    async with sessionmaker() as session:
+                        try:
+                            # Close access now
+                            await session.execute(
+                                update(SubscriptionModel).where(SubscriptionModel.id == sub_id_from_meta).values(status="past_due")
+                            )
+                            if user_id:
+                                await session.execute(
+                                    update(UserModel).where(UserModel.id == user_id).values(is_premium=False)
+                                )
+                            await session.commit()
+                        except Exception:
+                            pass
+                    # Check permanent cancellation reasons — if permanent, disable auto_renew and clear payment_method_id
+                    try:
+                        reason = None
+                        cd = obj.get("cancellation_details") or {}
+                        if isinstance(cd, dict):
+                            reason = cd.get("reason")
+                    except Exception:
+                        reason = None
+                    permanent_reasons = {"permission_revoked", "payment_method_restricted", "expired_on_confirmation"}
+                    is_permanent = bool(reason in permanent_reasons)
+                    if is_permanent:
+                        try:
+                            async with sessionmaker() as session:
+                                await session.execute(
+                                    update(SubscriptionModel)
+                                    .where(SubscriptionModel.id == sub_id_from_meta)
+                                    .values(auto_renew=False, payment_method_id=None)
+                                )
+                                await session.commit()
+                        except Exception:
+                            pass
+                    # Clear submitted flag to allow a new attempt (only if not permanent)
+                    try:
+                        if not is_permanent:
+                            member = f"rebill:submitted:{sub_id_from_meta}:{period_key}"
+                            await redis_client.delete(member)
+                    except Exception:
+                        pass
+                    # Schedule next retry via Redis (skip if permanent)
+                    try:
+                        if is_permanent:
+                            # Also clear attempts key if present
+                            try:
+                                attempts_key = f"rebill:attempts:{sub_id_from_meta}:{period_key}"
+                                await redis_client.delete(attempts_key)
+                            except Exception:
+                                pass
+                        else:
+                            delays = getattr(settings, "REBILL_RETRY_DAYS", None) or [0, 1, 3]
+                            delays = [int(x) for x in delays]
+                    except Exception:
+                        delays = [0, 1, 3]
+                    # Count attempt and compute next
+                    if not is_permanent:
+                        attempts_key = f"rebill:attempts:{sub_id_from_meta}:{period_key}"
+                        try:
+                            attempts = int((await redis_client.incr(attempts_key)) or 1)
+                        except Exception:
+                            attempts = 1
+                        try:
+                            await redis_client.expire(attempts_key, 15 * 24 * 3600)
+                        except Exception:
+                            pass
+                        if attempts <= len(delays):
+                            from datetime import datetime, timedelta, timezone
+                            try:
+                                next_ts = int((datetime.now(timezone.utc) + timedelta(days=delays[attempts - 1])).timestamp())
+                                zkey = "rebill:due"
+                                member = f"{sub_id_from_meta}:{period_key}"
+                                await redis_client.zadd(zkey, {member: next_ts})
+                                logger.info(
+                                    f"rebill.retry_scheduled | sub={sub_id_from_meta} period={period_key} attempt={attempts} at={next_ts}"
+                                )
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
             if user_id:
                 try:
-                    await bot.send_message(user_id, "❌ Что-то пошло не так. Попробуйте еще раз.")
+                    if is_rebill:
+                        await bot.send_message(
+                            user_id,
+                            "❌ Не удалось продлить подписку. Проверьте карту/средства/банк и попробуйте оплатить вручную в разделе \u00abПодписка\u00bb.",
+                        )
+                    else:
+                        await bot.send_message(user_id, "❌ Что-то пошло не так. Попробуйте еще раз.")
                     logger.info(f"yk.webhook.canceled.notified | user_id={user_id}")
                 except Exception:
                     pass
@@ -155,8 +254,10 @@ class YooKassaWebhookView(View):
             metadata = getattr(yk_payment, "metadata", {}) or {}
             payment_method = getattr(yk_payment, "payment_method", None)
             payment_method_id = getattr(payment_method, "id", None) if payment_method else None
+            payment_method_saved = bool(getattr(payment_method, "saved", False)) if payment_method else False
             plan = str(metadata.get("plan", "")).lower()
             user_id = int(metadata.get("user_id")) if metadata.get("user_id") else None
+            is_rebill = bool(metadata.get("rebill"))
         except Exception as e:
             logger.warning(f"yookassa parse error: {e}")
             return Response(text="OK")
@@ -220,7 +321,7 @@ class YooKassaWebhookView(View):
                     user_id=user_id,
                     status="active",
                     plan=plan,
-                    payment_method_id=payment_method_id,
+                    payment_method_id=payment_method_id if payment_method_saved else None,
                     started_at_utc=now,
                     expires_at_utc=new_exp,
                 )
@@ -247,15 +348,18 @@ class YooKassaWebhookView(View):
                 else:
                     base = now
                 new_exp = _add_duration(plan, base)
+                values = {
+                    "status": "active",
+                    "plan": plan,
+                    "payment_method_id": (payment_method_id if payment_method_saved else current.payment_method_id),
+                    "expires_at_utc": new_exp,
+                }
+                if is_rebill:
+                    values["next_plan"] = None
                 await session.execute(
                     update(SubscriptionModel)
                     .where(SubscriptionModel.id == current.id)
-                    .values(
-                        status="active",
-                        plan=plan,
-                        payment_method_id=payment_method_id or current.payment_method_id,
-                        expires_at_utc=new_exp,
-                    )
+                    .values(**values)
                 )
                 if p is not None:
                     p.subscription_id = current.id
@@ -289,13 +393,15 @@ class YooKassaWebhookView(View):
                     await session.commit()
                 except Exception:
                     pass
-            success_text = (
-                "🎉 Подписка успешно оформлена!\n\n"
-                "Супер! Теперь тебе доступны все возможности Calorissimo AI без ограничений\n\n"
-                "Начинай путь к своей цели прямо сейчас! Что ты ел сегодня? Напиши текстом всё, что помнишь — мы сразу начнём считать твои калории. Есть фотографии блюд? Отправляй их тоже!"
-            )
-            await bot.send_message(user_id, success_text)
-            logger.info(f"yk.webhook.succeeded.notified | user_id={user_id}")
+            # Do not notify on recurring success
+            if not is_rebill:
+                success_text = (
+                    "🎉 Подписка успешно оформлена!\n\n"
+                    "Супер! Теперь тебе доступны все возможности Calorissimo AI без ограничений\n\n"
+                    "Начинай путь к своей цели прямо сейчас! Что ты ел сегодня? Напиши текстом всё, что помнишь — мы сразу начнём считать твои калории. Есть фотографии блюд? Отправляй их тоже!"
+                )
+                await bot.send_message(user_id, success_text)
+                logger.info(f"yk.webhook.succeeded.notified | user_id={user_id}")
         except Exception as e:
             logger.warning(f"notify user failed: {e}")
 

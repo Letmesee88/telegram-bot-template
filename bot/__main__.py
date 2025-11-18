@@ -16,6 +16,7 @@ from bot.keyboards.default_commands import remove_default_commands, set_default_
 from bot.middlewares import register_middlewares
 from bot.middlewares.prometheus import prometheus_middleware_factory
 from bot.background.report_scheduler import scheduler
+from bot.background.recurring_scheduler import recurring_scheduler
 
 
 async def on_startup() -> None:
@@ -74,6 +75,13 @@ async def on_startup() -> None:
     except Exception as e:
         logger.warning(f"failed to start report scheduler: {e}")
 
+    # Start recurring rebill scheduler
+    try:
+        asyncio.create_task(recurring_scheduler.start(bot))
+        logger.info("recurring scheduler started")
+    except Exception as e:
+        logger.warning(f"failed to start recurring scheduler: {e}")
+
     logger.info("bot started")
 
 
@@ -89,6 +97,12 @@ async def on_shutdown() -> None:
     try:
         await scheduler.stop()
         logger.info("daily report scheduler stopped")
+    except Exception:
+        pass
+
+    try:
+        await recurring_scheduler.stop()
+        logger.info("recurring scheduler stopped")
     except Exception:
         pass
 

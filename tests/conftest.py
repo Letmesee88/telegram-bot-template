@@ -84,6 +84,9 @@ def test_db_env(postgres_service) -> dict[str, str]:
         # Redis not used in these tests
         "REDIS_HOST": "localhost",
         "REDIS_PORT": "6379",
+        # Enable YooKassa configuration branch
+        "YOOKASSA_SHOP_ID": "1",
+        "YOOKASSA_SECRET_KEY": "TEST",
     }
     # Set env before importing app modules
     os.environ.update(env)
@@ -169,3 +172,159 @@ async def ensure_user(db_session):
         return user_id
 
     return _make
+
+
+# ---------- Minimal in-memory async Redis stub for tests ----------
+
+
+class _FakeRedis:
+    def __init__(self) -> None:
+        self._kv: dict[str, str] = {}
+        self._z: dict[str, dict[str, int]] = {}
+
+    # String ops
+    async def set(self, key: str, value: str, nx: bool | None = None, ex: int | None = None):
+        if nx:
+            if key in self._kv:
+                return False
+        self._kv[key] = str(value)
+        return True
+
+    async def get(self, key: str):
+        return self._kv.get(key)
+
+    async def exists(self, key: str) -> int:
+        return 1 if key in self._kv else 0
+
+    async def delete(self, key: str) -> None:
+        self._kv.pop(key, None)
+
+    async def expire(self, key: str, seconds: int) -> None:  # no-op for tests
+        return None
+
+    async def incr(self, key: str) -> int:
+        cur = int(self._kv.get(key) or 0)
+        cur += 1
+        self._kv[key] = str(cur)
+        return cur
+
+    # ZSET ops
+    async def zadd(self, key: str, mapping: dict[str, int], nx: bool | None = None):
+        z = self._z.setdefault(key, {})
+        for member, score in mapping.items():
+            if nx and member in z:
+                continue
+            z[member] = int(score)
+        return True
+
+    async def zrangebyscore(self, key: str, min: str | int, max: int, start: int = 0, num: int = 200, withscores: bool = False):
+        z = self._z.get(key, {})
+        items = [(m, s) for m, s in z.items() if (min == "-inf" or s >= int(min)) and s <= int(max)]
+        items.sort(key=lambda x: x[1])
+        sliced = items[start:start + num]
+        if withscores:
+            return sliced
+        return [m for m, _ in sliced]
+
+    async def zrem(self, key: str, member: str) -> None:
+        z = self._z.get(key, {})
+        z.pop(member, None)
+
+    # Pipeline stub
+    def pipeline(self, transaction: bool = False):
+        self._pipe_buf: list[tuple[str, tuple, dict]] = []
+        return self
+
+    def zadd_pipe(self, key: str, mapping: dict[str, int], nx: bool | None = None):
+        self._pipe_buf.append(("zadd", (key, mapping), {"nx": nx}))
+        return self
+
+    async def execute(self):
+        for op, args, kwargs in getattr(self, "_pipe_buf", []):
+            if op == "zadd":
+                await self.zadd(*args, **kwargs)
+        self._pipe_buf = []
+        return True
+
+
+@pytest.fixture(autouse=True)
+async def patch_redis_client(monkeypatch):
+    # Replace global redis_client with in-memory stub for all tests
+    from bot.core import loader
+    fake = _FakeRedis()
+    monkeypatch.setattr(loader, "redis_client", fake, raising=False)
+    yield fake
+
+
+@pytest.fixture
+def capture_bot_messages(monkeypatch):
+    from bot.core.loader import bot
+    sent: list[tuple[int, str]] = []
+
+    async def _fake_send_message(user_id: int, text: str, *args, **kwargs):
+        sent.append((user_id, text))
+
+    monkeypatch.setattr(bot, "send_message", _fake_send_message, raising=True)
+    return sent
+
+
+@pytest.fixture
+def yk_stub(monkeypatch):
+    # Helper to patch Payment.find_one with a stub object
+    class _PM:
+        def __init__(self, id: str, saved: bool = True) -> None:
+            self.id = id
+            self.saved = saved
+
+    class _Amount:
+        def __init__(self, value: str, currency: str = "RUB") -> None:
+            self.value = value
+            self.currency = currency
+
+    class _PaymentObj:
+        def __init__(self, *, status: str, value: str, metadata: dict, pm_id: str, pm_saved: bool = True) -> None:
+            self.status = status
+            self.amount = _Amount(value, "RUB")
+            self.metadata = metadata
+            self.payment_method = _PM(pm_id, pm_saved)
+
+    from yookassa import Payment as _YP
+
+    def _make(status: str, value: str, metadata: dict, pm_id: str, pm_saved: bool = True):
+        obj = _PaymentObj(status=status, value=value, metadata=metadata, pm_id=pm_id, pm_saved=pm_saved)
+
+        def _find_one(_payment_id: str):
+            return obj
+
+        monkeypatch.setattr(_YP, "find_one", _find_one, raising=True)
+        return obj
+
+    return _make
+
+
+@pytest.fixture
+def make_webhook_request():
+    # Build a minimal fake request object for YooKassaWebhookView
+    class _Req:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        async def json(self) -> dict:
+            return self._payload
+
+    return lambda payload: _Req(payload)
+
+
+@pytest.fixture
+def make_yk_view():
+    from bot.handlers.yookassa_webhook import YooKassaWebhookView
+
+    class _View(YooKassaWebhookView):
+        def __init__(self, req):
+            self._request = req
+
+        @property
+        def request(self):
+            return self._request
+
+    return lambda req: _View(req)

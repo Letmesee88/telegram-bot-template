@@ -104,3 +104,79 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
         logger.info(f"YK payment persisted: id={payment_id} status=pending user={user_id} plan={plan} amount={amount}")
 
     return CreatedPayment(payment_id=payment_id, confirmation_url=confirmation_url, idempotence_key=idem)
+
+
+async def create_recurring_payment(
+    *,
+    user_id: int,
+    subscription_id: int,
+    plan: str,
+    payment_method_id: str,
+    period_key: str,
+) -> CreatedPayment:
+    """Create a recurring payment using saved payment_method_id (no user confirmation).
+
+    Metadata will include `rebill=True`, `subscription_id`, and `period_key` to help webhook logic.
+    Idempotency key is derived from subscription and period to guard against duplicate charges.
+    """
+    _configure()
+
+    plan = plan.lower()
+    amount = _amount_for_plan(plan)
+    idem = f"rebill:{subscription_id}:{period_key}"
+    amount_value = format(amount, ".2f")
+
+    payload: dict = {
+        "amount": {"value": amount_value, "currency": "RUB"},
+        "capture": True,
+        "description": f"Calorissimo rebill {plan}",
+        "payment_method_id": payment_method_id,
+        "metadata": {
+            "user_id": user_id,
+            "plan": plan,
+            "rebill": True,
+            "subscription_id": subscription_id,
+            "period_key": period_key,
+        },
+    }
+
+    logger.info(
+        f"YK create recurring: user={user_id} sub={subscription_id} plan={plan} amount={amount} pm_id={payment_method_id} period={period_key}"
+    )
+    try:
+        yk_payment = await asyncio.to_thread(Payment.create, payload, idempotency_key=idem)
+    except Exception as e:
+        logger.error(f"YK create recurring failed: {e}")
+        raise
+
+    payment_id: str = getattr(yk_payment, "id")
+    logger.info(f"YK recurring created: id={payment_id} idem={idem}")
+
+    # Persist pending record for correlation with webhook
+    async with sessionmaker() as session:
+        p = PaymentModel(
+            user_id=user_id,
+            subscription_id=subscription_id,
+            yk_payment_id=payment_id,
+            idempotence_key=idem,
+            payment_method_id=payment_method_id,
+            amount_value=amount,
+            currency="RUB",
+            status="pending",
+            description=f"Calorissimo rebill {plan}",
+            meta={
+                "user_id": user_id,
+                "plan": plan,
+                "rebill": True,
+                "subscription_id": subscription_id,
+                "period_key": period_key,
+            },
+        )
+        session.add(p)
+        await session.commit()
+        logger.info(
+            f"YK recurring persisted: id={payment_id} status=pending user={user_id} sub={subscription_id} plan={plan} amount={amount}"
+        )
+
+    # Reuse CreatedPayment container; confirmation_url is not used for recurring
+    return CreatedPayment(payment_id=payment_id, confirmation_url="", idempotence_key=idem)
