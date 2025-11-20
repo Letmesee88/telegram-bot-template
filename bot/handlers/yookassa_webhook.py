@@ -171,8 +171,8 @@ class YooKassaWebhookView(View):
                     # Clear submitted flag to allow a new attempt (only if not permanent)
                     try:
                         if not is_permanent:
-                            member = f"rebill:submitted:{sub_id_from_meta}:{period_key}"
-                            await redis_client.delete(member)
+                            submitted_key = f"rebill:submitted:{sub_id_from_meta}:{period_key}"
+                            await redis_client.delete(submitted_key)
                     except Exception:
                         pass
                     # Schedule next retry via Redis (skip if permanent)
@@ -189,8 +189,17 @@ class YooKassaWebhookView(View):
                             delays = [int(x) for x in delays]
                     except Exception:
                         delays = [0, 1, 3]
-                    # Count attempt and compute next
+                    # Count attempt and compute next (idempotent per sub+period)
                     if not is_permanent:
+                        # Idempotency guard: ensure we process cancellation scheduling once
+                        try:
+                            processed_key = f"rebill:canceled:processed:{sub_id_from_meta}:{period_key}"
+                            first = await redis_client.set(processed_key, "1", nx=True, ex=15 * 24 * 3600)
+                        except Exception:
+                            first = True
+                        if not first:
+                            # Duplicate webhook; do not increment attempts or reschedule
+                            return Response(text="OK")
                         attempts_key = f"rebill:attempts:{sub_id_from_meta}:{period_key}"
                         try:
                             attempts = int((await redis_client.incr(attempts_key)) or 1)
@@ -201,7 +210,6 @@ class YooKassaWebhookView(View):
                         except Exception:
                             pass
                         if attempts <= len(delays):
-                            from datetime import datetime, timedelta, timezone
                             try:
                                 next_ts = int((datetime.now(timezone.utc) + timedelta(days=delays[attempts - 1])).timestamp())
                                 zkey = "rebill:due"

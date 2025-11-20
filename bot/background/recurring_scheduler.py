@@ -44,6 +44,14 @@ def _period_key(dt: datetime) -> str:
         return datetime.now(timezone.utc).date().isoformat()
 
 
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _now_local(tz) -> datetime:
+    return datetime.now(tz)
+
+
 async def _schedule_retry(sub_id: int, period_key: str, attempts_done: int) -> None:
     try:
         delays = getattr(settings, "REBILL_RETRY_DAYS", None) or DEFAULT_RETRY_DAYS
@@ -52,7 +60,7 @@ async def _schedule_retry(sub_id: int, period_key: str, attempts_done: int) -> N
         if attempts_done >= len(delays):
             return
         delay_days = delays[attempts_done]
-        next_ts = int((datetime.now(timezone.utc) + timedelta(days=delay_days)).timestamp())
+        next_ts = int((_now_utc() + timedelta(days=delay_days)).timestamp())
         await redis_client.zadd(ZSET_DUE, {f"{sub_id}:{period_key}": next_ts})
     except Exception:
         pass
@@ -134,7 +142,7 @@ class RecurringScheduler:
 
     async def _scan_and_submit_initial(self) -> None:
         """Scan DB for subscriptions due for first attempt (expires_at <= now)."""
-        now = datetime.now(timezone.utc)
+        now = _now_utc()
         async with sessionmaker() as session:
             res = await session.execute(
                 select(SubscriptionModel).where(
@@ -156,7 +164,7 @@ class RecurringScheduler:
             try:
                 async with sessionmaker() as s2:
                     tz = await get_user_tzinfo(s2, sub.user_id)
-                now_local = datetime.now(tz)
+                now_local = _now_local(tz)
                 exp_local_date = sub.expires_at_utc.astimezone(tz).date()
                 hour = int(getattr(settings, "REBILL_HOUR", 10) or 10)
                 if (now_local.date() < exp_local_date) or (
@@ -207,7 +215,7 @@ class RecurringScheduler:
             if sub is None:
                 continue
             # If subscription already extended (success happened), skip
-            if getattr(sub, "expires_at_utc", None) and sub.expires_at_utc > datetime.now(timezone.utc):
+            if getattr(sub, "expires_at_utc", None) and sub.expires_at_utc > _now_utc():
                 # Success; clear attempts counter
                 try:
                     await redis_client.delete(ATTEMPTS_FMT.format(sub_id=sub_id, period=period))

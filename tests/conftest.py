@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import Generator
 
@@ -217,6 +218,10 @@ class _FakeRedis:
             z[member] = int(score)
         return True
 
+    async def zscore(self, key: str, member: str):
+        z = self._z.get(key, {})
+        return z.get(member)
+
     async def zrangebyscore(self, key: str, min: str | int, max: int, start: int = 0, num: int = 200, withscores: bool = False):
         z = self._z.get(key, {})
         items = [(m, s) for m, s in z.items() if (min == "-inf" or s >= int(min)) and s <= int(max)]
@@ -232,19 +237,36 @@ class _FakeRedis:
 
     # Pipeline stub
     def pipeline(self, transaction: bool = False):
-        self._pipe_buf: list[tuple[str, tuple, dict]] = []
-        return self
+        parent = self
 
-    def zadd_pipe(self, key: str, mapping: dict[str, int], nx: bool | None = None):
-        self._pipe_buf.append(("zadd", (key, mapping), {"nx": nx}))
-        return self
+        class _Pipe:
+            def __init__(self) -> None:
+                self._buf: list[tuple[str, tuple, dict]] = []
 
-    async def execute(self):
-        for op, args, kwargs in getattr(self, "_pipe_buf", []):
-            if op == "zadd":
-                await self.zadd(*args, **kwargs)
-        self._pipe_buf = []
-        return True
+            def zadd(self, key: str, mapping: dict[str, int], nx: bool | None = None):
+                self._buf.append(("zadd", (key, mapping), {"nx": nx}))
+                return self
+
+            def zrem(self, key: str, member: str):
+                self._buf.append(("zrem", (key, member), {}))
+                return self
+
+            def zscore(self, key: str, member: str):
+                self._buf.append(("zscore", (key, member), {}))
+                return self
+
+            async def execute(self):
+                for op, args, kwargs in self._buf:
+                    if op == "zadd":
+                        await parent.zadd(*args, **kwargs)
+                    elif op == "zrem":
+                        await parent.zrem(*args, **kwargs)
+                    elif op == "zscore":
+                        await parent.zscore(*args, **kwargs)
+                self._buf = []
+                return True
+
+        return _Pipe()
 
 
 @pytest.fixture(autouse=True)
@@ -266,6 +288,16 @@ def capture_bot_messages(monkeypatch):
 
     monkeypatch.setattr(bot, "send_message", _fake_send_message, raising=True)
     return sent
+
+
+@pytest.fixture
+def fake_bot(capture_bot_messages):
+    class _Bot:
+        async def send_message(self, user_id: int, text: str, *args, **kwargs):
+            await asyncio.sleep(0)
+            capture_bot_messages.append((user_id, text))
+
+    return _Bot()
 
 
 @pytest.fixture
