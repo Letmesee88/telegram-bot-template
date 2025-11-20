@@ -54,6 +54,8 @@ from bot.services.users import get_user_tzinfo
 
 router = Router()
 
+EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}$')
+
 
 @router.message(Command("email"))
 async def cmd_email(message: Message, state: FSMContext) -> None:
@@ -84,6 +86,10 @@ class OnboardingStates(StatesGroup):
     speed = State()
     review = State()
     adjust = State()
+
+
+class EmailStates(StatesGroup):
+    waiting = State()
 
 
 # =====================
@@ -364,6 +370,45 @@ async def sale_back_final(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
 
 
+@router.message(EmailStates.waiting)
+async def email_capture(message: Message, state: FSMContext) -> None:
+    raw = (message.text or "").strip()
+    # Строгая валидация формата email
+    is_valid = bool(EMAIL_RE.fullmatch(raw))
+    if not is_valid:
+        await message.answer("Кажется, это не e-mail. Отправьте, пожалуйста, в формате: yourmail@example.ru")
+        return
+    try:
+        async with sessionmaker() as session:
+            await session.execute(update(UserModel).where(UserModel.id == message.from_user.id).values(email=raw))
+            await session.commit()
+    except Exception:
+        await message.answer("Не удалось сохранить e-mail. Попробуйте позже.")
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    plan = str(data.get("pay_plan") or "").strip().lower()
+    if plan not in {"trial", "month", "year"}:
+        await message.answer("E-mail сохранён. Теперь можно перейти к оплате.")
+        await state.clear()
+        return
+
+    # Продолжаем оплату автоматически
+    try:
+        cp = await create_payment(user_id=message.from_user.id, plan=plan)
+    except Exception:
+        await message.answer("Ошибка при создании платежа. Попробуйте позже.")
+        await state.clear()
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=("Оплатить 10 рублей" if plan == "trial" else ("Оплатить 750 руб" if plan == "month" else "Оплатить 2500 руб")), url=cp.confirmation_url)],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data=("sale:trial" if plan == "trial" else ("sale:buy:month" if plan == "month" else "sale:buy:year")))],
+    ])
+    await message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    await state.clear()
+
 @router.callback_query(F.data == "sale:cont1")
 async def sale_cont1(call: CallbackQuery, state: FSMContext) -> None:
     text = (
@@ -516,7 +561,12 @@ async def sale_pay_trial(call: CallbackQuery, state: FSMContext) -> None:
         cp = await create_payment(user_id=user_id, plan="trial")
     except Exception as e:
         if str(e) == "email_required":
-            await call.message.answer("Для формирования чека нужен e-mail. Отправь в формате: /email your@example.com")
+            await state.set_state(EmailStates.waiting)
+            try:
+                await state.update_data(pay_plan="trial")
+            except Exception:
+                pass
+            await call.message.answer("🧾🙏🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru")
         else:
             await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
         await call.answer()
@@ -539,7 +589,12 @@ async def sale_pay_month(call: CallbackQuery, state: FSMContext) -> None:
         cp = await create_payment(user_id=user_id, plan="month")
     except Exception as e:
         if str(e) == "email_required":
-            await call.message.answer("Для формирования чека нужен e-mail. Отправь в формате: /email your@example.com")
+            await state.set_state(EmailStates.waiting)
+            try:
+                await state.update_data(pay_plan="month")
+            except Exception:
+                pass
+            await call.message.answer("🧾🙏🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru")
         else:
             await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
         await call.answer()
@@ -562,7 +617,12 @@ async def sale_pay_year(call: CallbackQuery, state: FSMContext) -> None:
         cp = await create_payment(user_id=user_id, plan="year")
     except Exception as e:
         if str(e) == "email_required":
-            await call.message.answer("Для формирования чека нужен e-mail. Отправь в формате: /email your@example.com")
+            await state.set_state(EmailStates.waiting)
+            try:
+                await state.update_data(pay_plan="year")
+            except Exception:
+                pass
+            await call.message.answer("🧾🙏🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru")
         else:
             await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
         await call.answer()
