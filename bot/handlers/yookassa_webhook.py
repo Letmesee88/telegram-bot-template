@@ -266,6 +266,7 @@ class YooKassaWebhookView(View):
             plan = str(metadata.get("plan", "")).lower()
             user_id = int(metadata.get("user_id")) if metadata.get("user_id") else None
             is_rebill = bool(metadata.get("rebill"))
+            receipt_registration = getattr(yk_payment, "receipt_registration", None)
         except Exception as e:
             logger.warning(f"yookassa parse error: {e}")
             return Response(text="OK")
@@ -289,6 +290,17 @@ class YooKassaWebhookView(View):
                 existing_db_id = current_payment.id
                 if getattr(current_payment, "status", None) == "succeeded":
                     return Response(text="OK")
+                # merge meta and add receipt_registration if present
+                new_meta = dict(metadata)
+                if receipt_registration:
+                    try:
+                        curm = getattr(current_payment, "meta", {}) or {}
+                        curm = dict(curm)
+                    except Exception:
+                        curm = {}
+                    curm.update(new_meta)
+                    curm["receipt_registration"] = receipt_registration
+                    new_meta = curm
                 await session.execute(
                     update(PaymentModel)
                     .where(PaymentModel.id == existing_db_id)
@@ -297,12 +309,15 @@ class YooKassaWebhookView(View):
                         currency=currency,
                         status="succeeded",
                         description=getattr(yk_payment, "description", None),
-                        meta=dict(metadata),
+                        meta=new_meta,
                         payment_method_id=payment_method_id,
                         captured_at_utc=datetime.now(timezone.utc),
                     )
                 )
             else:
+                new_meta = dict(metadata)
+                if receipt_registration:
+                    new_meta["receipt_registration"] = receipt_registration
                 p = PaymentModel(
                     user_id=user_id,
                     subscription_id=None,
@@ -313,7 +328,7 @@ class YooKassaWebhookView(View):
                     currency=currency,
                     status="succeeded",
                     description=getattr(yk_payment, "description", None),
-                    meta=dict(metadata),
+                    meta=new_meta,
                     captured_at_utc=datetime.now(timezone.utc),
                 )
                 session.add(p)

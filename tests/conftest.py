@@ -159,7 +159,10 @@ async def ensure_user(db_session):
         last_name: str | None = None,
         username: str | None = None,
         language_code: str = "ru",
+        email: str | None = None,
     ) -> int:
+        if email is None:
+            email = f"user{user_id}@example.com"
         await db_session.merge(
             UserModel(
                 id=user_id,
@@ -167,6 +170,7 @@ async def ensure_user(db_session):
                 last_name=last_name,
                 username=username,
                 language_code=language_code,
+                email=email,
             )
         )
         await db_session.commit()
@@ -314,16 +318,17 @@ def yk_stub(monkeypatch):
             self.currency = currency
 
     class _PaymentObj:
-        def __init__(self, *, status: str, value: str, metadata: dict, pm_id: str, pm_saved: bool = True) -> None:
+        def __init__(self, *, status: str, value: str, metadata: dict, pm_id: str, pm_saved: bool = True, rr: str | None = None) -> None:
             self.status = status
             self.amount = _Amount(value, "RUB")
             self.metadata = metadata
             self.payment_method = _PM(pm_id, pm_saved)
+            self.receipt_registration = rr
 
     from yookassa import Payment as _YP
 
-    def _make(status: str, value: str, metadata: dict, pm_id: str, pm_saved: bool = True):
-        obj = _PaymentObj(status=status, value=value, metadata=metadata, pm_id=pm_id, pm_saved=pm_saved)
+    def _make(status: str, value: str, metadata: dict, pm_id: str, pm_saved: bool = True, rr: str | None = None):
+        obj = _PaymentObj(status=status, value=value, metadata=metadata, pm_id=pm_id, pm_saved=pm_saved, rr=rr)
 
         def _find_one(_payment_id: str):
             return obj

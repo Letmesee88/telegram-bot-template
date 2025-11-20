@@ -55,6 +55,24 @@ from bot.services.users import get_user_tzinfo
 router = Router()
 
 
+@router.message(Command("email"))
+async def cmd_email(message: Message, state: FSMContext) -> None:
+    parts = (message.text or "").split()
+    email = parts[1].strip() if len(parts) >= 2 else ""
+    if not email or ("@" not in email) or ("." not in email):
+        await message.answer("Отправь e-mail в формате: /email your@example.com")
+        return
+    try:
+        async with sessionmaker() as session:
+            await session.execute(
+                update(UserModel).where(UserModel.id == message.from_user.id).values(email=email)
+            )
+            await session.commit()
+        await message.answer("E-mail сохранён. Теперь можно перейти к оплате.")
+    except Exception:
+        await message.answer("Не удалось сохранить e-mail. Попробуй позже.")
+
+
 class OnboardingStates(StatesGroup):
     gender = State()
     age = State()
@@ -497,7 +515,10 @@ async def sale_pay_trial(call: CallbackQuery, state: FSMContext) -> None:
     try:
         cp = await create_payment(user_id=user_id, plan="trial")
     except Exception as e:
-        await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
+        if str(e) == "email_required":
+            await call.message.answer("Для формирования чека нужен e-mail. Отправь в формате: /email your@example.com")
+        else:
+            await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
         await call.answer()
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -516,8 +537,11 @@ async def sale_pay_month(call: CallbackQuery, state: FSMContext) -> None:
     user_id = call.from_user.id
     try:
         cp = await create_payment(user_id=user_id, plan="month")
-    except Exception:
-        await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
+    except Exception as e:
+        if str(e) == "email_required":
+            await call.message.answer("Для формирования чека нужен e-mail. Отправь в формате: /email your@example.com")
+        else:
+            await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
         await call.answer()
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -536,8 +560,11 @@ async def sale_pay_year(call: CallbackQuery, state: FSMContext) -> None:
     user_id = call.from_user.id
     try:
         cp = await create_payment(user_id=user_id, plan="year")
-    except Exception:
-        await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
+    except Exception as e:
+        if str(e) == "email_required":
+            await call.message.answer("Для формирования чека нужен e-mail. Отправь в формате: /email your@example.com")
+        else:
+            await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
         await call.answer()
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[

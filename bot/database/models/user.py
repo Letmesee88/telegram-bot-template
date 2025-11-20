@@ -17,6 +17,7 @@ class UserModel(Base):
     username: Mapped[str | None]
     language_code: Mapped[str | None]
     referrer: Mapped[str | None]
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[created_at]
 
     is_admin: Mapped[bool] = mapped_column(default=False)

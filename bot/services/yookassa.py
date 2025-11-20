@@ -9,7 +9,8 @@ from yookassa import Configuration, Payment
 
 from bot.core.config import settings
 from bot.database.database import sessionmaker
-from bot.database.models import PaymentModel
+from bot.database.models import PaymentModel, UserModel
+from sqlalchemy import select
 
 
 @dataclass
@@ -52,6 +53,23 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
     amount_value = format(amount, ".2f")
     ret_url = return_url or getattr(settings, "WEBHOOK_BASE_URL", None)
 
+    # Fetch customer email for fiscal receipt
+    async with sessionmaker() as session:
+        user_email = await session.scalar(
+            select(UserModel.email).where(UserModel.id == user_id)  # type: ignore[name-defined]
+        )
+    if not user_email:
+        raise RuntimeError("email_required")
+
+    def _desc(p: str) -> str:
+        if p == "trial":
+            return "Подписка Calorissimo — пробный доступ (3 дня)"
+        if p == "month":
+            return "Подписка Calorissimo — 30 дней"
+        if p == "year":
+            return "Подписка Calorissimo — 365 дней"
+        return f"Calorissimo {p}"
+
     payload: dict = {
         "amount": {"value": amount_value, "currency": "RUB"},
         "capture": True,
@@ -64,6 +82,19 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
         # Force card and save PM for recurrent billing
         "payment_method_data": {"type": "bank_card"},
         "save_payment_method": True,
+        "receipt": {
+            "customer": {"email": user_email},
+            "items": [
+                {
+                    "description": _desc(plan),
+                    "quantity": 1.000,
+                    "amount": {"value": amount_value, "currency": "RUB"},
+                    "vat_code": 6,
+                    "payment_mode": "full_prepayment",
+                    "payment_subject": "service",
+                }
+            ],
+        },
     }
 
     if eff_next_plan:
@@ -126,6 +157,23 @@ async def create_recurring_payment(
     idem = f"rebill:{subscription_id}:{period_key}"
     amount_value = format(amount, ".2f")
 
+    # Fetch customer email for fiscal receipt
+    async with sessionmaker() as session:
+        user_email = await session.scalar(
+            select(UserModel.email).where(UserModel.id == user_id)  # type: ignore[name-defined]
+        )
+    if not user_email:
+        raise RuntimeError("email_required")
+
+    def _desc(p: str) -> str:
+        if p == "trial":
+            return "Подписка Calorissimo — пробный доступ (3 дня)"
+        if p == "month":
+            return "Подписка Calorissimo — 30 дней"
+        if p == "year":
+            return "Подписка Calorissimo — 365 дней"
+        return f"Calorissimo {p}"
+
     payload: dict = {
         "amount": {"value": amount_value, "currency": "RUB"},
         "capture": True,
@@ -137,6 +185,19 @@ async def create_recurring_payment(
             "rebill": True,
             "subscription_id": subscription_id,
             "period_key": period_key,
+        },
+        "receipt": {
+            "customer": {"email": user_email},
+            "items": [
+                {
+                    "description": _desc(plan),
+                    "quantity": 1.000,
+                    "amount": {"value": amount_value, "currency": "RUB"},
+                    "vat_code": 6,
+                    "payment_mode": "full_prepayment",
+                    "payment_subject": "service",
+                }
+            ],
         },
     }
 
