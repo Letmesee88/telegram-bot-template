@@ -6,6 +6,7 @@ from decimal import Decimal
 from aiohttp.web import Response, View
 from loguru import logger
 from yookassa import Configuration, Payment
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from bot.core.config import settings
 from bot.core.loader import bot, redis_client
@@ -225,9 +226,30 @@ class YooKassaWebhookView(View):
             if user_id:
                 try:
                     if is_rebill:
+                        plan = None
+                        try:
+                            if sub_id_from_meta:
+                                async with sessionmaker() as s2:
+                                    res = await s2.execute(select(SubscriptionModel).where(SubscriptionModel.id == sub_id_from_meta))
+                                    sub = res.scalar_one_or_none()
+                                    if sub is not None:
+                                        plan = getattr(sub, "next_plan", None) or ("year" if sub.plan == "trial" else sub.plan)
+                        except Exception:
+                            plan = None
+                        kb = None
+                        try:
+                            if plan == "month":
+                                kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Оплатить 750 руб", callback_data="sale:pay:month")]])
+                            elif plan == "year":
+                                kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Оплатить 2500 руб", callback_data="sale:pay:year")]])
+                            else:
+                                kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Оформить подписку", callback_data="sale:choose")]])
+                        except Exception:
+                            kb = None
                         await bot.send_message(
                             user_id,
                             "❌ Не удалось продлить подписку. Проверьте карту/средства/банк и попробуйте оплатить вручную в разделе \u00abПодписка\u00bb.",
+                            reply_markup=kb,
                         )
                     else:
                         await bot.send_message(user_id, "❌ Что-то пошло не так. Попробуйте еще раз.")

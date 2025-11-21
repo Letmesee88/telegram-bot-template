@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from aiogram import Bot
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from loguru import logger
 from sqlalchemy import select, update
 
@@ -126,9 +127,29 @@ async def _mark_past_due_and_notify(bot: Bot, sub_id: int, user_id: int) -> None
             pass
     # Notify user (neutral)
     try:
+        plan = None
+        try:
+            async with sessionmaker() as s2:
+                res = await s2.execute(select(SubscriptionModel).where(SubscriptionModel.id == sub_id))
+                sub = res.scalar_one_or_none()
+                if sub is not None:
+                    plan = getattr(sub, "next_plan", None) or ("year" if sub.plan == "trial" else sub.plan)
+        except Exception:
+            plan = None
+        kb = None
+        try:
+            if plan == "month":
+                kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Оплатить 750 руб", callback_data="sale:pay:month")]])
+            elif plan == "year":
+                kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Оплатить 2500 руб", callback_data="sale:pay:year")]])
+            else:
+                kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Оформить подписку", callback_data="sale:choose")]])
+        except Exception:
+            kb = None
         await bot.send_message(
             user_id,
             "❌ Не удалось продлить подписку. Проверьте карту/средства/банк и попробуйте оплатить вручную в разделе \u00abПодписка\u00bb.",
+            reply_markup=kb,
         )
     except Exception:
         pass
