@@ -51,7 +51,7 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
     amount = _amount_for_plan(plan)
     idem = uuid4().hex
     amount_value = format(amount, ".2f")
-    ret_url = return_url or getattr(settings, "WEBHOOK_BASE_URL", None)
+    ret_url = return_url or getattr(settings, "PAY_URL", None)
 
     # Fetch customer email for fiscal receipt
     async with sessionmaker() as session:
