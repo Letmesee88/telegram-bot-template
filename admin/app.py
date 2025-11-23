@@ -109,12 +109,13 @@ class AdminView(RoleView):
     can_create = True
     export_types = ["csv", "xlsx", "json", "yaml"]
 
-    column_editable_list = ["email", "first_name", "last_name"]
-    column_searchable_list = column_editable_list
+    # Disable inline edit on list view to avoid WTForms flags issue in list_form
+    # Use explicit lists for search/filters instead
+    column_searchable_list = ["email", "first_name", "last_name"]
     column_exclude_list = ["password"]
     form_excluded_columns = ["confirmed_at"]
     column_details_exclude_list = column_exclude_list
-    column_filters = column_editable_list
+    column_filters = ["email", "first_name", "last_name"]
     form_overrides = {"password": PasswordField}
 
 
