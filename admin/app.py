@@ -148,14 +148,17 @@ class CustomAdminIndexView(AdminIndexView):
             user_count=user_count,
             new_user_count=new_user_count,
             period_start=period_start,
-            default_email=app.config.get("DEFAULT_ADMIN_EMAIL"),
-            default_password=app.config.get("DEFAULT_ADMIN_PASSWORD"),
         )
 
 
 @app.route("/")
 def index() -> Response:
     return redirect(url_for("admin.index"))
+
+
+@app.get("/heartbeat")
+def heartbeat() -> str:
+    return "ok"
 
 
 # Initializing the admin panel
