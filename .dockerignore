@@ -3,6 +3,7 @@
 
 # exclusion
 !/bot/
+!/admin/
 !/migrations/
 !/tests/
 
