@@ -244,3 +244,198 @@ async def test_cb_account_open_gated_without_onboarding(monkeypatch):
     await cb_account_open(cb)
     assert cb._answered is True
     assert any("онбординг" in t.lower() for t, _ in cb.message._answers)
+
+
+# --- FoodAIEnabledFilter tests ---
+class _FakeUserDB:
+    def __init__(self, is_premium: bool, foodai_enabled: bool):
+        self.is_premium = is_premium
+        self.foodai_enabled_at = object() if foodai_enabled else None
+
+
+class _FakeSessionFoodAI(FakeSession):
+    def __init__(self, is_premium: bool, foodai_enabled: bool):
+        super().__init__(exists=True)
+        self._user = _FakeUserDB(is_premium, foodai_enabled)
+
+    async def get(self, *args, **kwargs):
+        return self._user
+
+
+async def test_foodai_filter_allows_when_premium_and_enabled():
+    from bot.filters.foodai_enabled import FoodAIEnabledFilter
+
+    msg = FakeMessage(user_id=55)
+    session = _FakeSessionFoodAI(is_premium=True, foodai_enabled=True)
+
+    ok = await FoodAIEnabledFilter()(msg, session)
+    assert ok is True
+    assert len(msg._answers) == 0
+
+
+async def test_foodai_filter_blocks_message_with_cta_on_message():
+    from bot.filters.foodai_enabled import FoodAIEnabledFilter
+
+    msg = FakeMessage(user_id=56)
+    session = _FakeSessionFoodAI(is_premium=False, foodai_enabled=True)
+
+    ok = await FoodAIEnabledFilter()(msg, session)
+    assert ok is False
+    # CTA text should be sent
+    assert any("подписка не активна" in t.lower() for t, _ in msg._answers)
+    # And include the correct CTA button
+    rmks = [kw.get("reply_markup") for _, kw in msg._answers if isinstance(kw, dict)]
+    kb = next((r for r in rmks if r is not None), None)
+    assert kb is not None
+    btn = kb.inline_keyboard[0][0]
+    assert getattr(btn, "text", "") == "💎 Выбрать тариф"
+    assert getattr(btn, "callback_data", "") == "sale:choose"
+
+
+async def test_foodai_filter_blocks_callback_with_cta_and_ack():
+    from bot.filters.foodai_enabled import FoodAIEnabledFilter
+
+    cb = FakeCallbackQuery(data="foodai:any", user_id=57)
+    session = _FakeSessionFoodAI(is_premium=True, foodai_enabled=False)
+
+    ok = await FoodAIEnabledFilter()(cb, session)
+    assert ok is False
+    assert cb._answered is True
+    assert any("подписка не активна" in t.lower() for t, _ in cb.message._answers)
+    rmks = [kw.get("reply_markup") for _, kw in cb.message._answers if isinstance(kw, dict)]
+    kb = next((r for r in rmks if r is not None), None)
+    assert kb is not None
+    btn = kb.inline_keyboard[0][0]
+    assert getattr(btn, "text", "") == "💎 Выбрать тариф"
+    assert getattr(btn, "callback_data", "") == "sale:choose"
+
+
+# --- YooKassa webhook: revoke FoodAI on rebill cancellation ---
+class _UpdateStub:
+    def __init__(self, target):
+        self.target = target
+        self._values = None
+
+    def where(self, *args, **kwargs):
+        return self
+
+    def values(self, **kwargs):
+        self._values = kwargs
+        return self
+
+
+class _FakeResult:
+    def scalar_one_or_none(self):
+        return None
+
+
+class _FakeSessionRec:
+    def __init__(self):
+        self.executed = []
+
+    async def execute(self, stmt):
+        self.executed.append(stmt)
+        return _FakeResult()
+
+    async def commit(self):
+        return None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeSessionmakerRec:
+    def __init__(self, session):
+        self._session = session
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    async def __aenter__(self):
+        return self._session
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeReq:
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def json(self):
+        return self._payload
+
+
+class _FakeBot:
+    async def send_message(self, *args, **kwargs):
+        return None
+
+
+class _FakeRedis:
+    def __init__(self):
+        self._store = {}
+
+    async def set(self, *args, **kwargs):
+        return True
+
+    async def delete(self, *args, **kwargs):
+        return 1
+
+    async def incr(self, key):
+        self._store[key] = int(self._store.get(key, 0)) + 1
+        return self._store[key]
+
+    async def expire(self, *args, **kwargs):
+        return True
+
+    async def zadd(self, *args, **kwargs):
+        return True
+
+
+async def test_yk_webhook_canceled_rebill_revokes_foodai(monkeypatch):
+    import bot.handlers.yookassa_webhook as yk
+    from bot.database.models import UserModel as _UserModel
+
+    # Patch builder 'update' in this module to our stub
+    def _upd(model):
+        return _UpdateStub(model)
+    monkeypatch.setattr(yk, "update", _upd, raising=True)
+
+    # Patch sessionmaker to a recorder
+    rec_session = _FakeSessionRec()
+    monkeypatch.setattr(yk, "sessionmaker", _FakeSessionmakerRec(rec_session), raising=True)
+
+    # Patch external deps used later in flow
+    monkeypatch.setattr(yk, "bot", _FakeBot(), raising=True)
+    # Minimal redis mock
+    monkeypatch.setattr(yk, "redis_client", _FakeRedis(), raising=True)
+
+    # Prepare webhook view with fake request
+    payload = {
+        "event": "payment.canceled",
+        "object": {
+            "id": "pay_1",
+            "metadata": {
+                "user_id": 999,
+                "rebill": True,
+                "subscription_id": 123,
+                "period_key": "2025-12",
+            },
+        },
+    }
+    view = yk.YooKassaWebhookView(_FakeReq(payload))
+
+    resp = await view.post()
+    assert getattr(resp, "text", "OK") == "OK"
+
+    # Ensure we attempted to set is_premium=False and foodai_enabled_at=None for UserModel
+    found = False
+    for stmt in rec_session.executed:
+        if isinstance(stmt, _UpdateStub) and stmt.target is _UserModel and stmt._values:
+            if stmt._values.get("is_premium") is False and ("foodai_enabled_at" in stmt._values) and (stmt._values["foodai_enabled_at"] is None):
+                found = True
+                break
+    assert found is True

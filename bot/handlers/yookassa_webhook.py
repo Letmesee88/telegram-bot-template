@@ -143,7 +143,9 @@ class YooKassaWebhookView(View):
                             )
                             if user_id:
                                 await session.execute(
-                                    update(UserModel).where(UserModel.id == user_id).values(is_premium=False)
+                                    update(UserModel)
+                                    .where(UserModel.id == user_id)
+                                    .values(is_premium=False, foodai_enabled_at=None)
                                 )
                             await session.commit()
                         except Exception:

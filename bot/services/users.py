@@ -116,8 +116,8 @@ async def set_timezone(session: "AsyncSession", user_id: int, tz_name: str) -> N
         if getattr(cfg.settings, "DAILY_REPORTS_ENABLED", True):
             # Subscription gating: if premium required and user is not premium — do not schedule
             if getattr(cfg.settings, "DAILY_REPORTS_REQUIRE_PREMIUM", False):
-                from bot.database.models import UserModel  # local import to avoid cycles
-                is_prem = await session.scalar(select(UserModel.is_premium).where(UserModel.id == user_id))
+                from bot.database.models import UserModel as _UserModel  # avoid rebinding module-scope name
+                is_prem = await session.scalar(select(_UserModel.is_premium).where(_UserModel.id == user_id))
                 if not bool(is_prem):
                     return
             # Compute next local 08:00 with jitter
