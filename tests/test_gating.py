@@ -441,3 +441,55 @@ async def test_yk_webhook_canceled_rebill_revokes_foodai(monkeypatch):
                 found = True
                 break
     assert found is True
+
+
+# --- FoodAIEnabledFilter should NOT send CTA during FSM (onboarding) ---
+class FakeState:
+    def __init__(self, state_value: str | None = "onboarding:any"):
+        self._state_value = state_value
+
+    async def get_state(self):
+        return self._state_value
+
+
+async def test_foodai_filter_skips_cta_when_fsm_active_text():
+    from bot.filters.foodai_enabled import FoodAIEnabledFilter
+
+    msg = FakeMessage(user_id=61)
+    msg.text = "это текст"
+    session = _FakeSessionFoodAI(is_premium=False, foodai_enabled=False)
+    state = FakeState("onboarding:step")
+
+    ok = await FoodAIEnabledFilter()(msg, session, state)
+    assert ok is False
+    # No CTA should be sent while in FSM
+    assert len(msg._answers) == 0
+
+
+async def test_foodai_filter_skips_cta_when_fsm_active_photo():
+    from bot.filters.foodai_enabled import FoodAIEnabledFilter
+
+    msg = FakeMessage(user_id=62)
+    # Simulate photo message
+    msg.photo = [object()]
+    session = _FakeSessionFoodAI(is_premium=False, foodai_enabled=False)
+    state = FakeState("onboarding:step")
+
+    ok = await FoodAIEnabledFilter()(msg, session, state)
+    assert ok is False
+    # No CTA should be sent while in FSM
+    assert len(msg._answers) == 0
+
+
+async def test_foodai_filter_skips_cta_when_fsm_active_callback():
+    from bot.filters.foodai_enabled import FoodAIEnabledFilter
+
+    cb = FakeCallbackQuery(data="foodai:save:1", user_id=63)
+    session = _FakeSessionFoodAI(is_premium=False, foodai_enabled=False)
+    state = FakeState("onboarding:step")
+
+    ok = await FoodAIEnabledFilter()(cb, session, state)
+    assert ok is False
+    # No CTA and no callback.answer() while in FSM
+    assert cb._answered is False
+    assert len(cb.message._answers) == 0

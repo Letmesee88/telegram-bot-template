@@ -1,6 +1,7 @@
 from aiogram.filters import BaseFilter
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
+from aiogram.fsm.context import FSMContext
 
 from bot.database.models import UserModel
 
@@ -13,11 +14,20 @@ class FoodAIEnabledFilter(BaseFilter):
     - users.foodai_enabled_at IS NOT NULL
     """
 
-    async def __call__(self, event: Message | CallbackQuery, session: AsyncSession) -> bool:
+    async def __call__(self, event: Message | CallbackQuery, session: AsyncSession, state: FSMContext | None = None) -> bool:
         # Duck-typing to work with tests and wrapper objects
         user = getattr(event, "from_user", None)
         if not user:
             return False
+
+        # If user is in ANY FSM state (e.g., onboarding), do not trigger CTA here
+        try:
+            if state is not None:
+                cur = await state.get_state()
+                if cur is not None:
+                    return False
+        except Exception:
+            pass
 
         db_user = await session.get(UserModel, user.id)
         # Treat missing user as not-premium / disabled FoodAI

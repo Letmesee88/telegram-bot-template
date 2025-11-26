@@ -43,13 +43,10 @@ from bot.services.history import get_add_in_day_target, clear_add_in_day_target
 router = Router(name="foodai")
 # Block for users without completed onboarding (higher priority)
 router.message.filter(OnboardingCompletedFilter())
-# Then check premium/FoodAI access
-router.message.filter(FoodAIEnabledFilter())
 # Do not process ANY FoodAI messages while user is in any FSM state (e.g., onboarding)
 router.message.filter(StateFilter(None))
 # Apply same constraints to callbacks; onboarding gate first
 router.callback_query.filter(OnboardingCompletedFilter())
-router.callback_query.filter(FoodAIEnabledFilter())
 router.callback_query.filter(StateFilter(None))
 
 
@@ -337,7 +334,7 @@ async def cb_foodai_back_edit(callback: types.CallbackQuery, state: FSMContext) 
     await callback.answer()
 
 
-@router.message(F.photo)
+@router.message(F.photo, StateFilter(None), FoodAIEnabledFilter())
 async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
     # Extra safety: ignore during any active FSM state (e.g., onboarding)
     try:
@@ -680,7 +677,7 @@ async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
 
 
 # Text handler: process ONLY when no FSM state is active (to not interfere with onboarding)
-@router.message(StateFilter(None), F.text & (~F.text.startswith("/")), flags={"block": False})
+@router.message(StateFilter(None), F.text & (~F.text.startswith("/")), FoodAIEnabledFilter(), flags={"block": False})
 async def handle_food_text(message: types.Message, state: FSMContext) -> None:
     # Extra safety: if ANY FSM state is active (e.g., onboarding), do nothing
     try:
@@ -1322,7 +1319,7 @@ async def _edit_caption_or_text(cb: types.CallbackQuery, text: str, kb: InlineKe
         pass
 
 
-@router.callback_query(F.data.regexp(r"^foodai:save:(\d+)$"))
+@router.callback_query(StateFilter(None), F.data.regexp(r"^foodai:save:(\d+)$"), FoodAIEnabledFilter())
 async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> None:
     # Extra safety: ignore during onboarding or any active FSM state
     try:
@@ -1512,7 +1509,7 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
     await callback.answer()
 
 
-@router.callback_query(F.data.regexp(r"^foodai:del:(\d+)$"))
+@router.callback_query(StateFilter(None), F.data.regexp(r"^foodai:del:(\d+)$"), FoodAIEnabledFilter())
 async def cb_foodai_delete(callback: types.CallbackQuery) -> None:
     m = re.match(r"^foodai:del:(\d+)$", callback.data or "")
     if not m or not callback.from_user:
@@ -1549,7 +1546,7 @@ async def cb_foodai_delete(callback: types.CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.regexp(r"^foodai:edit:(\d+)$"))
+@router.callback_query(StateFilter(None), F.data.regexp(r"^foodai:edit:(\d+)$"), FoodAIEnabledFilter())
 async def cb_foodai_edit(callback: types.CallbackQuery, state: FSMContext) -> None:
     m = re.match(r"^foodai:edit:(\d+)$", callback.data or "")
     if not m or not callback.from_user:
@@ -1607,7 +1604,7 @@ async def cb_foodai_edit(callback: types.CallbackQuery, state: FSMContext) -> No
     await callback.answer()
 
 
-@router.callback_query(F.data.regexp(r"^foodai:back:(\d+)$"))
+@router.callback_query(StateFilter(None), F.data.regexp(r"^foodai:back:(\d+)$"), FoodAIEnabledFilter())
 async def cb_foodai_back(callback: types.CallbackQuery) -> None:
     m = re.match(r"^foodai:back:(\d+)$", callback.data or "")
     if not m or not callback.from_user:
@@ -1659,7 +1656,7 @@ async def cb_foodai_back(callback: types.CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.regexp(r"^foodai:adj:(cal|wt):(-?\d+):(\d+)$"))
+@router.callback_query(StateFilter(None), F.data.regexp(r"^foodai:adj:(cal|wt):(-?\d+):(\d+)$"), FoodAIEnabledFilter())
 async def cb_foodai_adjust(callback: types.CallbackQuery) -> None:
     m = re.match(r"^foodai:adj:(cal|wt):(-?\d+):(\d+)$", callback.data or "")
     if not m or not callback.from_user:
