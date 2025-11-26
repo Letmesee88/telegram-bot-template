@@ -2,6 +2,7 @@ from aiogram.filters import BaseFilter
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram.fsm.context import FSMContext
+from sqlalchemy import update, func
 
 from bot.database.models import UserModel
 
@@ -29,12 +30,29 @@ class FoodAIEnabledFilter(BaseFilter):
         except Exception:
             pass
 
+        # Do not send CTA for any callbacks at all — CTA is only for messages
+        try:
+            if getattr(event, "data", None) is not None:
+                return False
+        except Exception:
+            pass
+
         db_user = await session.get(UserModel, user.id)
-        # Treat missing user as not-premium / disabled FoodAI
         is_prem = bool(getattr(db_user, "is_premium", False)) if db_user is not None else False
         has_foodai = (getattr(db_user, "foodai_enabled_at", None) is not None) if db_user is not None else False
-        ok = is_prem and has_foodai
-        if ok:
+        if is_prem:
+            # Lazily enable flag if missing
+            if (db_user is not None) and (not has_foodai):
+                try:
+                    await session.execute(
+                        update(UserModel).where(UserModel.id == user.id).values(foodai_enabled_at=func.now())
+                    )
+                    try:
+                        await session.commit()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
             return True
 
         # Send CTA to purchase subscription
@@ -54,7 +72,6 @@ class FoodAIEnabledFilter(BaseFilter):
             # Show CTA only on actual FoodAI attempts:
             # - Photo message
             # - Plain text message (not a command)
-            # - FoodAI callbacks (prefix 'foodai:')
             attempted = False
             if msg_obj is not None:
                 try:
@@ -66,8 +83,6 @@ class FoodAIEnabledFilter(BaseFilter):
                             attempted = True
                 except Exception:
                     pass
-            if isinstance(data, str) and data.startswith("foodai:"):
-                attempted = True
             if not attempted:
                 return False
 
@@ -80,12 +95,6 @@ class FoodAIEnabledFilter(BaseFilter):
                     return False
                 setattr(msg_obj, "_foodai_cta_sent", True)
 
-            # Stop loading if it's a callback
-            if hasattr(event, "answer"):
-                try:
-                    await event.answer()
-                except Exception:
-                    pass
             text = (
                 "😴 Подписка не активна\n"
                 "С каждым днём ты можешь быть ближе к цели, но без анализа это движение вслепую. \n"
@@ -94,14 +103,14 @@ class FoodAIEnabledFilter(BaseFilter):
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="💎 Выбрать тариф", callback_data="sale:choose")]]
             )
-            # Prefer replying in chat context for callbacks
+            # Prefer replying in chat context (message)
             if msg_obj and hasattr(msg_obj, "answer"):
                 try:
                     await msg_obj.answer(text, reply_markup=kb, disable_web_page_preview=True)
                     return False
                 except Exception:
                     pass
-            # Fallback: direct answer on message
+            # Final fallback (if event is a Message implementing answer)
             if hasattr(event, "answer"):
                 try:
                     await event.answer(text, reply_markup=kb, disable_web_page_preview=True)

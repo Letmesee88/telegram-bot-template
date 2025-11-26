@@ -16,7 +16,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from bot.database.database import sessionmaker
-from bot.database.models import DailyIntakeModel, MealItemModel, MealModel, MealPhotoModel, OnboardingAnswerModel
+from bot.database.models import DailyIntakeModel, MealItemModel, MealModel, MealPhotoModel, OnboardingAnswerModel, UserModel
 from bot.filters.foodai_enabled import FoodAIEnabledFilter
 from bot.filters.onboarding_completed import OnboardingCompletedFilter
 from bot.services.foodai import analyze_photo, analyze_text, refine_meal
@@ -1319,7 +1319,7 @@ async def _edit_caption_or_text(cb: types.CallbackQuery, text: str, kb: InlineKe
         pass
 
 
-@router.callback_query(StateFilter(None), F.data.regexp(r"^foodai:save:(\d+)$"), FoodAIEnabledFilter())
+@router.callback_query(StateFilter(None), F.data.regexp(r"^foodai:save:(\d+)$"))
 async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> None:
     # Extra safety: ignore during onboarding or any active FSM state
     try:
@@ -1327,6 +1327,17 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
         if cur is not None:
             await callback.answer()
             return
+    except Exception:
+        pass
+    if not callback.from_user:
+        return
+    # Silent block for non-premium users
+    try:
+        async with sessionmaker() as session:
+            u = await session.get(UserModel, callback.from_user.id)
+            if not (u and getattr(u, "is_premium", False)):
+                await callback.answer()
+                return
     except Exception:
         pass
     m = re.match(r"^foodai:save:(\d+)$", callback.data or "")
@@ -1509,11 +1520,20 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
     await callback.answer()
 
 
-@router.callback_query(StateFilter(None), F.data.regexp(r"^foodai:del:(\d+)$"), FoodAIEnabledFilter())
+@router.callback_query(StateFilter(None), F.data.regexp(r"^foodai:del:(\d+)$"))
 async def cb_foodai_delete(callback: types.CallbackQuery) -> None:
     m = re.match(r"^foodai:del:(\d+)$", callback.data or "")
     if not m or not callback.from_user:
         return
+    # Silent block for non-premium users
+    try:
+        async with sessionmaker() as session:
+            u = await session.get(UserModel, callback.from_user.id)
+            if not (u and getattr(u, "is_premium", False)):
+                await callback.answer()
+                return
+    except Exception:
+        pass
     meal_id = int(m.group(1))
     user_id = callback.from_user.id
 
@@ -1546,11 +1566,20 @@ async def cb_foodai_delete(callback: types.CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(StateFilter(None), F.data.regexp(r"^foodai:edit:(\d+)$"), FoodAIEnabledFilter())
+@router.callback_query(StateFilter(None), F.data.regexp(r"^foodai:edit:(\d+)$"))
 async def cb_foodai_edit(callback: types.CallbackQuery, state: FSMContext) -> None:
     m = re.match(r"^foodai:edit:(\d+)$", callback.data or "")
     if not m or not callback.from_user:
         return
+    # Silent block for non-premium users
+    try:
+        async with sessionmaker() as session:
+            u = await session.get(UserModel, callback.from_user.id)
+            if not (u and getattr(u, "is_premium", False)):
+                await callback.answer()
+                return
+    except Exception:
+        pass
     meal_id = int(m.group(1))
     user_id = callback.from_user.id
     async with sessionmaker() as session:
@@ -1604,11 +1633,20 @@ async def cb_foodai_edit(callback: types.CallbackQuery, state: FSMContext) -> No
     await callback.answer()
 
 
-@router.callback_query(StateFilter(None), F.data.regexp(r"^foodai:back:(\d+)$"), FoodAIEnabledFilter())
+@router.callback_query(StateFilter(None), F.data.regexp(r"^foodai:back:(\d+)$"))
 async def cb_foodai_back(callback: types.CallbackQuery) -> None:
     m = re.match(r"^foodai:back:(\d+)$", callback.data or "")
     if not m or not callback.from_user:
         return
+    # Silent block for non-premium users
+    try:
+        async with sessionmaker() as session:
+            u = await session.get(UserModel, callback.from_user.id)
+            if not (u and getattr(u, "is_premium", False)):
+                await callback.answer()
+                return
+    except Exception:
+        pass
     meal_id = int(m.group(1))
     user_id = callback.from_user.id
     async with sessionmaker() as session:
@@ -1656,11 +1694,20 @@ async def cb_foodai_back(callback: types.CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(StateFilter(None), F.data.regexp(r"^foodai:adj:(cal|wt):(-?\d+):(\d+)$"), FoodAIEnabledFilter())
+@router.callback_query(StateFilter(None), F.data.regexp(r"^foodai:adj:(cal|wt):(-?\d+):(\d+)$"))
 async def cb_foodai_adjust(callback: types.CallbackQuery) -> None:
     m = re.match(r"^foodai:adj:(cal|wt):(-?\d+):(\d+)$", callback.data or "")
     if not m or not callback.from_user:
         return
+    # Silent block for non-premium users
+    try:
+        async with sessionmaker() as session:
+            u = await session.get(UserModel, callback.from_user.id)
+            if not (u and getattr(u, "is_premium", False)):
+                await callback.answer()
+                return
+    except Exception:
+        pass
     field, delta_s, meal_id_s = m.group(1), m.group(2), m.group(3)
     meal_id = int(meal_id_s)
     delta = int(delta_s)

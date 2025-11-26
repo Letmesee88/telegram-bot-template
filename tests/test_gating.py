@@ -294,7 +294,7 @@ async def test_foodai_filter_blocks_message_with_cta_on_message():
     assert getattr(btn, "callback_data", "") == "sale:choose"
 
 
-async def test_foodai_filter_blocks_callback_with_cta_and_ack():
+async def test_foodai_filter_does_not_send_cta_on_callback_any():
     from bot.filters.foodai_enabled import FoodAIEnabledFilter
 
     cb = FakeCallbackQuery(data="foodai:any", user_id=57)
@@ -302,14 +302,20 @@ async def test_foodai_filter_blocks_callback_with_cta_and_ack():
 
     ok = await FoodAIEnabledFilter()(cb, session)
     assert ok is False
-    assert cb._answered is True
-    assert any("подписка не активна" in t.lower() for t, _ in cb.message._answers)
-    rmks = [kw.get("reply_markup") for _, kw in cb.message._answers if isinstance(kw, dict)]
-    kb = next((r for r in rmks if r is not None), None)
-    assert kb is not None
-    btn = kb.inline_keyboard[0][0]
-    assert getattr(btn, "text", "") == "💎 Выбрать тариф"
-    assert getattr(btn, "callback_data", "") == "sale:choose"
+    # Filter should not answer nor send CTA for callbacks
+    assert cb._answered is False
+    assert len(cb.message._answers) == 0
+
+
+async def test_foodai_filter_allows_premium_even_if_flag_missing_on_text():
+    from bot.filters.foodai_enabled import FoodAIEnabledFilter
+
+    msg = FakeMessage(user_id=58)
+    session = _FakeSessionFoodAI(is_premium=True, foodai_enabled=False)
+
+    ok = await FoodAIEnabledFilter()(msg, session)
+    assert ok is True
+    assert len(msg._answers) == 0
 
 
 # --- YooKassa webhook: revoke FoodAI on rebill cancellation ---
