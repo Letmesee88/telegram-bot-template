@@ -45,6 +45,39 @@ async def cmd_day(message: types.Message) -> None:
     if not message.from_user:
         return
     user_id = message.from_user.id
+    # Gate: require onboarding completed
+    try:
+        async with sessionmaker() as session:
+            exists = await session.scalar(
+                select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
+            )
+        if not bool(exists):
+            text = _("Завершите онбординг за пару минут, чтобы получить полный доступ к данным")
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
+            )
+            await message.answer(text, reply_markup=kb)
+            if analytics.logger:
+                try:
+                    analytics.fire_event(
+                        BaseEvent(
+                            user_id=user_id,
+                            event_type="Gated:OnboardingRequired",
+                            event_properties=EventProperties(
+                                chat_id=message.chat.id if message.chat else None,
+                                chat_type=message.chat.type if message.chat else None,
+                                command="/day",
+                                text=None,
+                            ),
+                            language=message.from_user.language_code if message.from_user else None,
+                        )
+                    )
+                except Exception:
+                    pass
+            return
+    except Exception:
+        pass
+
     PAGE_SIZE = 10
 
     async with sessionmaker() as session:
@@ -166,6 +199,45 @@ async def cb_diary_today(callback: types.CallbackQuery) -> None:
     except Exception:
         page = 1
     user_id = callback.from_user.id
+    # Gate: require onboarding completed
+    try:
+        async with sessionmaker() as session:
+            exists = await session.scalar(
+                select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
+            )
+        if not bool(exists):
+            try:
+                await callback.answer()
+            except Exception:
+                pass
+            text = _("Завершите онбординг за пару минут, чтобы получить полный доступ к данным")
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
+            )
+            try:
+                await callback.message.answer(text, reply_markup=kb)
+            except Exception:
+                pass
+            if analytics.logger and callback.from_user:
+                try:
+                    analytics.fire_event(
+                        BaseEvent(
+                            user_id=callback.from_user.id,
+                            event_type="Gated:OnboardingRequired",
+                            event_properties=EventProperties(
+                                chat_id=callback.message.chat.id if callback.message else None,
+                                chat_type=callback.message.chat.type if callback.message else None,
+                                command=None,
+                                text="diary:today",
+                            ),
+                            language=getattr(callback.from_user, 'language_code', None),
+                        )
+                    )
+                except Exception:
+                    pass
+            return
+    except Exception:
+        pass
     PAGE_SIZE = 10
 
     async with sessionmaker() as session:
@@ -329,6 +401,45 @@ async def cb_back_to_day(callback: types.CallbackQuery) -> None:
     if not callback.from_user:
         return
     user_id = callback.from_user.id
+    # Gate: require onboarding completed (prevent bypass to day view)
+    try:
+        async with sessionmaker() as session:
+            exists = await session.scalar(
+                select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
+            )
+        if not bool(exists):
+            try:
+                await callback.answer()
+            except Exception:
+                pass
+            text = _("Завершите онбординг за пару минут, чтобы получить полный доступ к данным")
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
+            )
+            try:
+                await callback.message.answer(text, reply_markup=kb)
+            except Exception:
+                pass
+            if analytics.logger and callback.from_user:
+                try:
+                    analytics.fire_event(
+                        BaseEvent(
+                            user_id=callback.from_user.id,
+                            event_type="Gated:OnboardingRequired",
+                            event_properties=EventProperties(
+                                chat_id=callback.message.chat.id if callback.message else None,
+                                chat_type=callback.message.chat.type if callback.message else None,
+                                command=None,
+                                text="de:back:day",
+                            ),
+                            language=getattr(callback.from_user, 'language_code', None),
+                        )
+                    )
+                except Exception:
+                    pass
+            return
+    except Exception:
+        pass
     PAGE_SIZE = 10
 
     async with sessionmaker() as session:

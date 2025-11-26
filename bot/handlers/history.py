@@ -110,6 +110,38 @@ async def cmd_history(message: types.Message) -> None:
     if not message.from_user:
         return
     user_id = message.from_user.id
+    # Gate: require onboarding completed
+    try:
+        async with sessionmaker() as session:
+            exists = await session.scalar(
+                select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
+            )
+        if not bool(exists):
+            text = _("Завершите онбординг за пару минут, чтобы получить полный доступ к данным")
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
+            )
+            await message.answer(text, reply_markup=kb)
+            if analytics.logger:
+                try:
+                    analytics.fire_event(
+                        BaseEvent(
+                            user_id=user_id,
+                            event_type="Gated:OnboardingRequired",
+                            event_properties=EventProperties(
+                                chat_id=message.chat.id if message.chat else None,
+                                chat_type=message.chat.type if message.chat else None,
+                                command="/history",
+                                text=None,
+                            ),
+                            language=message.from_user.language_code if message.from_user else None,
+                        )
+                    )
+                except Exception:
+                    pass
+            return
+    except Exception:
+        pass
 
     days, week_totals = await aggregate_last7_days(user_id)
     # Sort by recency: today first
@@ -213,6 +245,45 @@ async def cb_history_back(callback: types.CallbackQuery) -> None:
     if not callback.from_user:
         return
     user_id = callback.from_user.id
+    # Gate: require onboarding completed
+    try:
+        async with sessionmaker() as session:
+            exists = await session.scalar(
+                select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
+            )
+        if not bool(exists):
+            try:
+                await callback.answer()
+            except Exception:
+                pass
+            text = _("Завершите онбординг за пару минут, чтобы получить полный доступ к данным")
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
+            )
+            try:
+                await callback.message.answer(text, reply_markup=kb)
+            except Exception:
+                pass
+            if analytics.logger and callback.from_user:
+                try:
+                    analytics.fire_event(
+                        BaseEvent(
+                            user_id=callback.from_user.id,
+                            event_type="Gated:OnboardingRequired",
+                            event_properties=EventProperties(
+                                chat_id=callback.message.chat.id if callback.message else None,
+                                chat_type=callback.message.chat.type if callback.message else None,
+                                command=None,
+                                text="history:back",
+                            ),
+                            language=getattr(callback.from_user, 'language_code', None),
+                        )
+                    )
+                except Exception:
+                    pass
+            return
+    except Exception:
+        pass
     days, week_totals = await aggregate_last7_days(user_id)
     days_sorted = sorted(days, key=lambda x: x["date"], reverse=True)
 
@@ -298,6 +369,45 @@ async def cb_history_day(callback: types.CallbackQuery) -> None:
     if not callback.from_user:
         return
     user_id = callback.from_user.id
+    # Gate: require onboarding completed
+    try:
+        async with sessionmaker() as session:
+            exists = await session.scalar(
+                select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
+            )
+        if not bool(exists):
+            try:
+                await callback.answer()
+            except Exception:
+                pass
+            text = _("Завершите онбординг за пару минут, чтобы получить полный доступ к данным")
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
+            )
+            try:
+                await callback.message.answer(text, reply_markup=kb)
+            except Exception:
+                pass
+            if analytics.logger and callback.from_user:
+                try:
+                    analytics.fire_event(
+                        BaseEvent(
+                            user_id=callback.from_user.id,
+                            event_type="Gated:OnboardingRequired",
+                            event_properties=EventProperties(
+                                chat_id=callback.message.chat.id if callback.message else None,
+                                chat_type=callback.message.chat.type if callback.message else None,
+                                command=None,
+                                text="history:day",
+                            ),
+                            language=getattr(callback.from_user, 'language_code', None),
+                        )
+                    )
+                except Exception:
+                    pass
+            return
+    except Exception:
+        pass
     m = (callback.data or "").split(":")
     if len(m) != 3:
         return
@@ -439,6 +549,45 @@ async def cb_history_add(callback: types.CallbackQuery) -> None:
     if not callback.from_user:
         return
     user_id = callback.from_user.id
+    # Gate: require onboarding completed
+    try:
+        async with sessionmaker() as session:
+            exists = await session.scalar(
+                select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
+            )
+        if not bool(exists):
+            try:
+                await callback.answer()
+            except Exception:
+                pass
+            text = _("Завершите онбординг за пару минут, чтобы получить полный доступ к данным")
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
+            )
+            try:
+                await callback.message.answer(text, reply_markup=kb)
+            except Exception:
+                pass
+            if analytics.logger and callback.from_user:
+                try:
+                    analytics.fire_event(
+                        BaseEvent(
+                            user_id=callback.from_user.id,
+                            event_type="Gated:OnboardingRequired",
+                            event_properties=EventProperties(
+                                chat_id=callback.message.chat.id if callback.message else None,
+                                chat_type=callback.message.chat.type if callback.message else None,
+                                command=None,
+                                text="history:add",
+                            ),
+                            language=getattr(callback.from_user, 'language_code', None),
+                        )
+                    )
+                except Exception:
+                    pass
+            return
+    except Exception:
+        pass
     m = (callback.data or "").split(":")
     if len(m) != 3:
         return

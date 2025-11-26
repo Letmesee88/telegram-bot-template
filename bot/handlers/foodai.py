@@ -18,6 +18,7 @@ from sqlalchemy import select
 from bot.database.database import sessionmaker
 from bot.database.models import DailyIntakeModel, MealItemModel, MealModel, MealPhotoModel, OnboardingAnswerModel
 from bot.filters.foodai_enabled import FoodAIEnabledFilter
+from bot.filters.onboarding_completed import OnboardingCompletedFilter
 from bot.services.foodai import analyze_photo, analyze_text, refine_meal
 from bot.services.users import get_user_tzinfo, today_local_utc_dates
 from bot.core.config import settings
@@ -41,17 +42,22 @@ from bot.services.history import get_add_in_day_target, clear_add_in_day_target
 
 router = Router(name="foodai")
 router.message.filter(FoodAIEnabledFilter())
+# Block for users without completed onboarding
+router.message.filter(OnboardingCompletedFilter())
 # Do not process ANY FoodAI messages while user is in any FSM state (e.g., onboarding)
 router.message.filter(StateFilter(None))
 # Apply same constraints to callbacks to ignore old buttons during onboarding and restrict to enabled users
 router.callback_query.filter(FoodAIEnabledFilter())
+router.callback_query.filter(OnboardingCompletedFilter())
 router.callback_query.filter(StateFilter(None))
 
 
 # Separate router for edit text state (does not have global StateFilter(None))
 router_edit = Router(name="foodai_edit")
 router_edit.message.filter(FoodAIEnabledFilter())
+router_edit.message.filter(OnboardingCompletedFilter())
 router_edit.callback_query.filter(FoodAIEnabledFilter())
+router_edit.callback_query.filter(OnboardingCompletedFilter())
 
 
 class EditStates(StatesGroup):

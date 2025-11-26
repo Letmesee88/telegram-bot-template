@@ -143,7 +143,8 @@ async def get_week_advice(user_id: int, days: List[Dict[str, Any]]) -> str | Non
         instructions = (
             "Ты — ИИ‑нутрициолог. Дай очень короткий практичный совет (1–2 предложения) на русском, без markdown. "
             "Учитывай только калории и белок, сравнивай средние с целями плана, если они есть. "
-            "Если известен вес, можно упомянуть белок в г/кг. Не придумывай фактов, не упоминай уверенность."
+            "Если известен вес, можно упомянуть белок в г/кг. Не придумывай фактов, не упоминай уверенность. "
+            "Строго не более 220 символов."
         )
 
         parts: list[str] = []
@@ -173,8 +174,6 @@ async def get_week_advice(user_id: int, days: List[Dict[str, Any]]) -> str | Non
         advice = None
         if isinstance(raw, str):
             advice = raw.strip().replace("\n", " ")
-            if len(advice) > 280:
-                advice = advice[:277].rstrip() + "…"
         if advice:
             try:
                 await redis_client.setex(key, int(5 * 3600), advice)
