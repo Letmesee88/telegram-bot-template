@@ -29,6 +29,16 @@ class FoodAIEnabledFilter(BaseFilter):
 
         # Send CTA to purchase subscription
         try:
+            # Avoid duplicate sends across multiple routers/handlers
+            if getattr(event, "_foodai_cta_sent", False):
+                return False
+            setattr(event, "_foodai_cta_sent", True)
+
+            # Do not spam during subscription navigation callbacks
+            data = getattr(event, "data", None)
+            if isinstance(data, str) and data.startswith("sale:"):
+                return False
+
             # Stop loading if it's a callback
             if hasattr(event, "answer"):
                 try:
