@@ -20,25 +20,21 @@ class FoodAIEnabledFilter(BaseFilter):
             return False
 
         db_user = await session.get(UserModel, user.id)
-        if not db_user:
-            return False
-
-        ok = bool(getattr(db_user, "is_premium", False)) and (db_user.foodai_enabled_at is not None)
+        # Treat missing user as not-premium / disabled FoodAI
+        is_prem = bool(getattr(db_user, "is_premium", False)) if db_user is not None else False
+        has_foodai = (getattr(db_user, "foodai_enabled_at", None) is not None) if db_user is not None else False
+        ok = is_prem and has_foodai
         if ok:
             return True
 
         # Send CTA to purchase subscription
         try:
-            # Avoid duplicate sends across multiple routers/handlers
-            if getattr(event, "_foodai_cta_sent", False):
-                return False
-            setattr(event, "_foodai_cta_sent", True)
-            # Also dedup on the underlying message object if present
-            msg_obj = getattr(event, "message", None) or (event if isinstance(event, Message) else None)
-            if msg_obj is not None:
-                if getattr(msg_obj, "_foodai_cta_sent", False):
-                    return False
-                setattr(msg_obj, "_foodai_cta_sent", True)
+            # We'll set dedup flags only after confirming it's a real FoodAI attempt
+            msg_obj = getattr(event, "message", None)
+            if msg_obj is None:
+                # Duck-typing: treat event itself as message if it has text/photo
+                if hasattr(event, "text") or hasattr(event, "photo"):
+                    msg_obj = event
 
             # Do not spam during subscription navigation callbacks
             data = getattr(event, "data", None)
@@ -65,6 +61,15 @@ class FoodAIEnabledFilter(BaseFilter):
             if not attempted:
                 return False
 
+            # Avoid duplicate sends across multiple handlers for the same update
+            if getattr(event, "_foodai_cta_sent", False):
+                return False
+            setattr(event, "_foodai_cta_sent", True)
+            if msg_obj is not None and msg_obj is not event:
+                if getattr(msg_obj, "_foodai_cta_sent", False):
+                    return False
+                setattr(msg_obj, "_foodai_cta_sent", True)
+
             # Stop loading if it's a callback
             if hasattr(event, "answer"):
                 try:
@@ -80,7 +85,6 @@ class FoodAIEnabledFilter(BaseFilter):
                 inline_keyboard=[[InlineKeyboardButton(text="💎 Выбрать тариф", callback_data="sale:choose")]]
             )
             # Prefer replying in chat context for callbacks
-            msg_obj = getattr(event, "message", None)
             if msg_obj and hasattr(msg_obj, "answer"):
                 try:
                     await msg_obj.answer(text, reply_markup=kb, disable_web_page_preview=True)
