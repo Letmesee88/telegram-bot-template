@@ -21,6 +21,8 @@ class FakeMessage:
     def __init__(self, user_id=123):
         self.from_user = FakeFromUser(user_id)
         self.chat = FakeChat(777, "private")
+        # Non-command text to simulate FoodAI text attempt
+        self.text = "Привет"
         self._answers: list[tuple[str, dict]] = []
 
     async def answer(self, text: str, **kwargs):

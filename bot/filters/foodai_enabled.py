@@ -33,10 +33,36 @@ class FoodAIEnabledFilter(BaseFilter):
             if getattr(event, "_foodai_cta_sent", False):
                 return False
             setattr(event, "_foodai_cta_sent", True)
+            # Also dedup on the underlying message object if present
+            msg_obj = getattr(event, "message", None) or (event if isinstance(event, Message) else None)
+            if msg_obj is not None:
+                if getattr(msg_obj, "_foodai_cta_sent", False):
+                    return False
+                setattr(msg_obj, "_foodai_cta_sent", True)
 
             # Do not spam during subscription navigation callbacks
             data = getattr(event, "data", None)
             if isinstance(data, str) and data.startswith("sale:"):
+                return False
+
+            # Show CTA only on actual FoodAI attempts:
+            # - Photo message
+            # - Plain text message (not a command)
+            # - FoodAI callbacks (prefix 'foodai:')
+            attempted = False
+            if msg_obj is not None:
+                try:
+                    if getattr(msg_obj, "photo", None):
+                        attempted = True
+                    else:
+                        t = getattr(msg_obj, "text", None)
+                        if isinstance(t, str) and t.strip() and not t.startswith("/"):
+                            attempted = True
+                except Exception:
+                    pass
+            if isinstance(data, str) and data.startswith("foodai:"):
+                attempted = True
+            if not attempted:
                 return False
 
             # Stop loading if it's a callback

@@ -41,23 +41,24 @@ from bot.handlers.metrics import (
 from bot.services.history import get_add_in_day_target, clear_add_in_day_target
 
 router = Router(name="foodai")
-router.message.filter(FoodAIEnabledFilter())
-# Block for users without completed onboarding
+# Block for users without completed onboarding (higher priority)
 router.message.filter(OnboardingCompletedFilter())
+# Then check premium/FoodAI access
+router.message.filter(FoodAIEnabledFilter())
 # Do not process ANY FoodAI messages while user is in any FSM state (e.g., onboarding)
 router.message.filter(StateFilter(None))
-# Apply same constraints to callbacks to ignore old buttons during onboarding and restrict to enabled users
-router.callback_query.filter(FoodAIEnabledFilter())
+# Apply same constraints to callbacks; onboarding gate first
 router.callback_query.filter(OnboardingCompletedFilter())
+router.callback_query.filter(FoodAIEnabledFilter())
 router.callback_query.filter(StateFilter(None))
 
 
 # Separate router for edit text state (does not have global StateFilter(None))
 router_edit = Router(name="foodai_edit")
-router_edit.message.filter(FoodAIEnabledFilter())
 router_edit.message.filter(OnboardingCompletedFilter())
-router_edit.callback_query.filter(FoodAIEnabledFilter())
+router_edit.message.filter(FoodAIEnabledFilter())
 router_edit.callback_query.filter(OnboardingCompletedFilter())
+router_edit.callback_query.filter(FoodAIEnabledFilter())
 
 
 class EditStates(StatesGroup):
