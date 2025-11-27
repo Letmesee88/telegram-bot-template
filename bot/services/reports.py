@@ -41,9 +41,123 @@ _MOTIVATION_SHORT_POOL: list[str] = [
     "✨Ты молодец! Маленькие шаги складываются в большой результат.",
     "✨Продолжай в том же духе — стабильность сильнее мотивации!",
     "✨Каждый осознанный выбор делает тебя здоровее.",
+    "✨Замечательно! Каждый день — новая победа над собой!",
+    "✨Ты на правильном пути: сегодняшние усилия — завтрашний результат!",
+    "✨Отлично сработано! Даже маленький прогресс — это движение вперёд.",
+    "✨Горжусь тобой! Ты доказываешь, что упорство творит чудеса.",
+    "✨Каждый твой шаг приближает тебя к цели — так держать!",
+    "✨Ты делаешь это! День за днём ты становишься лучше.",
+    "✨Прекрасно! Ты формируешь привычки, которые изменят твою жизнь.",
+    "✨Не останавливайся — твои усилия уже дают плоды!",
+    "✨Ты в игре! Каждый день добавляет очков в копилку успеха.",
+    "✨Молодец! Ты выбираешь здоровье и силу каждый день.",
+    "✨Сегодня ты снова доказал: постоянство — ключ к результату!",
+    "✨Потрясающе! Ты создаёшь будущее своими сегодняшними действиями.",
+    "✨Продолжай — твоя дисциплина уже работает на тебя!",
+    "✨Ты круче, чем думаешь: каждый день ты растёшь над собой.",
+    "✨Отлично! Ты пишешь историю своего успеха — по одной странице в день.",
+    "✨Ты в потоке: ежедневные усилия превращаются в большие достижения.",
+    "✨Восхищаюсь твоей настойчивостью! Ты точно добьёшься цели.",
+    "✨Каждый день — новый шанс стать лучше. И ты им пользуешься!",
+    "✨Ты двигаешься вперёд, и это самое главное. Продолжай!",
+    "✨Сегодняшний день — ещё один кирпичик в фундаменте твоего успеха!",
 ]
 
 _rps_events = deque(maxlen=200)
+
+
+def _len_limits() -> tuple[int, int, int, int]:
+    try:
+        mot_min = int(getattr(settings, "DAILY_REPORTS_TARGET_LEN_MOTIVATION_MIN", 300) or 300)
+    except Exception:
+        mot_min = 300
+    try:
+        mot_max = int(getattr(settings, "DAILY_REPORTS_TARGET_LEN_MOTIVATION_MAX", 350) or 350)
+    except Exception:
+        mot_max = 350
+    try:
+        adv_min = int(getattr(settings, "DAILY_REPORTS_TARGET_LEN_ADVICE_MIN", 200) or 200)
+    except Exception:
+        adv_min = 200
+    try:
+        adv_max = int(getattr(settings, "DAILY_REPORTS_TARGET_LEN_ADVICE_MAX", 300) or 300)
+    except Exception:
+        adv_max = 300
+    return mot_min, mot_max, adv_min, adv_max
+
+
+def _in_range(txt: str, lo: int, hi: int) -> bool:
+    l = len((txt or "").strip())
+    return l >= lo and l <= hi
+
+
+def _compose_neutral_text(pool: list[str], lo: int, hi: int) -> str:
+    def join_len(parts: list[str]) -> int:
+        if not parts:
+            return 0
+        return sum(len(p) for p in parts) + (len(parts) - 1)
+
+    sents = [s.strip() for s in (pool or []) if isinstance(s, str) and s.strip()]
+    # 1) exact single sentence in range
+    for s in sents:
+        L = len(s)
+        if lo <= L <= hi:
+            return s
+    # 2) try pairs
+    best: list[str] | None = None
+    best_len = -1
+    n = len(sents)
+    for i in range(n):
+        for j in range(i + 1, n):
+            parts = [sents[i], sents[j]]
+            L = join_len(parts)
+            if lo <= L <= hi:
+                return " ".join(parts)
+            if L <= hi and L > best_len:
+                best, best_len = parts, L
+    # 3) try triples
+    for i in range(n):
+        for j in range(i + 1, n):
+            for k in range(j + 1, n):
+                parts = [sents[i], sents[j], sents[k]]
+                L = join_len(parts)
+                if lo <= L <= hi:
+                    return " ".join(parts)
+                if L <= hi and L > best_len:
+                    best, best_len = parts, L
+    # 4) fallback to the longest <= hi if exists, otherwise the shortest sentence
+    if best is not None and best_len >= 0 and best_len >= lo:
+        return " ".join(best)
+    # longest single <= hi
+    single_best = ""
+    for s in sents:
+        L = len(s)
+        if L <= hi and L > len(single_best):
+            single_best = s
+    if single_best:
+        return single_best
+    # last resort: return the shortest (still no truncation)
+    return min(sents, key=len) if sents else ""
+
+
+def _neutral_motivation() -> str:
+    mot_min, mot_max, _, _ = _len_limits()
+    sentences = [
+        "Сегодня важен не идеальный результат, а стабильность. Действуй в спокойном темпе и опирайся на простые шаги, которые реально выполнимы именно для тебя в текущем дне.",
+        "Небольшие шаги формируют привычку и дают устойчивый прогресс без перегибов. Поддерживай внимание к питанию и самочувствию, а остальное придёт естественно со временем.",
+        "Сделай акцент на ясной цели на день и будь добрее к себе: так легче сохранять курс и возвращаться в режим, если что-то пошло не по плану."
+    ]
+    return _compose_neutral_text(sentences, mot_min, mot_max)
+
+
+def _neutral_advice() -> str:
+    _, _, adv_min, adv_max = _len_limits()
+    sentences = [
+        "Держи под рукой воду и распредели приёмы пищи равномерно в течение дня, чтобы избежать больших провалов в энергии.",
+        "Собери тарелку из простых продуктов: источник белка, овощи и умеренная порция сложных углеводов — этого достаточно, чтобы чувствовать контроль.",
+        "План на вечер сделай лёгким и заканчивай приём пищи за пару часов до сна — так и сон, и утро будут стабильнее."
+    ]
+    return _compose_neutral_text(sentences, adv_min, adv_max)
 
 async def _limit_telegram_rps() -> None:
     """Global RPS limiter for Telegram sends.
@@ -282,12 +396,14 @@ async def _collect_user_context(user_id: int) -> dict[str, Any]:
 async def _gen_llm_content(plan: dict[str, float], fact: dict[str, float], ctx: Optional[dict[str, Any]] = None) -> tuple[Optional[str], Optional[str], Optional[str]]:
     model = (settings.DAILY_REPORTS_MODEL or settings.RECOMMENDER_MODEL or settings.FOODAI_DEFAULT_MODEL or "gpt-5-mini")
     timeout = int(getattr(settings, "DAILY_REPORTS_LLM_TIMEOUT_SEC", 10) or 10)
+    mot_min, mot_max, adv_min, adv_max = _len_limits()
 
     system = (
-        "Ты — ИИ-нутрициолог и персональный коуч. Сформируй две части на РУССКОМ: 'motivation_full' (200-400 символов) и 'advice' (400-800). "
-        "Формат ответа СТРОГО JSON {\"motivation_full\": str, \"advice\": str}. "
-        "Учитывай план/факт по КБЖУ, прогресс по весу, тренд 7 дней, и дисциплину (streak). "
-        "Избегай медицинских диагнозов/лекарств и опасных рекомендаций. Тон — поддерживающий, конкретный, реалистичный."
+        "Ты — ИИ-нутрициолог и персональный коуч. Верни СТРОГО JSON с полями 'motivation_full' и 'advice' без преамбул. "
+        f"Требования к длине: motivation_full {mot_min}-{mot_max} символов; advice {adv_min}-{adv_max} символов. "
+        "Каждое поле — один абзац, без списков и эмодзи. Язык — русский. "
+        "Учитывай план/факт по КБЖУ, прогресс по весу, тренд 7 дней и дисциплину (streak). "
+        "Избегай медицинских диагнозов/лекарств и опасных рекомендаций. Тон поддерживающий и реалистичный."
     )
 
     # Build user context string
@@ -327,7 +443,7 @@ async def _gen_llm_content(plan: dict[str, float], fact: dict[str, float], ctx: 
         "model": model,
         "instructions": system,
         "text": {"verbosity": getattr(settings, "FOODAI_TEXT_VERBOSITY", "low")},
-        "max_output_tokens": 600,
+        "max_output_tokens": 800,
         "input": [
             {
                 "role": "user",
@@ -337,39 +453,84 @@ async def _gen_llm_content(plan: dict[str, float], fact: dict[str, float], ctx: 
             }
         ],
     }
+    async def _call_and_parse(pl: dict[str, Any]) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        raw: Optional[str] = None
+        try:
+            raw = await asyncio.wait_for(_openai_request("responses", pl), timeout=timeout)
+            if not raw:
+                return None, None, "empty"
+            data: Optional[dict[str, Any]] = None
+            try:
+                data = json.loads(raw)
+            except Exception:
+                t = (raw or "").strip()
+                s = t.find("{")
+                e = t.rfind("}")
+                if s != -1 and e != -1 and e > s:
+                    try:
+                        data = json.loads(t[s:e+1])
+                    except Exception:
+                        data = None
+            if not isinstance(data, dict):
+                return None, None, "json_parse"
+            mot = str(data.get("motivation_full") or "").strip()
+            adv = str(data.get("advice") or "").strip()
+            if not mot or not adv:
+                return None, None, "invalid"
+            return mot, adv, None
+        except asyncio.TimeoutError:
+            return None, None, "timeout"
+        except Exception as e:
+            try:
+                logger.warning("daily_report_llm_error | err={}", e)
+            except Exception:
+                pass
+            return None, None, "other"
 
-    raw: Optional[str] = None
-    try:
-        raw = await asyncio.wait_for(_openai_request("responses", payload), timeout=timeout)
-        if not raw:
-            return None, None, "empty"
-        data: Optional[dict[str, Any]] = None
+    attempts = 0
+    max_attempts = int(getattr(settings, "DAILY_REPORTS_LLM_MAX_ATTEMPTS", 2) or 2)
+    mot_out: Optional[str] = None
+    adv_out: Optional[str] = None
+    last_err: Optional[str] = None
+    while attempts < max_attempts:
+        attempts += 1
+        mot_out, adv_out, err = await _call_and_parse(payload)
+        if err is None and _in_range(mot_out or "", mot_min, mot_max) and _in_range(adv_out or "", adv_min, adv_max):
+            return mot_out, adv_out, None
+        # One refine attempt if lengths off and we have some text
+        if err is None and (mot_out or adv_out):
+            refine_instructions = (
+                "Сохрани смысл и переформулируй текст строго в заданные диапазоны символов. "
+                f"motivation_full {mot_min}-{mot_max}; advice {adv_min}-{adv_max}. Верни только JSON."
+            )
+            refined_payload = {
+                "model": model,
+                "instructions": system,
+                "text": {"verbosity": getattr(settings, "FOODAI_TEXT_VERBOSITY", "low")},
+                "max_output_tokens": 800,
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": user_text},
+                            {"type": "input_text", "text": "Текущий JSON:"},
+                            {"type": "input_text", "text": json.dumps({"motivation_full": mot_out, "advice": adv_out}, ensure_ascii=False)},
+                            {"type": "input_text", "text": refine_instructions},
+                        ],
+                    }
+                ],
+            }
+            mot_r, adv_r, err_r = await _call_and_parse(refined_payload)
+            if err_r is None and _in_range(mot_r or "", mot_min, mot_max) and _in_range(adv_r or "", adv_min, adv_max):
+                return mot_r, adv_r, None
+            last_err = err_r or "range"
+        else:
+            last_err = err or "other"
         try:
-            data = json.loads(raw)
-        except Exception:
-            t = (raw or "").strip()
-            s = t.find("{")
-            e = t.rfind("}")
-            if s != -1 and e != -1 and e > s:
-                try:
-                    data = json.loads(t[s:e+1])
-                except Exception:
-                    data = None
-        if not isinstance(data, dict):
-            return None, None, "json_parse"
-        mot = str(data.get("motivation_full") or "").strip()
-        adv = str(data.get("advice") or "").strip()
-        if not mot or not adv:
-            return None, None, "invalid"
-        return mot, adv, None
-    except asyncio.TimeoutError:
-        return None, None, "timeout"
-    except Exception as e:
-        try:
-            logger.warning("daily_report_llm_error | err={}", e)
+            await asyncio.sleep(0.3 * (2 ** (attempts - 1)))
         except Exception:
             pass
-        return None, None, "other"
+    return None, None, (last_err or "failed")
 
 
 async def assemble_and_send_report(bot: Bot, user_id: int, *, scheduled_epoch: Optional[int] = None) -> bool:
@@ -447,16 +608,8 @@ async def assemble_and_send_report(bot: Bot, user_id: int, *, scheduled_epoch: O
     used_fallback = False
     if err is not None and getattr(settings, "DAILY_REPORTS_FALLBACK_ENABLED", True):
         used_fallback = True
-        # Simple heuristic fallback based on deficits/excess
-        msgs: list[str] = []
-        if plan.get("protein_g", 0) > 0 and fact.get("protein_g", 0) < plan.get("protein_g", 0) * 0.85:
-            msgs.append("Добавь белковый завтрак: яйца, творог, йогурт или курицу.")
-        if fact.get("calories", 0) > plan.get("calories", 0) * 1.05:
-            msgs.append("Сократи быстрые углеводы и сладкие напитки — они легко разгоняют калории.")
-        if not msgs:
-            msgs.append("Запланируй полноценный завтрак и держи воду под рукой. Ты справишься!")
-        mot = "Двигаешься в верном направлении. Держим курс — по шагу каждый день!"
-        adv = "\n".join(f"• {m}" for m in msgs)
+        mot = _neutral_motivation()
+        adv = _neutral_advice()
 
     text = _fmt_summary_text(y_local, plan, fact, short, mot or "", adv or "")
 

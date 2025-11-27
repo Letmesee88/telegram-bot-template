@@ -1,6 +1,6 @@
 from aiogram import Router, types
 import os
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.utils.i18n import gettext as _
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram import F
@@ -127,3 +127,30 @@ async def start_no(call: types.CallbackQuery) -> None:
     await call.message.answer(
         _("Ок, оставляем текущий план. Готов считать калории — пришли фото блюда или описание.")
     )
+
+
+@router.message(Command("add_meal"))
+async def cmd_add_meal(message: types.Message) -> None:
+    text = (
+        "➕ Как добавить блюдо:\n\n"
+        "📸 Сфотографируйте блюдо\n"
+        "✏️ Или опишите его словами\n\n"
+        "📌 Для точного анализа:\n"
+        "• Снимайте всю порцию целиком\n"
+        "• Уточняйте размер порций и вес\n\n"
+        "⚡️ Полезные функции:\n"
+        "• Корректируйте данные после анализа\n"
+        "• Сохраняйте любимые блюда как шаблоны\n\n"
+        "calorissimo_ai_bot считает калории за вас и помогает добиваться результата !"
+    )
+    await message.answer(text)
+
+
+@router.message(Command("support"))
+async def cmd_support(message: types.Message) -> None:
+    text = (
+        "☕️ Поддержка  пользователей\n\n"
+        "По любым вопросам пишите:\n"
+        "@Calorissimo_support"
+    )
+    await message.answer(text, disable_web_page_preview=True)

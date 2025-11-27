@@ -218,10 +218,16 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     DAILY_REPORTS_BATCH_LIMIT: int = 200
     DAILY_REPORTS_LLM_CONCURRENCY: int = 50
     DAILY_REPORTS_LLM_TIMEOUT_SEC: int = 10
+    DAILY_REPORTS_LLM_MAX_ATTEMPTS: int = 2
     DAILY_REPORTS_TELEGRAM_RPS: int = 10
     DAILY_REPORTS_MODEL: str | None = None
     DAILY_REPORTS_FALLBACK_ENABLED: bool = True
     DAILY_REPORTS_REQUIRE_PREMIUM: bool = False
+    # Target length ranges (characters) for LLM output
+    DAILY_REPORTS_TARGET_LEN_MOTIVATION_MIN: int = 300
+    DAILY_REPORTS_TARGET_LEN_MOTIVATION_MAX: int = 350
+    DAILY_REPORTS_TARGET_LEN_ADVICE_MIN: int = 200
+    DAILY_REPORTS_TARGET_LEN_ADVICE_MAX: int = 300
 
     # Adjustment (onboarding final corrections) LLM settings
     ADJUST_LLM_ENABLED: bool = True
