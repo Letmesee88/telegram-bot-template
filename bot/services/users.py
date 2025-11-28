@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select, update
 
 from bot.cache.redis import build_key, cached, clear_cache
-from bot.database.models import UserModel
+from bot.database.models import UserModel, SubscriptionModel
 import bot.core.config as cfg
 from bot.core.loader import redis_client
 
@@ -27,12 +27,9 @@ async def add_user(
     last_name: str | None = user.last_name
     username: str | None = user.username
     language_code: str | None = user.language_code
-    is_premium: bool = user.is_premium or False
 
-    # Auto-grant admin flag if user ID is listed in ADMIN_USER_IDS
+    # Auto-grant admin flag if user ID is listed in ADMIN_USER_IDS (does NOT imply premium)
     is_admin_env = user_id in cfg.settings.ADMIN_USER_IDS
-    # Admins are always premium
-    premium_effective = bool(is_premium or is_admin_env)
 
     new_user = UserModel(
         id=user_id,
@@ -40,7 +37,8 @@ async def add_user(
         last_name=last_name,
         username=username,
         language_code=language_code,
-        is_premium=premium_effective,
+        # App premium reflects only paid subscription, never Telegram Premium nor admin flag
+        is_premium=False,
         referrer=referrer,
         is_admin=is_admin_env,
     )
@@ -114,11 +112,10 @@ async def set_timezone(session: "AsyncSession", user_id: int, tz_name: str) -> N
     # Immediately reschedule daily report for new timezone
     try:
         if getattr(cfg.settings, "DAILY_REPORTS_ENABLED", True):
-            # Subscription gating: if premium required and user is not premium — do not schedule
+            # Subscription gating: if premium required and user has no active subscription — do not schedule
             if getattr(cfg.settings, "DAILY_REPORTS_REQUIRE_PREMIUM", False):
-                from bot.database.models import UserModel as _UserModel  # avoid rebinding module-scope name
-                is_prem = await session.scalar(select(_UserModel.is_premium).where(_UserModel.id == user_id))
-                if not bool(is_prem):
+                active = await is_subscription_active(session, user_id)
+                if not active:
                     return
             # Compute next local 08:00 with jitter
             tzinfo = None
@@ -187,8 +184,8 @@ async def is_admin(session: AsyncSession, user_id: int) -> bool:
 
 async def set_is_admin(session: AsyncSession, user_id: int, is_admin: bool) -> None:
     if is_admin:
-        # Admins are always premium
-        stmt = update(UserModel).where(UserModel.id == user_id).values(is_admin=True, is_premium=True)
+        # Adminship does not alter premium status
+        stmt = update(UserModel).where(UserModel.id == user_id).values(is_admin=True)
         await session.execute(stmt)
     else:
         stmt = update(UserModel).where(UserModel.id == user_id).values(is_admin=False)
@@ -216,3 +213,46 @@ async def get_user_count(session: AsyncSession) -> int:
 
     count = result.scalar_one_or_none() or 0
     return int(count)
+
+
+async def is_subscription_active(session: "AsyncSession", user_id: int, include_grace: bool = False) -> bool:
+    """Return True if user has an active, non-expired app subscription.
+
+    Strict criteria (default):
+    - subscriptions.status == 'active'
+    - subscriptions.expires_at_utc > now (UTC)
+
+    If include_grace is True, also considers a local-time grace window until HH:00
+    on the calendar day of expiry. HH comes from settings.SUBSCRIPTION_GRACE_HOUR (fallback REBILL_HOUR, default 10).
+    """
+    now_utc = datetime.now(timezone.utc)
+    res = await session.execute(
+        select(SubscriptionModel.expires_at_utc, SubscriptionModel.status)
+        .where(SubscriptionModel.user_id == user_id)
+        .limit(1)
+    )
+    row = res.first()
+    if not row:
+        return False
+    expires_at_utc, status = row
+    if status != "active" or not expires_at_utc:
+        return False
+    if expires_at_utc > now_utc:
+        return True
+    if not include_grace:
+        return False
+    # Grace: allow access until HH:00 local time on the expiry date
+    try:
+        grace_hour = None
+        try:
+            grace_hour = int(getattr(cfg.settings, "SUBSCRIPTION_GRACE_HOUR", None) or getattr(cfg.settings, "REBILL_HOUR", 10) or 10)
+        except Exception:
+            grace_hour = 10
+        tz = await get_user_tzinfo(session, user_id)
+        now_local = datetime.now(tz)
+        exp_local = expires_at_utc.astimezone(tz)
+        if (now_local.date() == exp_local.date()) and (now_local.hour < int(grace_hour)):
+            return True
+    except Exception:
+        return False
+    return False

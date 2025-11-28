@@ -55,6 +55,8 @@ class FakeSession:
                     def all(self_inner):
                         return []
                 return V()
+            def first(self):
+                return None
         return FakeResult()
 
     async def get(self, *args, **kwargs):
@@ -264,8 +266,13 @@ class _FakeSessionFoodAI(FakeSession):
         return self._user
 
 
-async def test_foodai_filter_allows_when_premium_and_enabled():
+async def test_foodai_filter_allows_when_premium_and_enabled(monkeypatch):
     from bot.filters.foodai_enabled import FoodAIEnabledFilter
+    import bot.filters.foodai_enabled as fmod
+
+    async def _active(session, user_id, include_grace=False):
+        return True
+    monkeypatch.setattr(fmod, "is_subscription_active", _active, raising=True)
 
     msg = FakeMessage(user_id=55)
     session = _FakeSessionFoodAI(is_premium=True, foodai_enabled=True)
@@ -275,8 +282,13 @@ async def test_foodai_filter_allows_when_premium_and_enabled():
     assert len(msg._answers) == 0
 
 
-async def test_foodai_filter_blocks_message_with_cta_on_message():
+async def test_foodai_filter_blocks_message_with_cta_on_message(monkeypatch):
     from bot.filters.foodai_enabled import FoodAIEnabledFilter
+    import bot.filters.foodai_enabled as fmod
+
+    async def _inactive(session, user_id, include_grace=False):
+        return False
+    monkeypatch.setattr(fmod, "is_subscription_active", _inactive, raising=True)
 
     msg = FakeMessage(user_id=56)
     session = _FakeSessionFoodAI(is_premium=False, foodai_enabled=True)
@@ -307,8 +319,13 @@ async def test_foodai_filter_does_not_send_cta_on_callback_any():
     assert len(cb.message._answers) == 0
 
 
-async def test_foodai_filter_allows_premium_even_if_flag_missing_on_text():
+async def test_foodai_filter_allows_premium_even_if_flag_missing_on_text(monkeypatch):
     from bot.filters.foodai_enabled import FoodAIEnabledFilter
+    import bot.filters.foodai_enabled as fmod
+
+    async def _active(session, user_id, include_grace=False):
+        return True
+    monkeypatch.setattr(fmod, "is_subscription_active", _active, raising=True)
 
     msg = FakeMessage(user_id=58)
     session = _FakeSessionFoodAI(is_premium=True, foodai_enabled=False)
@@ -499,3 +516,523 @@ async def test_foodai_filter_skips_cta_when_fsm_active_callback():
     # No CTA and no callback.answer() while in FSM
     assert cb._answered is False
     assert len(cb.message._answers) == 0
+
+
+# === Subscription grace window tests ===
+async def test_is_subscription_active_grace_before_10_local(monkeypatch):
+    from datetime import datetime, timezone
+    import bot.services.users as users_mod
+
+    # Expired at 06:00 UTC, now 06:30 UTC => expired; in MSK it's 09:30 (<10:00) => grace applies
+    exp_utc = datetime(2025, 1, 10, 6, 0, tzinfo=timezone.utc)
+    now_utc = datetime(2025, 1, 10, 6, 30, tzinfo=timezone.utc)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return now_utc
+            try:
+                return now_utc.astimezone(tz)
+            except Exception:
+                return now_utc
+
+    class _FakeSessionSub:
+        def __init__(self, exp, status="active"):
+            self._exp = exp
+            self._status = status
+        async def execute(self, *args, **kwargs):
+            exp = self._exp
+            status = self._status
+            class R:
+                def first(self_inner):
+                    return (exp, status)
+                def scalars(self_inner):
+                    class V:
+                        def all(self_v):
+                            return []
+                    return V()
+            return R()
+
+    # Force user's tz to Europe/Moscow (UTC+3)
+    async def _tz(session, user_id):
+        from zoneinfo import ZoneInfo
+        return ZoneInfo("Europe/Moscow")
+
+    monkeypatch.setattr(users_mod, "get_user_tzinfo", _tz, raising=True)
+    monkeypatch.setattr(users_mod, "datetime", _FixedDateTime, raising=True)
+
+    session = _FakeSessionSub(exp_utc, "active")
+    strict = await users_mod.is_subscription_active(session, 1, include_grace=False)
+    with_grace = await users_mod.is_subscription_active(session, 1, include_grace=True)
+
+    assert strict is False
+    assert with_grace is True
+
+
+async def test_is_subscription_active_grace_after_10_local(monkeypatch):
+    from datetime import datetime, timezone
+    import bot.services.users as users_mod
+
+    # Expired at 06:00 UTC, now 07:30 UTC => 10:30 MSK (>10:00) => grace should NOT apply
+    exp_utc = datetime(2025, 1, 10, 6, 0, tzinfo=timezone.utc)
+    now_utc = datetime(2025, 1, 10, 7, 30, tzinfo=timezone.utc)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return now_utc
+            try:
+                return now_utc.astimezone(tz)
+            except Exception:
+                return now_utc
+
+    class _FakeSessionSub:
+        def __init__(self, exp, status="active"):
+            self._exp = exp
+            self._status = status
+        async def execute(self, *args, **kwargs):
+            exp = self._exp
+            status = self._status
+            class R:
+                def first(self_inner):
+                    return (exp, status)
+                def scalars(self_inner):
+                    class V:
+                        def all(self_v):
+                            return []
+                    return V()
+            return R()
+
+    async def _tz(session, user_id):
+        from zoneinfo import ZoneInfo
+        return ZoneInfo("Europe/Moscow")
+
+    monkeypatch.setattr(users_mod, "get_user_tzinfo", _tz, raising=True)
+    monkeypatch.setattr(users_mod, "datetime", _FixedDateTime, raising=True)
+
+    session = _FakeSessionSub(exp_utc, "active")
+    with_grace = await users_mod.is_subscription_active(session, 1, include_grace=True)
+    assert with_grace is False
+
+
+# === Onboarding final:ok should skip sales for active subscribers (with grace) ===
+async def test_onboarding_final_ok_routes_to_account_when_active(monkeypatch):
+    import types
+    import bot.handlers.onboarding as onb
+    import bot.services.users as users_mod
+    import bot.services.account as acc_svc
+    import bot.handlers.account as acc_handlers
+
+    # Patch DB session used inside handler
+    class _FakeUser:
+        def __init__(self):
+            self.is_admin = False
+
+    class _FakeSession:
+        async def get(self, *args, **kwargs):
+            return _FakeUser()
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeSessionmaker:
+        def __call__(self, *args, **kwargs):
+            return self
+        async def __aenter__(self):
+            return _FakeSession()
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(onb, "sessionmaker", _FakeSessionmaker(), raising=True)
+
+    async def _active(session, user_id, include_grace=False):
+        return True
+    # Handler imports is_subscription_active from services at runtime
+    monkeypatch.setattr(users_mod, "is_subscription_active", _active, raising=True)
+
+    async def _acc_text(user_id: int):
+        return "ACCOUNT_SUMMARY"
+    monkeypatch.setattr(acc_svc, "get_account_summary_text", _acc_text, raising=True)
+    monkeypatch.setattr(acc_handlers, "_kb_account", lambda: object(), raising=False)
+
+    # State with async clear()
+    class _State:
+        def __init__(self):
+            self.cleared = False
+        async def clear(self):
+            self.cleared = True
+
+    cb = FakeCallbackQuery(data="final:ok", user_id=777)
+    state = _State()
+
+    await onb.cb_final_ok(cb, state)
+
+    # Should not show sales text; should send account summary
+    texts = [t for t, _ in cb.message._answers]
+    assert any("ACCOUNT_SUMMARY" in t for t in texts)
+    assert not any("Секрет идеальной фигуры" in t for t in texts)
+    assert state.cleared is True
+
+
+# === FoodAI: no CTA on sale:* callbacks ===
+async def test_foodai_filter_no_cta_on_sale_callbacks():
+    from bot.filters.foodai_enabled import FoodAIEnabledFilter
+
+    cb = FakeCallbackQuery(data="sale:choose", user_id=70)
+    session = _FakeSessionFoodAI(is_premium=False, foodai_enabled=False)
+
+    ok = await FoodAIEnabledFilter()(cb, session)
+    assert ok is False
+    # No CTA pushed into messages
+    assert len(cb.message._answers) == 0
+
+
+# === Admin bypass ===
+async def test_foodai_filter_allows_admin(monkeypatch):
+    from bot.filters.foodai_enabled import FoodAIEnabledFilter
+
+    class _User:
+        def __init__(self):
+            self.is_admin = True
+            self.foodai_enabled_at = None
+
+    class _Sess:
+        async def get(self, *args, **kwargs):
+            return _User()
+
+    msg = FakeMessage(user_id=71)
+    ok = await FoodAIEnabledFilter()(msg, _Sess())
+    assert ok is True
+    assert len(msg._answers) == 0
+
+
+async def test_onboarding_final_ok_routes_to_account_when_admin(monkeypatch):
+    import bot.handlers.onboarding as onb
+    import bot.services.users as users_mod
+    import bot.services.account as acc_svc
+    import bot.handlers.account as acc_handlers
+
+    class _FakeUser:
+        def __init__(self):
+            self.is_admin = True
+
+    class _FakeSession:
+        async def get(self, *args, **kwargs):
+            return _FakeUser()
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeSessionmaker:
+        def __call__(self, *args, **kwargs):
+            return self
+        async def __aenter__(self):
+            return _FakeSession()
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(onb, "sessionmaker", _FakeSessionmaker(), raising=True)
+
+    async def _inactive(session, user_id, include_grace=False):
+        return False
+    monkeypatch.setattr(users_mod, "is_subscription_active", _inactive, raising=True)
+
+    async def _acc_text(user_id: int):
+        return "ACCOUNT_SUMMARY"
+    monkeypatch.setattr(acc_svc, "get_account_summary_text", _acc_text, raising=True)
+    monkeypatch.setattr(acc_handlers, "_kb_account", lambda: object(), raising=False)
+
+    class _State:
+        def __init__(self):
+            self.cleared = False
+        async def clear(self):
+            self.cleared = True
+
+    cb = FakeCallbackQuery(data="final:ok", user_id=772)
+    state = _State()
+
+    await onb.cb_final_ok(cb, state)
+
+    texts = [t for t, _ in cb.message._answers]
+    assert any("ACCOUNT_SUMMARY" in t for t in texts)
+    assert not any("Секрет идеальной фигуры" in t for t in texts)
+    assert state.cleared is True
+
+
+# === set_timezone scheduling respects subscription gating ===
+async def test_set_timezone_schedules_only_when_active(monkeypatch):
+    import bot.services.users as users_mod
+    import bot.core.loader as loader_mod
+    import bot.cache.redis as cache_redis_mod
+
+    class _Sess:
+        async def execute(self, *args, **kwargs):
+            class R:
+                def scalar_one_or_none(self):
+                    return None
+            return R()
+        async def commit(self):
+            return None
+
+    called = {"zadd": 0}
+
+    class _Redis:
+        async def zadd(self, key, mapping):
+            called["zadd"] += 1
+            return True
+        async def delete(self, *args, **kwargs):
+            return 1
+
+    # Force settings
+    class _Settings:
+        DAILY_REPORTS_ENABLED = True
+        DAILY_REPORTS_REQUIRE_PREMIUM = True
+        DAILY_REPORTS_HOUR = 8
+        DAILY_REPORTS_JITTER_MIN = 0
+
+    monkeypatch.setattr(users_mod.cfg, "settings", _Settings(), raising=False)
+    fake_redis = _Redis()
+    monkeypatch.setattr(users_mod, "redis_client", fake_redis, raising=True)
+    monkeypatch.setattr(loader_mod, "redis_client", fake_redis, raising=False)
+    monkeypatch.setattr(cache_redis_mod, "redis_client", fake_redis, raising=False)
+
+    # Active -> schedules
+    async def _active(session, user_id):
+        return True
+    monkeypatch.setattr(users_mod, "is_subscription_active", _active, raising=True)
+    await users_mod.set_timezone(_Sess(), 1, "Europe/Moscow")
+    assert called["zadd"] == 1
+
+
+# === Daily reports: strict gating (no grace) ===
+async def test_reports_strict_gating_not_active_skips(monkeypatch):
+    import bot.services.reports as rep
+
+    # Settings: require premium
+    class _Settings:
+        DAILY_REPORTS_REQUIRE_PREMIUM = True
+    monkeypatch.setattr(rep, "settings", _Settings(), raising=False)
+
+    # Patch sessionmaker used inside assemble_and_send_report
+    class _Sess:
+        def __init__(self):
+            self.added = []
+            self.updated = []
+        async def scalar(self, *args, **kwargs):
+            return None
+        async def execute(self, *args, **kwargs):
+            class R:
+                def scalar_one_or_none(self):
+                    return None
+            return R()
+        async def commit(self):
+            return None
+        async def rollback(self):
+            return None
+        def add(self, obj):
+            self.added.append(obj)
+    class _SM:
+        def __call__(self, *args, **kwargs):
+            return self
+        async def __aenter__(self):
+            return _Sess()
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+    monkeypatch.setattr(rep, "sessionmaker", _SM(), raising=True)
+    # Avoid DB access inside _fetch_plan_and_fact
+    async def _fetch(user_id):
+        from datetime import date as _date
+        return (
+            {"calories":1800,"protein_g":120.0,"fat_g":60.0,"carbs_g":200.0},
+            {"calories":1700,"protein_g":100.0,"fat_g":55.0,"carbs_g":180.0},
+            _date(2025, 1, 10),
+        )
+    monkeypatch.setattr(rep, "_fetch_plan_and_fact", _fetch, raising=True)
+
+    # Patch subscription checker to inactive, and minimize heavy deps
+    async def _inactive(session, user_id):
+        return False
+    monkeypatch.setattr(rep, "is_subscription_active", _inactive, raising=True)
+
+    class _Bot:
+        async def send_message(self, *args, **kwargs):
+            raise AssertionError("send_message should not be called when not active")
+
+    # Should early-return False and not send
+    out = await rep.assemble_and_send_report(_Bot(), user_id=999, scheduled_epoch=None)
+    assert out is False
+
+
+async def test_reports_strict_gating_active_sends(monkeypatch):
+    import bot.services.reports as rep
+
+    class _Settings:
+        DAILY_REPORTS_REQUIRE_PREMIUM = True
+    monkeypatch.setattr(rep, "settings", _Settings(), raising=False)
+
+    class _Sess:
+        def __init__(self):
+            self.added = []
+        async def scalar(self, *args, **kwargs):
+            return None
+        async def execute(self, *args, **kwargs):
+            class R:
+                def scalar_one_or_none(self):
+                    return None
+            return R()
+        async def commit(self):
+            return None
+        async def rollback(self):
+            return None
+        def add(self, obj):
+            self.added.append(obj)
+    class _SM:
+        def __call__(self, *args, **kwargs):
+            return self
+        async def __aenter__(self):
+            return _Sess()
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+    monkeypatch.setattr(rep, "sessionmaker", _SM(), raising=True)
+
+    async def _active(session, user_id):
+        return True
+    monkeypatch.setattr(rep, "is_subscription_active", _active, raising=True)
+    async def _fetch(user_id):
+        from datetime import date as _date
+        return (
+            {"calories":1800,"protein_g":120.0,"fat_g":60.0,"carbs_g":200.0},
+            {"calories":1700,"protein_g":100.0,"fat_g":55.0,"carbs_g":180.0},
+            _date(2025, 1, 10),
+        )
+    monkeypatch.setattr(rep, "_fetch_plan_and_fact", _fetch, raising=True)
+    async def _ctx(uid):
+        return None
+    monkeypatch.setattr(rep, "_collect_user_context", _ctx, raising=True)
+    monkeypatch.setattr(rep, "_pick_short_motivation", lambda : "short", raising=True)
+    async def _gen(*args, **kwargs):
+        return ("mot", "adv", None)
+    monkeypatch.setattr(rep, "_gen_llm_content", _gen, raising=True)
+
+    class _Bot:
+        def __init__(self):
+            self.sent = 0
+        async def send_message(self, *args, **kwargs):
+            self.sent += 1
+            class M: message_id = 1
+            return M()
+
+    bot = _Bot()
+    out = await rep.assemble_and_send_report(bot, user_id=1000, scheduled_epoch=None)
+    assert out is True
+    assert bot.sent == 1
+
+
+async def test_reports_use_strict_gating_no_grace_flag(monkeypatch):
+    import bot.services.reports as rep
+
+    class _Settings:
+        DAILY_REPORTS_REQUIRE_PREMIUM = True
+    monkeypatch.setattr(rep, "settings", _Settings(), raising=False)
+
+    seen = {"include_grace": None}
+    async def _checker(session, user_id, include_grace=False):
+        seen["include_grace"] = include_grace
+        return False
+    monkeypatch.setattr(rep, "is_subscription_active", _checker, raising=True)
+
+    class _SM:
+        def __call__(self, *args, **kwargs):
+            return self
+        async def __aenter__(self):
+            class S:
+                async def scalar(self, *args, **kwargs):
+                    return None
+                async def execute(self, *args, **kwargs):
+                    class R:
+                        def scalar_one_or_none(self):
+                            return None
+                    return R()
+                async def commit(self):
+                    return None
+                async def rollback(self):
+                    return None
+                def add(self, obj):
+                    return None
+            return S()
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+    monkeypatch.setattr(rep, "sessionmaker", _SM(), raising=True)
+    # also avoid DB work in fetch
+    async def _fetch2(user_id):
+        from datetime import date as _date
+        return (
+            {"calories":1800,"protein_g":120.0,"fat_g":60.0,"carbs_g":200.0},
+            {"calories":1700,"protein_g":100.0,"fat_g":55.0,"carbs_g":180.0},
+            _date(2025, 1, 10),
+        )
+    monkeypatch.setattr(rep, "_fetch_plan_and_fact", _fetch2, raising=True)
+
+    class _Bot:
+        async def send_message(self, *args, **kwargs):
+            raise AssertionError
+
+    await rep.assemble_and_send_report(_Bot(), user_id=1, scheduled_epoch=None)
+    assert seen["include_grace"] is False
+
+
+# === Grace hour override ===
+async def test_is_subscription_active_grace_hour_override(monkeypatch):
+    from datetime import datetime, timezone
+    import bot.services.users as users_mod
+
+    # Override grace hour = 9
+    class _Settings:
+        SUBSCRIPTION_GRACE_HOUR = 9
+        REBILL_HOUR = 10
+    monkeypatch.setattr(users_mod.cfg, "settings", _Settings(), raising=False)
+
+    exp_utc = datetime(2025, 1, 10, 6, 0, tzinfo=timezone.utc)
+    now_utc = datetime(2025, 1, 10, 6, 30, tzinfo=timezone.utc)  # 09:30 MSK
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return now_utc
+            try:
+                return now_utc.astimezone(tz)
+            except Exception:
+                return now_utc
+
+    class _FakeSessionSub:
+        def __init__(self, exp, status="active"):
+            self._exp = exp
+            self._status = status
+        async def execute(self, *args, **kwargs):
+            exp = self._exp
+            status = self._status
+            class R:
+                def first(self_inner):
+                    return (exp, status)
+                def scalars(self_inner):
+                    class V:
+                        def all(self_v):
+                            return []
+                    return V()
+            return R()
+
+    async def _tz(session, user_id):
+        from zoneinfo import ZoneInfo
+        return ZoneInfo("Europe/Moscow")
+
+    monkeypatch.setattr(users_mod, "get_user_tzinfo", _tz, raising=True)
+    monkeypatch.setattr(users_mod, "datetime", _FixedDateTime, raising=True)
+
+    session = _FakeSessionSub(exp_utc, "active")
+    # With override to 9: grace should NOT apply at 09:30
+    assert await users_mod.is_subscription_active(session, 1, include_grace=True) is False

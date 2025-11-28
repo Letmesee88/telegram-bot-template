@@ -5,6 +5,7 @@ from aiogram.fsm.context import FSMContext
 from sqlalchemy import update, func
 
 from bot.database.models import UserModel
+from bot.services.users import is_subscription_active
 
 
 class FoodAIEnabledFilter(BaseFilter):
@@ -38,9 +39,24 @@ class FoodAIEnabledFilter(BaseFilter):
             pass
 
         db_user = await session.get(UserModel, user.id)
-        is_prem = bool(getattr(db_user, "is_premium", False)) if db_user is not None else False
         has_foodai = (getattr(db_user, "foodai_enabled_at", None) is not None) if db_user is not None else False
-        if is_prem:
+        # Admin bypass: admins can always use FoodAI
+        if db_user is not None and bool(getattr(db_user, "is_admin", False)):
+            if not has_foodai:
+                try:
+                    await session.execute(
+                        update(UserModel).where(UserModel.id == user.id).values(foodai_enabled_at=func.now())
+                    )
+                    try:
+                        await session.commit()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            return True
+
+        active = await is_subscription_active(session, user.id, include_grace=True)
+        if active:
             # Lazily enable flag if missing
             if (db_user is not None) and (not has_foodai):
                 try:

@@ -242,8 +242,9 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
                 if getattr(settings, "DAILY_REPORTS_ENABLED", True):
                     async with sessionmaker() as s2:
                         if getattr(settings, "DAILY_REPORTS_REQUIRE_PREMIUM", False):
-                            prem = await s2.scalar(select(UserModel.is_premium).where(UserModel.id == user_id))
-                            if not bool(prem):
+                            from bot.services.users import is_subscription_active
+                            active = await is_subscription_active(s2, user_id)
+                            if not active:
                                 raise Exception("skip")
                         tz_name = await s2.scalar(select(UserModel.timezone).where(UserModel.id == user_id)) or settings.DEFAULT_TZ
                     try:
@@ -1228,7 +1229,41 @@ async def speed_and_finish(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(OnboardingStates.review, F.data == "final:ok")
 async def cb_final_ok(call: CallbackQuery, state: FSMContext) -> None:
-    # Гейтинг: запускаем продажи согласно ТЗ
+    # Если у пользователя активная платная подписка (или он админ) — вместо продаж открываем Личный кабинет
+    try:
+        async with sessionmaker() as session:
+            from bot.database.models import UserModel  # local import to avoid circulars at module load
+            from bot.services.users import is_subscription_active
+            uid = call.from_user.id
+            db_user = await session.get(UserModel, uid)
+            is_admin = bool(getattr(db_user, "is_admin", False)) if db_user is not None else False
+            active = await is_subscription_active(session, uid, include_grace=True)
+        if is_admin or active:
+            # Показать личный кабинет
+            try:
+                from bot.services.account import get_account_summary_text
+                from bot.handlers.account import _kb_account  # local import to avoid cycles at module load
+                text_acc = await get_account_summary_text(call.from_user.id)
+                await call.message.answer(text_acc, reply_markup=_kb_account())
+            except Exception:
+                # Fallback: без клавиатуры
+                try:
+                    from bot.services.account import get_account_summary_text
+                    text_acc = await get_account_summary_text(call.from_user.id)
+                    await call.message.answer(text_acc)
+                except Exception:
+                    pass
+            try:
+                await state.clear()
+            except Exception:
+                pass
+            await call.answer()
+            return
+    except Exception:
+        # В случае ошибки — продолжаем обычный сценарий продаж
+        pass
+
+    # Гейтинг: запускаем продажи согласно ТЗ (для непремиум)
     text = (
         "💜 Секрет идеальной фигуры: считай калории\n\n"
         "Хочешь увидеть результат? Ешь меньше, чем тратишь — для похудения. Ешь больше — для набора массы. Ешь столько же — для поддержания формы. Организм сам отреагирует на твой выбор.\n\n"

@@ -1331,13 +1331,19 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
         pass
     if not callback.from_user:
         return
-    # Silent block for non-premium users
+    # Silent block for users without active subscription (admins bypass)
     try:
         async with sessionmaker() as session:
             u = await session.get(UserModel, callback.from_user.id)
-            if not (u and getattr(u, "is_premium", False)):
+            if not u:
                 await callback.answer()
                 return
+            if not bool(getattr(u, "is_admin", False)):
+                from bot.services.users import is_subscription_active
+                active = await is_subscription_active(session, callback.from_user.id)
+                if not active:
+                    await callback.answer()
+                    return
     except Exception:
         pass
     m = re.match(r"^foodai:save:(\d+)$", callback.data or "")
@@ -1525,13 +1531,19 @@ async def cb_foodai_delete(callback: types.CallbackQuery) -> None:
     m = re.match(r"^foodai:del:(\d+)$", callback.data or "")
     if not m or not callback.from_user:
         return
-    # Silent block for non-premium users
+    # Silent block for users without active subscription (admins bypass)
     try:
         async with sessionmaker() as session:
             u = await session.get(UserModel, callback.from_user.id)
-            if not (u and getattr(u, "is_premium", False)):
+            if not u:
                 await callback.answer()
                 return
+            if not bool(getattr(u, "is_admin", False)):
+                from bot.services.users import is_subscription_active
+                active = await is_subscription_active(session, callback.from_user.id)
+                if not active:
+                    await callback.answer()
+                    return
     except Exception:
         pass
     meal_id = int(m.group(1))
@@ -1571,13 +1583,19 @@ async def cb_foodai_edit(callback: types.CallbackQuery, state: FSMContext) -> No
     m = re.match(r"^foodai:edit:(\d+)$", callback.data or "")
     if not m or not callback.from_user:
         return
-    # Silent block for non-premium users
+    # Silent block for users without active subscription (admins bypass)
     try:
         async with sessionmaker() as session:
             u = await session.get(UserModel, callback.from_user.id)
-            if not (u and getattr(u, "is_premium", False)):
+            if not u:
                 await callback.answer()
                 return
+            if not bool(getattr(u, "is_admin", False)):
+                from bot.services.users import is_subscription_active
+                active = await is_subscription_active(session, callback.from_user.id)
+                if not active:
+                    await callback.answer()
+                    return
     except Exception:
         pass
     meal_id = int(m.group(1))
@@ -1638,13 +1656,19 @@ async def cb_foodai_back(callback: types.CallbackQuery) -> None:
     m = re.match(r"^foodai:back:(\d+)$", callback.data or "")
     if not m or not callback.from_user:
         return
-    # Silent block for non-premium users
+    # Silent block for users without active subscription (admins bypass)
     try:
         async with sessionmaker() as session:
             u = await session.get(UserModel, callback.from_user.id)
-            if not (u and getattr(u, "is_premium", False)):
+            if not u:
                 await callback.answer()
                 return
+            if not bool(getattr(u, "is_admin", False)):
+                from bot.services.users import is_subscription_active
+                active = await is_subscription_active(session, callback.from_user.id)
+                if not active:
+                    await callback.answer()
+                    return
     except Exception:
         pass
     meal_id = int(m.group(1))
@@ -1699,13 +1723,19 @@ async def cb_foodai_adjust(callback: types.CallbackQuery) -> None:
     m = re.match(r"^foodai:adj:(cal|wt):(-?\d+):(\d+)$", callback.data or "")
     if not m or not callback.from_user:
         return
-    # Silent block for non-premium users
+    # Silent block for users without active subscription (admins bypass)
     try:
         async with sessionmaker() as session:
             u = await session.get(UserModel, callback.from_user.id)
-            if not (u and getattr(u, "is_premium", False)):
+            if not u:
                 await callback.answer()
                 return
+            if not bool(getattr(u, "is_admin", False)):
+                from bot.services.users import is_subscription_active
+                active = await is_subscription_active(session, callback.from_user.id)
+                if not active:
+                    await callback.answer()
+                    return
     except Exception:
         pass
     field, delta_s, meal_id_s = m.group(1), m.group(2), m.group(3)

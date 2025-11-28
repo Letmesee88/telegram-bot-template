@@ -27,7 +27,7 @@ from bot.metrics import (
     daily_report_fallback,
     daily_report_duration_ms,
 )
-from bot.services.users import get_user_tzinfo
+from bot.services.users import get_user_tzinfo, is_subscription_active
 from bot.services.foodai import _openai_request  # type: ignore
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
@@ -542,16 +542,11 @@ async def assemble_and_send_report(bot: Bot, user_id: int, *, scheduled_epoch: O
 
     plan, fact, y_local = await _fetch_plan_and_fact(user_id)
 
-    # Subscription gating: skip if premium required and user is not premium
+    # Subscription gating: skip if premium required and user has no active subscription
     if getattr(settings, "DAILY_REPORTS_REQUIRE_PREMIUM", False):
         async with sessionmaker() as session:
-            is_premium = bool(
-                await session.scalar(
-                    select(UserModel.is_premium).where(UserModel.id == user_id)
-                )
-                or False
-            )
-            if not is_premium:
+            active = await is_subscription_active(session, user_id)
+            if not active:
                 existing = await session.scalar(
                     select(DailyReportLogModel).where(
                         (DailyReportLogModel.user_id == user_id) & (DailyReportLogModel.date_local == y_local)

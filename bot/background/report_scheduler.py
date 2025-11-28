@@ -13,7 +13,7 @@ from sqlalchemy import select
 from bot.core.config import settings
 from bot.core.loader import redis_client
 from bot.database.database import sessionmaker
-from bot.database.models import OnboardingAnswerModel, UserModel
+from bot.database.models import OnboardingAnswerModel, UserModel, SubscriptionModel
 from bot.services.users import get_user_tzinfo
 from bot.services.reports import assemble_and_send_report
 from bot.metrics import daily_report_queue_lag_seconds
@@ -44,10 +44,15 @@ async def _next_run_epoch(user_id: int) -> int:
 async def _seed_audience() -> None:
     async with sessionmaker() as session:
         if getattr(settings, "DAILY_REPORTS_REQUIRE_PREMIUM", False):
+            now = datetime.now(timezone.utc)
             res = await session.execute(
                 select(OnboardingAnswerModel.user_id)
-                .join(UserModel, UserModel.id == OnboardingAnswerModel.user_id)
-                .where(UserModel.is_premium.is_(True))
+                .join(SubscriptionModel, SubscriptionModel.user_id == OnboardingAnswerModel.user_id)
+                .where(
+                    SubscriptionModel.status == "active",
+                    SubscriptionModel.expires_at_utc.is_not(None),
+                    SubscriptionModel.expires_at_utc > now,
+                )
                 .distinct()
             )
         else:
