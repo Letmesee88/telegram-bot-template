@@ -1101,7 +1101,7 @@ async def cb_goal(call: CallbackQuery, state: FSMContext) -> None:
 async def goal_set(message: Message, state: FSMContext) -> None:
     text = _(
         "Зафиксировал! Теперь самое главное — поставим цель\n"
-        "TapTap  помогает достигать долгосрочных результатов благодаря развитию полезных привычек"
+        "Calorissimo ai помогает достигать долгосрочных результатов благодаря развитию полезных привычек"
     )
     kb = _ikb([
         [("Хочу похудеть", "goal:lose")],
@@ -1115,7 +1115,7 @@ async def goal_set(message: Message, state: FSMContext) -> None:
 async def goal_retry(message: Message) -> None:
     text = _(
         "Зафиксировал! Теперь самое главное — поставим цель\n"
-        "TapTap  помогает достигать долгосрочных результатов благодаря развитию полезных привычек"
+        "Calorissimo ai помогает достигать долгосрочных результатов благодаря развитию полезных привычек"
     )
     kb = _ikb([
         [("Хочу похудеть", "goal:lose")],
