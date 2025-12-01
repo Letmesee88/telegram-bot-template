@@ -44,8 +44,7 @@ current_user.is_authenticated %}
       </p>
       {% if not current_user.is_authenticated %}
       <p>
-        You can register as a regular user, or log in as a superuser with the
-        following credentials: <br /><br />
+        Log in as a superuser with the following credentials: <br /><br />
 
         email: <b>admin</b> <br />
         password: <b>admin</b> <br />
@@ -53,12 +52,10 @@ current_user.is_authenticated %}
       </p>
 
       <p>
-        <a class="btn btn-primary" href="{{ url_for('security.login') }}"
-          >Login</a
-        >
-        <a class="btn btn-default" href="{{ url_for('security.register') }}"
-          >Register</a
-        >
+        <a class="btn btn-primary" href="{{ url_for('security.login') }}">Login</a>
+        {% if security.registerable %}
+        <a class="btn btn-default" href="{{ url_for('security.register') }}">Register</a>
+        {% endif %}
       </p>
       {% endif %}
       <br />
