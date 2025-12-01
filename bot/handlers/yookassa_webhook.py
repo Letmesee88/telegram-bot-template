@@ -55,47 +55,50 @@ class YooKassaWebhookView(View):
         obj = payload.get("object") or {}
         pid = obj.get("id")
         logger.info(f"yk.webhook.received | event={event} | payment_id={pid}")
-        # Handle cancelation explicitly: notify user and mark payment canceled if known
+        # Handle cancelation explicitly with strict verification
         if event == "payment.canceled":
             payment_id = pid
-            # Prefer user_id from webhook payload metadata to avoid extra API calls
+            if not payment_id:
+                return Response(text="OK")
+
+            # Always fetch canonical payment from YooKassa to confirm authenticity
+            if not _ensure_yk_configured():
+                logger.warning("yookassa not configured; skip canceled")
+                return Response(text="OK")
+            try:
+                yk_payment = await asyncio.to_thread(Payment.find_one, payment_id)
+            except Exception as e:
+                logger.warning(f"yookassa find_one failed for canceled: {e}")
+                return Response(text="OK")
+
+            # Extract trusted metadata from YooKassa API response
+            try:
+                md = getattr(yk_payment, "metadata", {}) or {}
+            except Exception:
+                md = {}
             user_id = None
             is_rebill = False
             sub_id_from_meta = None
             period_key = None
             try:
-                md = obj.get("metadata") or {}
-                if isinstance(md, dict) and md.get("user_id") is not None:
+                if md.get("user_id") is not None:
                     user_id = int(md.get("user_id"))
-                is_rebill = bool(md.get("rebill"))
-                sub_id_from_meta = md.get("subscription_id")
-                try:
-                    sub_id_from_meta = int(sub_id_from_meta) if sub_id_from_meta is not None else None
-                except Exception:
-                    sub_id_from_meta = None
-                period_key = md.get("period_key")
             except Exception:
                 user_id = None
+            try:
+                is_rebill = bool(md.get("rebill"))
+            except Exception:
+                is_rebill = False
+            try:
+                sub_id_from_meta = int(md.get("subscription_id")) if md.get("subscription_id") is not None else None
+            except Exception:
+                sub_id_from_meta = None
+            try:
+                period_key = md.get("period_key")
+            except Exception:
+                period_key = None
 
-            if user_id is None and payment_id:
-                # Fallback: fetch payment from YooKassa API to extract metadata.user_id
-                yk_payment = None
-                try:
-                    if _ensure_yk_configured():
-                        yk_payment = await asyncio.to_thread(Payment.find_one, payment_id)
-                    else:
-                        logger.warning("yookassa not configured; skip find_one for payment.canceled")
-                except Exception as e:
-                    logger.warning(f"yookassa find_one failed for canceled: {e}")
-                    yk_payment = None
-                if yk_payment is not None:
-                    try:
-                        md = getattr(yk_payment, "metadata", {}) or {}
-                        uid = md.get("user_id")
-                        user_id = int(uid) if uid is not None else None
-                    except Exception:
-                        user_id = None
-            # Cancellation diagnostic info from YooKassa (if provided)
+            # Cancellation diagnostic info from webhook payload (best-effort)
             cd = obj.get("cancellation_details") or {}
             try:
                 logger.info(
@@ -109,31 +112,35 @@ class YooKassaWebhookView(View):
                     )
             except Exception:
                 pass
-            # Best-effort DB update
-            if payment_id:
+
+            # Cross-check with our DB payment record; ignore unknown payment IDs
+            async with sessionmaker() as session:
+                res = await session.execute(select(PaymentModel).where(PaymentModel.yk_payment_id == payment_id))
+                pm = res.scalar_one_or_none()
+            if pm is None:
+                logger.warning("yk.webhook.canceled.unknown_payment | payment_id={}", payment_id)
+                return Response(text="OK")
+
+            # Update payment status to canceled and merge cancellation details
+            try:
                 async with sessionmaker() as session:
                     try:
-                        res = await session.execute(select(PaymentModel).where(PaymentModel.yk_payment_id == payment_id))
-                        pm = res.scalar_one_or_none()
-                        if pm and getattr(pm, "status", None) != "canceled":
-                            # Merge cancellation_details into metadata for analytics/support
-                            try:
-                                existing_meta = dict(getattr(pm, "meta", {}) or {})
-                                if isinstance(cd, dict) and cd:
-                                    existing_meta["cancellation_details"] = cd
-                            except Exception:
-                                existing_meta = getattr(pm, "meta", None)
-                            await session.execute(
-                                update(PaymentModel)
-                                .where(PaymentModel.id == pm.id)
-                                .values(status="canceled", meta=existing_meta)
-                            )
-                            await session.commit()
-                            logger.info(f"yk.webhook.canceled.db_updated | payment_db_id={getattr(pm, 'id', None)}")
+                        existing_meta = dict(getattr(pm, "meta", {}) or {})
+                        if isinstance(cd, dict) and cd:
+                            existing_meta["cancellation_details"] = cd
                     except Exception:
-                        pass
-            # If it's a rebill cancellation, immediately close access and schedule retry (unless permanent)
-            if is_rebill and sub_id_from_meta and period_key:
+                        existing_meta = getattr(pm, "meta", None)
+                    await session.execute(
+                        update(PaymentModel)
+                        .where(PaymentModel.id == pm.id)
+                        .values(status="canceled", meta=existing_meta)
+                    )
+                    await session.commit()
+            except Exception:
+                pass
+
+            # Rebill cancellation flow (guarded): act only when subscription matches our payment record
+            if is_rebill and sub_id_from_meta and period_key and (getattr(pm, "subscription_id", None) == sub_id_from_meta):
                 try:
                     async with sessionmaker() as session:
                         try:
@@ -141,10 +148,12 @@ class YooKassaWebhookView(View):
                             await session.execute(
                                 update(SubscriptionModel).where(SubscriptionModel.id == sub_id_from_meta).values(status="past_due")
                             )
-                            if user_id:
+                            # Prefer user_id from DB payment if missing in metadata
+                            uid = user_id or getattr(pm, "user_id", None)
+                            if uid:
                                 await session.execute(
                                     update(UserModel)
-                                    .where(UserModel.id == user_id)
+                                    .where(UserModel.id == uid)
                                     .values(is_premium=False, foodai_enabled_at=None)
                                 )
                             await session.commit()
@@ -153,7 +162,6 @@ class YooKassaWebhookView(View):
                     # Check permanent cancellation reasons — if permanent, disable auto_renew and clear payment_method_id
                     try:
                         reason = None
-                        cd = obj.get("cancellation_details") or {}
                         if isinstance(cd, dict):
                             reason = cd.get("reason")
                     except Exception:
@@ -194,14 +202,12 @@ class YooKassaWebhookView(View):
                         delays = [0, 1, 3]
                     # Count attempt and compute next (idempotent per sub+period)
                     if not is_permanent:
-                        # Idempotency guard: ensure we process cancellation scheduling once
                         try:
                             processed_key = f"rebill:canceled:processed:{sub_id_from_meta}:{period_key}"
                             first = await redis_client.set(processed_key, "1", nx=True, ex=15 * 24 * 3600)
                         except Exception:
                             first = True
                         if not first:
-                            # Duplicate webhook; do not increment attempts or reschedule
                             return Response(text="OK")
                         attempts_key = f"rebill:attempts:{sub_id_from_meta}:{period_key}"
                         try:
@@ -225,7 +231,10 @@ class YooKassaWebhookView(View):
                                 pass
                 except Exception:
                     pass
-            if user_id:
+
+            # Notify user (best-effort)
+            uid = user_id or getattr(pm, "user_id", None)
+            if uid:
                 try:
                     if is_rebill:
                         plan = None
@@ -249,13 +258,13 @@ class YooKassaWebhookView(View):
                         except Exception:
                             kb = None
                         await bot.send_message(
-                            user_id,
+                            uid,
                             "❌ Не удалось продлить подписку. Проверьте карту/средства/банк и попробуйте оплатить вручную в разделе \u00abПодписка\u00bb.",
                             reply_markup=kb,
                         )
                     else:
-                        await bot.send_message(user_id, "❌ Что-то пошло не так. Попробуйте еще раз.")
-                    logger.info(f"yk.webhook.canceled.notified | user_id={user_id}")
+                        await bot.send_message(uid, "❌ Что-то пошло не так. Попробуйте еще раз.")
+                    logger.info(f"yk.webhook.canceled.notified | user_id={uid}")
                 except Exception:
                     pass
             return Response(text="OK")

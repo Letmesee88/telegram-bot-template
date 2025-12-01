@@ -42,7 +42,7 @@ services:
     env_file:
       - .env
     ports:
-      - ${ADMIN_PORT}:${ADMIN_PORT}
+      - 127.0.0.1:${ADMIN_PORT}:${ADMIN_PORT}
     networks:
       - app
     depends_on:
@@ -81,8 +81,6 @@ services:
       - DEFAULT_POOL_SIZE=40
       - ADMIN_USERS=postgres,${DB_USER}
       - AUTH_TYPE=scram-sha-256
-    ports:
-      - ${DB_PORT}:${DB_PORT}
     depends_on:
       - postgres
     networks:
@@ -118,8 +116,6 @@ services:
     restart: always
     env_file:
       - .env
-    ports:
-      - ${REDIS_PORT}:${REDIS_PORT}
     networks:
       - app
     volumes:

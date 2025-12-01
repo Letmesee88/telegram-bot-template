@@ -14,8 +14,8 @@ DEBUG: bool = str(os.getenv("DEBUG")).lower() == "true"
 
 BABEL_DEFAULT_LOCALE = os.getenv("BABEL_DEFAULT_LOCALE") or "en"
 
-# Create dummy secrey key so we can use sessions
-SECRET_KEY: str = os.getenv("SECRET_KEY") or "x%#3&%giwv8f0+%r946en7z&d@9*rc$sl0qoql56xr%bh^w2mj"
+# Require strong secret key from environment
+SECRET_KEY: str = os.environ["SECRET_KEY"]
 
 
 # SQLAlchemy config
@@ -38,7 +38,7 @@ SQLALCHEMY_TRACK_MODIFICATIONS = False
 # Flask-Security config
 SECURITY_URL_PREFIX = "/admin"
 SECURITY_PASSWORD_HASH: str = os.getenv("SECURITY_PASSWORD_HASH") or "pbkdf2_sha512"
-SECURITY_PASSWORD_SALT: str = os.getenv("SECURITY_PASSWORD_SALT") or "ATGUOHAELKiubahiughaerGOJAEGj"
+SECURITY_PASSWORD_SALT: str = os.environ["SECURITY_PASSWORD_SALT"]
 
 # Flask-Security URLs, overridden because they don't put a / at the end
 SECURITY_LOGIN_URL = "/login/"
@@ -50,7 +50,7 @@ SECURITY_POST_LOGOUT_VIEW = "/admin/"
 SECURITY_POST_REGISTER_VIEW = "/admin/"
 
 # Flask-Security features
-SECURITY_REGISTERABLE = True
+SECURITY_REGISTERABLE = False
 SECURITY_SEND_REGISTER_EMAIL = False
 
 # Cache config

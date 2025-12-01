@@ -1,8 +1,9 @@
 # ruff: noqa: RUF012
 from flask_admin.contrib.sqla import ModelView
+from admin.app import RoleView
 
 
-class UserView(ModelView):
+class UserView(RoleView):
     can_delete = True
     can_create = False
     can_edit = True
