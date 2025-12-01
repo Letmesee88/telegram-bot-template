@@ -1,6 +1,6 @@
-ARG FORCE_REBUILD=1
-
 FROM ghcr.io/astral-sh/uv:0.5-python3.13-alpine
+
+ARG FORCE_REBUILD=1
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
