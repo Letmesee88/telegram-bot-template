@@ -16,7 +16,7 @@ from bot.services.account import get_account_summary_text
 from bot.services.analytics import analytics
 from bot.analytics.types import BaseEvent, EventProperties, Plan
 from sqlalchemy import select, update
-from bot.database.models import OnboardingAnswerModel, SubscriptionModel
+from bot.database.models import OnboardingAnswerModel, SubscriptionModel, PaymentModel
 from bot.schemas.onboarding import DailyPlan, OnboardingData, Goal
 from bot.services.plan import calculate_daily_plan
 from bot.services.adjust import parse_adjustment_cached, apply_adjustment, parse_adjustment_heuristic, rephrase_explanation_cached
@@ -856,7 +856,27 @@ async def cb_settings_open_subscription(callback: types.CallbackQuery) -> None:
         lines.append("У тебя нет активной подписки.")
         lines.append("")
         lines.append("Выбери вариант:")
-        kb_rows.append([InlineKeyboardButton(text="💥 10 руб. за 3 дня (trial)", callback_data="subscription:buy:trial")])
+        # Hide trial if user already used it
+        used_trial = False
+        try:
+            async with sessionmaker() as session:
+                rows = (await session.execute(
+                    select(PaymentModel.meta)
+                    .where(PaymentModel.user_id == user_id, PaymentModel.status == "succeeded")
+                    .order_by(PaymentModel.id.desc())
+                    .limit(50)
+                )).scalars().all()
+            for md in rows:
+                try:
+                    if str((md or {}).get("plan", "")).lower() == "trial":
+                        used_trial = True
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            used_trial = False
+        if not used_trial:
+            kb_rows.append([InlineKeyboardButton(text="💥 10 руб. за 3 дня (trial)", callback_data="subscription:buy:trial")])
         kb_rows.append([InlineKeyboardButton(text="750 руб/мес", callback_data="subscription:buy:month")])
         kb_rows.append([InlineKeyboardButton(text="2500 руб/год", callback_data="subscription:buy:year")])
         kb_rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open")])
@@ -928,8 +948,12 @@ async def cb_subscription_buy_trial(callback: types.CallbackQuery) -> None:
     user_id = callback.from_user.id
     try:
         cp = await create_payment(user_id=user_id, plan="trial")
-    except Exception:
-        await callback.message.answer("Ошибка при создании платежа. Попробуй позже.")
+    except Exception as e:
+        if str(e) == "trial_already_used":
+            await callback.message.answer("Пробный доступ доступен один раз. Выберите тариф:")
+            await cb_settings_open_subscription(callback)
+        else:
+            await callback.message.answer("Ошибка при создании платежа. Попробуй позже.")
         await callback.answer()
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Оплатить 10 руб", url=cp.confirmation_url)], [InlineKeyboardButton(text="◀️ Вернуться", callback_data="settings:open:subscription")]])

@@ -166,7 +166,7 @@ class YooKassaWebhookView(View):
                             reason = cd.get("reason")
                     except Exception:
                         reason = None
-                    permanent_reasons = {"permission_revoked", "payment_method_restricted", "expired_on_confirmation"}
+                    permanent_reasons = {"permission_revoked", "payment_method_restricted"}
                     is_permanent = bool(reason in permanent_reasons)
                     if is_permanent:
                         try:
@@ -392,6 +392,40 @@ class YooKassaWebhookView(View):
                     )
                 exp_dt = new_exp
             else:
+                # Guard: don't downgrade active month/year to trial
+                if (
+                    plan == "trial"
+                    and getattr(current, "status", None) == "active"
+                    and getattr(current, "plan", None) in {"month", "year"}
+                    and getattr(current, "expires_at_utc", None) is not None
+                    and current.expires_at_utc > now
+                ):
+                    # Only link payment to existing subscription and optionally enable auto_renew
+                    if p is not None:
+                        p.subscription_id = current.id
+                    elif existing_db_id is not None:
+                        await session.execute(
+                            update(PaymentModel).where(PaymentModel.id == existing_db_id).values(subscription_id=current.id)
+                        )
+                    # If a payment method was saved, ensure auto_renew is enabled (do not change plan/expiry)
+                    if payment_method_saved:
+                        try:
+                            updates = {"auto_renew": True}
+                            # Optionally fill missing payment_method_id
+                            if not getattr(current, "payment_method_id", None) and payment_method_id:
+                                updates["payment_method_id"] = payment_method_id
+                            if updates:
+                                await session.execute(
+                                    update(SubscriptionModel)
+                                    .where(SubscriptionModel.id == current.id)
+                                    .values(**updates)
+                                )
+                        except Exception:
+                            pass
+                    await session.commit()
+                    exp_dt = current.expires_at_utc
+                    # Skip normal update path
+                    return Response(text="OK")
                 # Stack duration only when the plan remains the same and the current subscription
                 # is still active in the future. If user changes plan (e.g., year -> month),
                 # start counting from now to avoid inflating expiry by stacking onto a far-future date.
@@ -410,6 +444,9 @@ class YooKassaWebhookView(View):
                     "payment_method_id": (payment_method_id if payment_method_saved else current.payment_method_id),
                     "expires_at_utc": new_exp,
                 }
+                # Enable auto-renew on any non-rebill success when payment method is saved
+                if not is_rebill and payment_method_saved:
+                    values["auto_renew"] = True
                 if is_rebill:
                     values["next_plan"] = None
                 await session.execute(

@@ -41,6 +41,26 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
     _configure()
 
     plan = plan.lower()
+    # Block repeat trial purchases: allow only one succeeded trial per user
+    if plan == "trial":
+        async with sessionmaker() as session:
+            rows = (
+                await session.execute(
+                    select(PaymentModel)
+                    .where(PaymentModel.user_id == user_id, PaymentModel.status == "succeeded")
+                    .order_by(PaymentModel.id.desc())
+                    .limit(50)
+                )
+            ).scalars().all()
+            for r in rows:
+                md = {}
+                try:
+                    md = dict(getattr(r, "meta", {}) or {})
+                except Exception:
+                    md = {}
+                if str(md.get("plan", "")).lower() == "trial":
+                    raise RuntimeError("trial_already_used")
+
     # Derive default next_plan if not explicitly provided
     eff_next_plan = next_plan
     if not eff_next_plan:

@@ -28,7 +28,7 @@ from bot.analytics.types import BaseEvent, EventProperties, Plan
 from bot.services.analytics import analytics
 
 from bot.database.database import sessionmaker
-from bot.database.models import OnboardingAnswerModel, UserModel
+from bot.database.models import OnboardingAnswerModel, UserModel, PaymentModel
 from bot.schemas.onboarding import ActivityLevel, Gender, Goal, OnboardingData, Speed, DailyPlan
 from bot.services.plan import (
     calculate_daily_plan,
@@ -446,11 +446,31 @@ async def sale_cont2(call: CallbackQuery, state: FSMContext) -> None:
         "• Ежедневно оценивает твой рацион и даёт советы\n"
         "• Подбирает аппетитные рецепты с правильным БЖУ"
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💥 10 руб. за 3 дня", callback_data="sale:trial")],
-        [InlineKeyboardButton(text="💎 Выбрать тариф", callback_data="sale:choose")],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:back:final")],
-    ])
+    # Hide trial button if user has already used trial
+    used_trial = False
+    try:
+        async with sessionmaker() as session:
+            rows = (await session.execute(
+                select(PaymentModel.meta)
+                .where(PaymentModel.user_id == call.from_user.id, PaymentModel.status == "succeeded")
+                .order_by(PaymentModel.id.desc())
+                .limit(50)
+            )).scalars().all()
+        for md in rows:
+            try:
+                if str((md or {}).get("plan", "")).lower() == "trial":
+                    used_trial = True
+                    break
+            except Exception:
+                continue
+    except Exception:
+        used_trial = False
+    rows = []
+    if not used_trial:
+        rows.append([InlineKeyboardButton(text="💥 10 руб. за 3 дня", callback_data="sale:trial")])
+    rows.append([InlineKeyboardButton(text="💎 Выбрать тариф", callback_data="sale:choose")])
+    rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:back:final")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
     try:
         await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
     except Exception:
@@ -460,6 +480,25 @@ async def sale_cont2(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "sale:trial")
 async def sale_trial(call: CallbackQuery, state: FSMContext) -> None:
+    # If trial already used, redirect to choose plan
+    try:
+        async with sessionmaker() as session:
+            rows = (await session.execute(
+                select(PaymentModel.meta)
+                .where(PaymentModel.user_id == call.from_user.id, PaymentModel.status == "succeeded")
+                .order_by(PaymentModel.id.desc())
+                .limit(50)
+            )).scalars().all()
+        for md in rows:
+            try:
+                if str((md or {}).get("plan", "")).lower() == "trial":
+                    await sale_choose(call, state)
+                    await call.answer()
+                    return
+            except Exception:
+                pass
+    except Exception:
+        pass
     # Compute trial end in user's TZ
     try:
         async with sessionmaker() as session:
@@ -568,6 +607,10 @@ async def sale_pay_trial(call: CallbackQuery, state: FSMContext) -> None:
             except Exception:
                 pass
             await call.message.answer("🧾🙏🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru")
+        elif str(e) == "trial_already_used":
+            # Redirect to plan selection
+            await call.message.answer("Пробный доступ доступен один раз. Выберите тариф:")
+            await sale_choose(call, state)
         else:
             await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
         await call.answer()
