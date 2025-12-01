@@ -1,6 +1,6 @@
 # ruff: noqa: RUF012
 from flask_admin.contrib.sqla import ModelView
-from admin.app import RoleView
+from admin.views.base import RoleView
 
 
 class UserView(RoleView):

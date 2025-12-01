@@ -258,5 +258,12 @@ def init_db() -> None:
 with app.app_context():
     init_db()
 
+
+@app.before_request
+def _disable_public_registration() -> None:
+    prefix = app.config.get("SECURITY_URL_PREFIX", "/admin").rstrip("/")
+    if request.path.startswith(f"{prefix}/register"):
+        abort(404)
+
 if __name__ == "__main__":
     app.run(host=app.config.get("ADMIN_HOST"), port=app.config.get("ADMIN_PORT"), debug=app.config.get("DEBUG"))

@@ -6,7 +6,7 @@ from typing import Any
 
 from markupsafe import Markup
 from flask_admin.contrib.sqla import ModelView
-from admin.app import RoleView
+from admin.views.base import RoleView
 
 
 class OnboardingAnswerView(RoleView):
