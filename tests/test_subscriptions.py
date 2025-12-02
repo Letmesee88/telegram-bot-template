@@ -631,3 +631,59 @@ async def test_scheduler_due_retry_flow_failure(monkeypatch):
     # Validate: attempts incremented and next retry scheduled
     assert fr.kv.get(sched.ATTEMPTS_FMT.format(sub_id=601, period="2025-12")) == "1"
     assert sched.ZSET_DUE in fr.zsets and any(m.startswith("601:2025-12") for m in fr.zsets[sched.ZSET_DUE].keys())
+
+
+@pytest.mark.asyncio
+async def test_scheduler_due_retry_flow_success(monkeypatch):
+    # On success: set submitted flag, do not increment attempts, do not schedule new zadd
+    import bot.background.recurring_scheduler as sched
+
+    # Fake DB state
+    sub = FakeSubscriptionModel(
+        id=701,
+        user_id=700,
+        status="active",
+        plan="year",
+        expires_at_utc=datetime.now(timezone.utc) - timedelta(seconds=1),
+        auto_renew=True,
+        payment_method_id="pm_Z",
+    )
+    state = {"subscription": sub}
+
+    def fake_sessionmaker():
+        return FakeSessionCM(FakeSession(state))
+    monkeypatch.setattr(sched, "sessionmaker", fake_sessionmaker)
+    monkeypatch.setattr(sched, "select", fake_select)
+    monkeypatch.setattr(sched, "update", fake_update)
+
+    fr = FakeRedis()
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    member = "701:2025-12"
+    await fr.zadd(sched.ZSET_DUE, {member: now_ts})
+    monkeypatch.setattr(sched, "redis_client", fr)
+
+    class CP:
+        def __init__(self):
+            self.payment_id = "pay_ok"
+            self.confirmation_url = ""
+            self.idempotence_key = "rebill:701:2025-12"
+
+    async def ok_recurring(**kwargs):
+        return CP()
+    monkeypatch.setattr(sched.yk, "create_recurring_payment", ok_recurring)
+
+    class _Bot:
+        async def send_message(self, *a, **kw):
+            return None
+    bot = _Bot()
+
+    rs = sched.RecurringScheduler()
+    rs._bot = bot
+    await rs._process_due_retries()
+
+    submitted_key = sched.SUBMITTED_FMT.format(sub_id=701, period="2025-12")
+    assert fr.kv.get(submitted_key) == "rebill:701:2025-12"
+    # No attempts increment
+    assert sched.ATTEMPTS_FMT.format(sub_id=701, period="2025-12") not in fr.kv
+    # No new due scheduled; and original due removed
+    assert member not in fr.zsets.get(sched.ZSET_DUE, {})
