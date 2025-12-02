@@ -138,22 +138,22 @@ async def get_account_summary_text(user_id: int) -> str:
             days_with_us_text = f"{days_with_us} дней — выдающаяся серия"
 
     # progress achievement
-    progress_text = "Начало пути — первый шаг сделан 💪"
+    progress_text = "Начало пути — первый шаг сделан"
     try:
         if current_w is not None and goal_w is not None and start_w is not None and (goal_w != start_w):
             progress_val = compute_progress(start_w, current_w, goal_w) or 0.0
             if progress_val < 25:
-                progress_text = "Начало пути — первый шаг сделан 💪"
+                progress_text = "Начало пути — первый шаг сделан"
             elif progress_val < 50:
-                progress_text = "Хороший темп — уже четверть пути ✅"
+                progress_text = "Хороший темп — уже четверть пути"
             elif progress_val < 75:
-                progress_text = "Половина позади — держим курс 🚀"
+                progress_text = "Половина позади — держим курс"
             elif progress_val < 100:
-                progress_text = "Близко к цели — финишная прямая ✨"
+                progress_text = "Близко к цели — финишная прямая"
             else:
-                progress_text = "Цель достигнута! Отличная работа 🏁"
+                progress_text = "Цель достигнута! Отличная работа"
     except Exception:
-        progress_text = "Начало пути — первый шаг сделан 💪"
+        progress_text = "Начало пути — первый шаг сделан"
 
     lines: list[str] = []
     lines.append("👋 Добро пожаловать в личный кабинет!")
