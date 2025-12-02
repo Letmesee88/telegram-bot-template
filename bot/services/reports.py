@@ -442,7 +442,24 @@ async def _gen_llm_content(plan: dict[str, float], fact: dict[str, float], ctx: 
     payload: dict[str, Any] = {
         "model": model,
         "instructions": system,
-        "text": {"verbosity": getattr(settings, "FOODAI_TEXT_VERBOSITY", "low")},
+        "reasoning": {"effort": getattr(settings, "FOODAI_REASONING_EFFORT", "minimal")},
+        "text": {
+            "verbosity": getattr(settings, "FOODAI_TEXT_VERBOSITY", "low"),
+            "format": {
+                "type": "json_schema",
+                "name": "daily_report",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "motivation_full": {"type": "string", "minLength": mot_min, "maxLength": mot_max},
+                        "advice": {"type": "string", "minLength": adv_min, "maxLength": adv_max}
+                    },
+                    "required": ["motivation_full", "advice"],
+                    "additionalProperties": False
+                }
+            }
+        },
         "max_output_tokens": 800,
         "input": [
             {
@@ -458,6 +475,10 @@ async def _gen_llm_content(plan: dict[str, float], fact: dict[str, float], ctx: 
         try:
             raw = await asyncio.wait_for(_openai_request("responses", pl), timeout=timeout)
             if not raw:
+                try:
+                    logger.warning("daily_report_llm_empty | sample={}", (raw or "")[:200])
+                except Exception:
+                    pass
                 return None, None, "empty"
             data: Optional[dict[str, Any]] = None
             try:
@@ -472,10 +493,18 @@ async def _gen_llm_content(plan: dict[str, float], fact: dict[str, float], ctx: 
                     except Exception:
                         data = None
             if not isinstance(data, dict):
+                try:
+                    logger.warning("daily_report_llm_bad_json | sample={}", (raw or "")[:200])
+                except Exception:
+                    pass
                 return None, None, "json_parse"
             mot = str(data.get("motivation_full") or "").strip()
             adv = str(data.get("advice") or "").strip()
             if not mot or not adv:
+                try:
+                    logger.warning("daily_report_llm_invalid_fields | sample={}", (raw or "")[:200])
+                except Exception:
+                    pass
                 return None, None, "invalid"
             return mot, adv, None
         except asyncio.TimeoutError:
@@ -506,7 +535,24 @@ async def _gen_llm_content(plan: dict[str, float], fact: dict[str, float], ctx: 
             refined_payload = {
                 "model": model,
                 "instructions": system,
-                "text": {"verbosity": getattr(settings, "FOODAI_TEXT_VERBOSITY", "low")},
+                "reasoning": {"effort": getattr(settings, "FOODAI_REASONING_EFFORT", "minimal")},
+                "text": {
+                    "verbosity": getattr(settings, "FOODAI_TEXT_VERBOSITY", "low"),
+                    "format": {
+                        "type": "json_schema",
+                        "name": "daily_report",
+                        "strict": True,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "motivation_full": {"type": "string", "minLength": mot_min, "maxLength": mot_max},
+                                "advice": {"type": "string", "minLength": adv_min, "maxLength": adv_max}
+                            },
+                            "required": ["motivation_full", "advice"],
+                            "additionalProperties": False
+                        }
+                    }
+                },
                 "max_output_tokens": 800,
                 "input": [
                     {
