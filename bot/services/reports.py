@@ -625,6 +625,62 @@ async def assemble_and_send_report(bot: Bot, user_id: int, *, scheduled_epoch: O
                         await session.commit()
                 return False
 
+    try:
+        days_req = int(getattr(settings, "DAILY_REPORTS_REQUIRE_ACTIVITY_DAYS", 0) or 0)
+    except Exception:
+        days_req = 0
+    if days_req > 0:
+        active = False
+        async with sessionmaker() as session:
+            tz = await get_user_tzinfo(session, user_id)
+            utc_dates: set[date] = set()
+            now_local = datetime.now(tz)
+            for i in range(1, days_req + 1):
+                dloc = (now_local - timedelta(days=i)).date()
+                s = datetime.combine(dloc, dtime(0, 0), tz)
+                e = s + timedelta(days=1)
+                d1 = s.astimezone(timezone.utc).date()
+                d2 = (e - timedelta(seconds=1)).astimezone(timezone.utc).date()
+                utc_dates.update({d1, d2})
+            resi = await session.execute(
+                select(DailyIntakeModel).where(
+                    (DailyIntakeModel.user_id == user_id) & (DailyIntakeModel.date_utc.in_(utc_dates))
+                ).limit(1)
+            )
+            active = resi.scalars().first() is not None
+            if not active:
+                existing = await session.scalar(
+                    select(DailyReportLogModel).where(
+                        (DailyReportLogModel.user_id == user_id) & (DailyReportLogModel.date_local == y_local)
+                    )
+                )
+                if existing is None:
+                    try:
+                        session.add(
+                            DailyReportLogModel(
+                                user_id=user_id,
+                                date_local=y_local,
+                                status="skipped",
+                                error_code="inactive",
+                                error_text=None,
+                            )
+                        )
+                        await session.commit()
+                    except Exception:
+                        await session.rollback()
+                else:
+                    if existing.status != "sent":
+                        await session.execute(
+                            update(DailyReportLogModel)
+                            .where(
+                                (DailyReportLogModel.user_id == user_id)
+                                & (DailyReportLogModel.date_local == y_local)
+                            )
+                            .values(status="skipped", error_code="inactive")
+                        )
+                        await session.commit()
+                return False
+
     # Idempotency: ensure single send per (user_id, date_local)
     async with sessionmaker() as session:
         existing = await session.scalar(

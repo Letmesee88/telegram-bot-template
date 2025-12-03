@@ -223,6 +223,7 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     DAILY_REPORTS_MODEL: str | None = None
     DAILY_REPORTS_FALLBACK_ENABLED: bool = True
     DAILY_REPORTS_REQUIRE_PREMIUM: bool = False
+    DAILY_REPORTS_REQUIRE_ACTIVITY_DAYS: int = 0
     # Target length ranges (characters) for LLM output
     DAILY_REPORTS_TARGET_LEN_MOTIVATION_MIN: int = 300
     DAILY_REPORTS_TARGET_LEN_MOTIVATION_MAX: int = 350

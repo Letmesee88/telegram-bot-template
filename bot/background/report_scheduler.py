@@ -13,7 +13,7 @@ from sqlalchemy import select
 from bot.core.config import settings
 from bot.core.loader import redis_client
 from bot.database.database import sessionmaker
-from bot.database.models import OnboardingAnswerModel, UserModel, SubscriptionModel
+from bot.database.models import OnboardingAnswerModel, UserModel, SubscriptionModel, DailyIntakeModel
 from bot.services.users import get_user_tzinfo
 from bot.services.reports import assemble_and_send_report
 from bot.metrics import daily_report_queue_lag_seconds
@@ -43,20 +43,48 @@ async def _next_run_epoch(user_id: int) -> int:
 
 async def _seed_audience() -> None:
     async with sessionmaker() as session:
-        if getattr(settings, "DAILY_REPORTS_REQUIRE_PREMIUM", False):
-            now = datetime.now(timezone.utc)
-            res = await session.execute(
-                select(OnboardingAnswerModel.user_id)
-                .join(SubscriptionModel, SubscriptionModel.user_id == OnboardingAnswerModel.user_id)
-                .where(
-                    SubscriptionModel.status == "active",
-                    SubscriptionModel.expires_at_utc.is_not(None),
-                    SubscriptionModel.expires_at_utc > now,
-                )
-                .distinct()
+        try:
+            days_req = int(getattr(settings, "DAILY_REPORTS_REQUIRE_ACTIVITY_DAYS", 0) or 0)
+        except Exception:
+            days_req = 0
+        if days_req > 0:
+            # Build a conservative superset of UTC dates covering the last X local days ending yesterday
+            utc_dates: set[date] = set()
+            today_utc = datetime.now(timezone.utc).date()
+            for i in range(1, days_req + 2):  # include yesterday .. X days back (+1 for TZ overlap)
+                utc_dates.add(today_utc - timedelta(days=i))
+
+            base = select(OnboardingAnswerModel.user_id).join(
+                DailyIntakeModel, DailyIntakeModel.user_id == OnboardingAnswerModel.user_id
+            ).where(
+                DailyIntakeModel.date_utc.in_(utc_dates)
             )
+            if getattr(settings, "DAILY_REPORTS_REQUIRE_PREMIUM", False):
+                now = datetime.now(timezone.utc)
+                base = (
+                    base.join(SubscriptionModel, SubscriptionModel.user_id == OnboardingAnswerModel.user_id)
+                    .where(
+                        SubscriptionModel.status == "active",
+                        SubscriptionModel.expires_at_utc.is_not(None),
+                        SubscriptionModel.expires_at_utc > now,
+                    )
+                )
+            res = await session.execute(base.distinct())
         else:
-            res = await session.execute(select(OnboardingAnswerModel.user_id).distinct())
+            if getattr(settings, "DAILY_REPORTS_REQUIRE_PREMIUM", False):
+                now = datetime.now(timezone.utc)
+                res = await session.execute(
+                    select(OnboardingAnswerModel.user_id)
+                    .join(SubscriptionModel, SubscriptionModel.user_id == OnboardingAnswerModel.user_id)
+                    .where(
+                        SubscriptionModel.status == "active",
+                        SubscriptionModel.expires_at_utc.is_not(None),
+                        SubscriptionModel.expires_at_utc > now,
+                    )
+                    .distinct()
+                )
+            else:
+                res = await session.execute(select(OnboardingAnswerModel.user_id).distinct())
         uids = [int(x) for x in res.scalars().all()]
     if not uids:
         return

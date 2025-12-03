@@ -1411,6 +1411,30 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
         _conf = float(meal.confidence or 0)
         await session.commit()
 
+    # Wake-up daily report schedule on new activity (hybrid approach)
+    try:
+        if getattr(settings, "DAILY_REPORTS_ENABLED", True) and int(getattr(settings, "DAILY_REPORTS_REQUIRE_ACTIVITY_DAYS", 0) or 0) > 0:
+            # Premium gate (only if required by reports)
+            premium_ok = True
+            if getattr(settings, "DAILY_REPORTS_REQUIRE_PREMIUM", False):
+                try:
+                    async with sessionmaker() as _s:
+                        from bot.services.users import is_subscription_active
+                        premium_ok = await is_subscription_active(_s, user_id)
+                except Exception:
+                    premium_ok = False
+            if premium_ok:
+                try:
+                    from bot.background.report_scheduler import _next_run_epoch, ZSET_KEY
+                    from bot.core.loader import redis_client as _rc
+                    nxt = await _next_run_epoch(user_id)
+                    # Do not move existing earlier schedules; only add if absent
+                    await _rc.zadd(ZSET_KEY, {user_id: nxt}, nx=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     # Analytics: save clicked
     if analytics.logger and callback.from_user:
         analytics.fire_event(
