@@ -24,8 +24,15 @@ from bot.services.templates import (
 )
 from bot.handlers.foodai import _build_preview_text, _preview_kb, _saved_with_recommend_kb
 from bot.services.users import today_local_utc_dates
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 router = Router(name="templates")
+
+
+def _cta_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
+    )
 
 
 @router.message(Command("templates"))
@@ -33,6 +40,13 @@ async def cmd_templates(message: types.Message) -> None:
     if not message.from_user:
         return
     user_id = message.from_user.id
+    async with sessionmaker() as session:
+        exists = await session.scalar(
+            select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
+        )
+    if not bool(exists):
+        await message.answer(_("Завершите онбординг за пару минут, чтобы получить полный доступ к данным"), reply_markup=_cta_kb())
+        return
     async with sessionmaker() as session:
         counts = await list_categories_with_counts(session, user_id)
     text = _("Выбери категорию приёма пищи:")
@@ -59,8 +73,22 @@ async def cb_tpl_cat(callback: types.CallbackQuery) -> None:
     m = re.match(r"^tpl:cat:(breakfast|lunch|dinner|snack)$", callback.data or "")
     if not m or not callback.from_user:
         return
-    category = m.group(1)
     user_id = callback.from_user.id
+    async with sessionmaker() as session:
+        exists = await session.scalar(
+            select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
+        )
+    if not bool(exists):
+        try:
+            await callback.answer()
+        except Exception:
+            pass
+        try:
+            await callback.message.answer(_("Завершите онбординг за пару минут, чтобы получить полный доступ к данным"), reply_markup=_cta_kb())
+        except Exception:
+            pass
+        return
+    category = m.group(1)
     async with sessionmaker() as session:
         tpls = await list_templates(session, user_id, category)
     data = [(int(t.id), str(t.title or "")) for t in tpls]

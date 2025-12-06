@@ -30,26 +30,22 @@ class OnboardingCompletedFilter(BaseFilter):
         # Tell user to complete onboarding
         text = _("Завершите онбординг за пару минут, чтобы получить полный доступ к данным")
         try:
-            # Clear callback "loading" if present
             if hasattr(event, "answer"):
                 try:
                     await event.answer()
                 except Exception:
                     pass
-            # Prefer replying in chat context for callbacks
             msg_obj = getattr(event, "message", None)
             if msg_obj and hasattr(msg_obj, "answer"):
                 try:
                     await msg_obj.answer(text, reply_markup=self._cta_kb())
-                    raise SystemExit  # prevent duplicate send below
-                except SystemExit:
-                    pass
+                    return False
                 except Exception:
                     pass
-            # Fallback: direct answer on message
-            if hasattr(event, "answer"):
+            if not msg_obj and hasattr(event, "answer"):
                 try:
                     await event.answer(text, reply_markup=self._cta_kb())
+                    return False
                 except Exception:
                     pass
         except Exception:

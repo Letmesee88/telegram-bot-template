@@ -18,7 +18,6 @@ from sqlalchemy import select
 from bot.database.database import sessionmaker
 from bot.database.models import DailyIntakeModel, MealItemModel, MealModel, MealPhotoModel, OnboardingAnswerModel, UserModel
 from bot.filters.foodai_enabled import FoodAIEnabledFilter
-from bot.filters.onboarding_completed import OnboardingCompletedFilter
 from bot.services.foodai import analyze_photo, analyze_text, refine_meal
 from bot.services.users import get_user_tzinfo, today_local_utc_dates
 from bot.core.config import settings
@@ -41,21 +40,54 @@ from bot.handlers.metrics import (
 from bot.services.history import get_add_in_day_target, clear_add_in_day_target
 
 router = Router(name="foodai")
-# Block for users without completed onboarding (higher priority)
-router.message.filter(OnboardingCompletedFilter())
 # Do not process ANY FoodAI messages while user is in any FSM state (e.g., onboarding)
 router.message.filter(StateFilter(None))
-# Apply same constraints to callbacks; onboarding gate first
-router.callback_query.filter(OnboardingCompletedFilter())
 router.callback_query.filter(StateFilter(None))
 
 
 # Separate router for edit text state (does not have global StateFilter(None))
 router_edit = Router(name="foodai_edit")
-router_edit.message.filter(OnboardingCompletedFilter())
 router_edit.message.filter(FoodAIEnabledFilter())
-router_edit.callback_query.filter(OnboardingCompletedFilter())
 router_edit.callback_query.filter(FoodAIEnabledFilter())
+
+async def _gate_msg(message: types.Message) -> bool:
+    if not message.from_user:
+        return False
+    user_id = message.from_user.id
+    async with sessionmaker() as session:
+        exists = await session.scalar(
+            select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
+        )
+    if bool(exists):
+        return True
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
+    )
+    await message.answer(_("Завершите онбординг за пару минут, чтобы получить полный доступ к данным"), reply_markup=kb)
+    return False
+
+async def _gate_cb(callback: types.CallbackQuery) -> bool:
+    if not callback.from_user:
+        return False
+    user_id = callback.from_user.id
+    async with sessionmaker() as session:
+        exists = await session.scalar(
+            select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
+        )
+    if bool(exists):
+        return True
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
+    )
+    try:
+        await callback.message.answer(_("Завершите онбординг за пару минут, чтобы получить полный доступ к данным"), reply_markup=kb)
+    except Exception:
+        pass
+    return False
 
 
 class EditStates(StatesGroup):
@@ -344,6 +376,9 @@ async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
     except Exception:
         pass
     if not message.from_user:
+        return
+    ok_gate = await _gate_msg(message)
+    if not ok_gate:
         return
 
     user_id = message.from_user.id
@@ -691,6 +726,9 @@ async def handle_food_text(message: types.Message, state: FSMContext) -> None:
         return
 
     if not message.from_user:
+        return
+    ok_gate = await _gate_msg(message)
+    if not ok_gate:
         return
 
     user_id = message.from_user.id
@@ -1331,6 +1369,8 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
         pass
     if not callback.from_user:
         return
+    if not await _gate_cb(callback):
+        return
     # Silent block for users without active subscription (admins bypass)
     try:
         async with sessionmaker() as session:
@@ -1555,6 +1595,8 @@ async def cb_foodai_delete(callback: types.CallbackQuery) -> None:
     m = re.match(r"^foodai:del:(\d+)$", callback.data or "")
     if not m or not callback.from_user:
         return
+    if not await _gate_cb(callback):
+        return
     # Silent block for users without active subscription (admins bypass)
     try:
         async with sessionmaker() as session:
@@ -1606,6 +1648,8 @@ async def cb_foodai_delete(callback: types.CallbackQuery) -> None:
 async def cb_foodai_edit(callback: types.CallbackQuery, state: FSMContext) -> None:
     m = re.match(r"^foodai:edit:(\d+)$", callback.data or "")
     if not m or not callback.from_user:
+        return
+    if not await _gate_cb(callback):
         return
     # Silent block for users without active subscription (admins bypass)
     try:
@@ -1680,6 +1724,8 @@ async def cb_foodai_back(callback: types.CallbackQuery) -> None:
     m = re.match(r"^foodai:back:(\d+)$", callback.data or "")
     if not m or not callback.from_user:
         return
+    if not await _gate_cb(callback):
+        return
     # Silent block for users without active subscription (admins bypass)
     try:
         async with sessionmaker() as session:
@@ -1746,6 +1792,8 @@ async def cb_foodai_back(callback: types.CallbackQuery) -> None:
 async def cb_foodai_adjust(callback: types.CallbackQuery) -> None:
     m = re.match(r"^foodai:adj:(cal|wt):(-?\d+):(\d+)$", callback.data or "")
     if not m or not callback.from_user:
+        return
+    if not await _gate_cb(callback):
         return
     # Silent block for users without active subscription (admins bypass)
     try:
