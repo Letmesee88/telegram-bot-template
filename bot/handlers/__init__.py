@@ -7,13 +7,13 @@ from . import recommendations
 from . import account
 from . import weight
 from . import settings
-# from . import gate  # TEMPORARILY DISABLED - causes startup issues
+from . import gate
 
 
 def get_handlers_router() -> Router:
     router = Router()
     # Gate router first: catch-all for non-onboarded users to prevent duplicate CTAs
-    # router.include_router(gate.router)  # TEMPORARILY DISABLED
+    router.include_router(gate.router)
     # Recommendations router first to ensure its callbacks are registered
     router.include_router(recommendations.router)
     # Important: include FoodAI before broad text handlers (e.g., start) so it can handle meal text
