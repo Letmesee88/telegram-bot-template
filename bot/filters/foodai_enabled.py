@@ -2,9 +2,9 @@ from aiogram.filters import BaseFilter
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import update, func
+from sqlalchemy import update, func, select
 
-from bot.database.models import UserModel
+from bot.database.models import UserModel, OnboardingAnswerModel
 from bot.services.users import is_subscription_active
 
 
@@ -28,6 +28,17 @@ class FoodAIEnabledFilter(BaseFilter):
                 cur = await state.get_state()
                 if cur is not None:
                     return False
+        except Exception:
+            pass
+
+        # Check onboarding first — if not completed, skip subscription CTA entirely
+        # (onboarding gate in handlers will show the correct CTA)
+        try:
+            onboarding_exists = await session.scalar(
+                select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user.id)
+            )
+            if not onboarding_exists:
+                return False  # Let handler's onboarding gate handle this
         except Exception:
             pass
 
