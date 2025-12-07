@@ -6,7 +6,6 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.i18n import gettext as _
 from sqlalchemy import select
 
-from bot.keyboards.inline.menu import main_keyboard
 from bot.database.database import sessionmaker
 from bot.database.models import MealModel, OnboardingAnswerModel
 from bot.services.users import get_user_tzinfo
@@ -14,12 +13,6 @@ from bot.services.analytics import analytics
 from bot.analytics.types import BaseEvent, EventProperties
 
 router = Router(name="menu")
-
-
-@router.message(Command(commands=["menu", "main"]))
-async def menu_handler(message: types.Message) -> None:
-    """Return main menu."""
-    await message.answer(_("title main keyboard"), reply_markup=main_keyboard())
 
 
 async def _edit_caption_or_text(cb: types.CallbackQuery, text: str, kb: InlineKeyboardMarkup | None = None) -> None:
