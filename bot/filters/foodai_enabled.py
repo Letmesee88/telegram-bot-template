@@ -96,13 +96,14 @@ class FoodAIEnabledFilter(BaseFilter):
             if isinstance(data, str) and data.startswith("sale:"):
                 return False
 
-            # Show CTA only on actual FoodAI attempts:
-            # - Photo message
+            # Show CTA on any content that could be a FoodAI attempt:
+            # - Photo, video, sticker, voice, video_note, document, animation
             # - Plain text message (not a command)
             attempted = False
             if msg_obj is not None:
                 try:
-                    if getattr(msg_obj, "photo", None):
+                    # Check for media types
+                    if any(getattr(msg_obj, attr, None) for attr in ("photo", "video", "sticker", "voice", "video_note", "document", "animation")):
                         attempted = True
                     else:
                         t = getattr(msg_obj, "text", None)

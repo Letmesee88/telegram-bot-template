@@ -876,7 +876,7 @@ async def cb_settings_open_subscription(callback: types.CallbackQuery) -> None:
         except Exception:
             used_trial = False
         if not used_trial:
-            kb_rows.append([InlineKeyboardButton(text="💥 10 руб. за 3 дня (trial)", callback_data="subscription:buy:trial")])
+            kb_rows.append([InlineKeyboardButton(text="💥 10 руб. за 3 дня", callback_data="subscription:buy:trial")])
         kb_rows.append([InlineKeyboardButton(text="750 руб/мес", callback_data="subscription:buy:month")])
         kb_rows.append([InlineKeyboardButton(text="2500 руб/год", callback_data="subscription:buy:year")])
         kb_rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open")])
