@@ -1048,7 +1048,7 @@ async def _check_email_and_pay(callback: types.CallbackQuery, state: FSMContext,
         # Save plan to state and ask for email
         await state.set_state(SubscriptionEmailStates.waiting_email)
         await state.update_data(pending_plan=plan)
-        text = "🧾�🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru"
+        text = "🧾🙏🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="subscription:email:cancel")],
         ])
