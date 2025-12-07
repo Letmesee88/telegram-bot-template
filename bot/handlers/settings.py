@@ -1048,11 +1048,7 @@ async def _check_email_and_pay(callback: types.CallbackQuery, state: FSMContext,
         # Save plan to state and ask for email
         await state.set_state(SubscriptionEmailStates.waiting_email)
         await state.update_data(pending_plan=plan)
-        text = (
-            "📧 Для оформления подписки нужен email\n\n"
-            "Email нужен для отправки чека об оплате.\n"
-            "Отправь свой email:"
-        )
+        text = "🧾�🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="subscription:email:cancel")],
         ])
@@ -1129,7 +1125,7 @@ async def handle_subscription_email(message: types.Message, state: FSMContext) -
     email = message.text.strip()
     
     if not EMAIL_RE.match(email):
-        await message.answer("❌ Неверный формат email. Попробуй ещё раз:")
+        await message.answer("Кажется, это не e-mail. Отправьте, пожалуйста, в формате: yourmail@example.ru")
         return
     
     # Save email

@@ -392,6 +392,7 @@ async def email_capture(message: Message, state: FSMContext) -> None:
     await message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
     await state.clear()
 
+
 @router.callback_query(F.data == "sale:cont1")
 async def sale_cont1(call: CallbackQuery, state: FSMContext) -> None:
     text = (
@@ -612,7 +613,10 @@ async def sale_pay_trial(call: CallbackQuery, state: FSMContext) -> None:
                 await state.update_data(pay_plan="trial")
             except Exception:
                 pass
-            await call.message.answer("🧾🙏🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru")
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="sale:email:back")],
+            ])
+            await call.message.answer("🧾🙏🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru", reply_markup=kb)
         elif str(e) == "trial_already_used":
             # Redirect to plan selection
             await call.message.answer("Пробный доступ доступен один раз. Выберите тариф:")
@@ -644,7 +648,10 @@ async def sale_pay_month(call: CallbackQuery, state: FSMContext) -> None:
                 await state.update_data(pay_plan="month")
             except Exception:
                 pass
-            await call.message.answer("🧾🙏🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru")
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="sale:email:back")],
+            ])
+            await call.message.answer("🧾🙏🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru", reply_markup=kb)
         else:
             await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
         await call.answer()
@@ -672,7 +679,10 @@ async def sale_pay_year(call: CallbackQuery, state: FSMContext) -> None:
                 await state.update_data(pay_plan="year")
             except Exception:
                 pass
-            await call.message.answer("🧾🙏🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru")
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="sale:email:back")],
+            ])
+            await call.message.answer("🧾🙏🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru", reply_markup=kb)
         else:
             await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
         await call.answer()
@@ -686,6 +696,25 @@ async def sale_pay_year(call: CallbackQuery, state: FSMContext) -> None:
     except Exception:
         await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
     await call.answer()
+
+
+@router.callback_query(F.data == "sale:email:back")
+async def sale_email_back(call: CallbackQuery, state: FSMContext) -> None:
+    """Handle back button from email request screen — return to tariff description."""
+    data = await state.get_data()
+    plan = str(data.get("pay_plan") or "").strip().lower()
+    await state.clear()
+    
+    # Redirect to the appropriate tariff screen
+    if plan == "trial":
+        await sale_trial(call, state)
+    elif plan == "month":
+        await sale_buy_month(call, state)
+    elif plan == "year":
+        await sale_buy_year(call, state)
+    else:
+        # Fallback to plan selection
+        await sale_choose(call, state)
 
 
 # =====================
