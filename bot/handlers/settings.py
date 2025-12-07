@@ -16,7 +16,7 @@ from bot.services.account import get_account_summary_text
 from bot.services.analytics import analytics
 from bot.analytics.types import BaseEvent, EventProperties, Plan
 from sqlalchemy import select, update
-from bot.database.models import OnboardingAnswerModel, SubscriptionModel, PaymentModel
+from bot.database.models import OnboardingAnswerModel, SubscriptionModel, PaymentModel, UserModel
 from bot.schemas.onboarding import DailyPlan, OnboardingData, Goal
 from bot.services.plan import calculate_daily_plan
 from bot.services.adjust import parse_adjustment_cached, apply_adjustment, parse_adjustment_heuristic, rephrase_explanation_cached
@@ -32,6 +32,13 @@ router = Router(name="settings")
 
 class SettingsDailyNormStates(StatesGroup):
     waiting_text = State()
+
+
+class SubscriptionEmailStates(StatesGroup):
+    waiting_email = State()
+
+
+EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}$')
 
 
 def _kb_settings() -> InlineKeyboardMarkup:
@@ -1027,68 +1034,141 @@ async def cb_subscription_buy_year(callback: types.CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "subscription:pay:trial")
-async def cb_subscription_pay_trial(callback: types.CallbackQuery) -> None:
+async def _check_email_and_pay(callback: types.CallbackQuery, state: FSMContext, plan: str) -> None:
+    """Check if user has email, if not — ask for it, otherwise create payment."""
     if not callback.from_user:
         return
-    from bot.services.yookassa import create_payment
     user_id = callback.from_user.id
-    try:
-        cp = await create_payment(user_id=user_id, plan="trial")
-    except Exception as e:
-        if str(e) == "trial_already_used":
-            await callback.message.answer("Пробный доступ доступен один раз. Выберите тариф:")
-            await cb_settings_open_subscription(callback)
-        else:
-            await callback.message.answer("Ошибка при создании платежа. Попробуй позже.")
+    
+    # Check if email exists
+    async with sessionmaker() as session:
+        user_email = await session.scalar(select(UserModel.email).where(UserModel.id == user_id))
+    
+    if not user_email:
+        # Save plan to state and ask for email
+        await state.set_state(SubscriptionEmailStates.waiting_email)
+        await state.update_data(pending_plan=plan)
+        text = (
+            "📧 Для оформления подписки нужен email\n\n"
+            "Email нужен для отправки чека об оплате.\n"
+            "Отправь свой email:"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Отмена", callback_data="subscription:email:cancel")],
+        ])
+        await callback.message.answer(text, reply_markup=kb)
         await callback.answer()
         return
+    
+    # Email exists — proceed to payment
+    await _create_and_show_payment(callback, user_id, plan)
+
+
+async def _create_and_show_payment(callback: types.CallbackQuery, user_id: int, plan: str) -> None:
+    """Create payment and show payment link."""
+    from bot.services.yookassa import create_payment
+    
+    plan_info = {
+        "trial": ("10 руб", "10"),
+        "month": ("750 руб", "750"),
+        "year": ("2500 руб", "2500"),
+    }
+    btn_text, _ = plan_info.get(plan, ("Оплатить", "0"))
+    
+    try:
+        cp = await create_payment(user_id=user_id, plan=plan)
+    except Exception as e:
+        if str(e) == "trial_already_used":
+            await callback.message.answer("Пробный доступ доступен один раз. Выбери другой тариф.")
+        else:
+            logger.error(f"Payment creation failed: {e}")
+            await callback.message.answer("Ошибка при создании платежа. Попробуй позже.")
+        try:
+            await callback.answer()
+        except Exception:
+            pass
+        return
+    
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Оплатить 10 руб", url=cp.confirmation_url)],
+        [InlineKeyboardButton(text=f"Оплатить {btn_text}", url=cp.confirmation_url)],
         [InlineKeyboardButton(text="◀️ Вернуться", callback_data="settings:open:subscription")],
     ])
     await callback.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
-    await callback.answer()
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "subscription:pay:trial")
+async def cb_subscription_pay_trial(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await _check_email_and_pay(callback, state, "trial")
 
 
 @router.callback_query(F.data == "subscription:pay:month")
-async def cb_subscription_pay_month(callback: types.CallbackQuery) -> None:
-    if not callback.from_user:
-        return
-    from bot.services.yookassa import create_payment
-    user_id = callback.from_user.id
-    try:
-        cp = await create_payment(user_id=user_id, plan="month")
-    except Exception:
-        await callback.message.answer("Ошибка при создании платежа. Попробуй позже.")
-        await callback.answer()
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Оплатить 750 руб", url=cp.confirmation_url)],
-        [InlineKeyboardButton(text="◀️ Вернуться", callback_data="settings:open:subscription")],
-    ])
-    await callback.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
-    await callback.answer()
+async def cb_subscription_pay_month(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await _check_email_and_pay(callback, state, "month")
 
 
 @router.callback_query(F.data == "subscription:pay:year")
-async def cb_subscription_pay_year(callback: types.CallbackQuery) -> None:
-    if not callback.from_user:
+async def cb_subscription_pay_year(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await _check_email_and_pay(callback, state, "year")
+
+
+@router.callback_query(F.data == "subscription:email:cancel")
+async def cb_subscription_email_cancel(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await cb_settings_open_subscription(callback)
+
+
+@router.message(SubscriptionEmailStates.waiting_email)
+async def handle_subscription_email(message: types.Message, state: FSMContext) -> None:
+    if not message.from_user or not message.text:
         return
+    user_id = message.from_user.id
+    email = message.text.strip()
+    
+    if not EMAIL_RE.match(email):
+        await message.answer("❌ Неверный формат email. Попробуй ещё раз:")
+        return
+    
+    # Save email
+    async with sessionmaker() as session:
+        await session.execute(update(UserModel).where(UserModel.id == user_id).values(email=email))
+        await session.commit()
+    
+    await message.answer(f"✅ Email сохранён: {email}")
+    
+    # Get pending plan and create payment
+    data = await state.get_data()
+    plan = data.get("pending_plan", "month")
+    await state.clear()
+    
+    # Create a fake callback to reuse payment logic
     from bot.services.yookassa import create_payment
-    user_id = callback.from_user.id
+    
+    plan_info = {
+        "trial": ("10 руб", "10"),
+        "month": ("750 руб", "750"),
+        "year": ("2500 руб", "2500"),
+    }
+    btn_text, _ = plan_info.get(plan, ("Оплатить", "0"))
+    
     try:
-        cp = await create_payment(user_id=user_id, plan="year")
-    except Exception:
-        await callback.message.answer("Ошибка при создании платежа. Попробуй позже.")
-        await callback.answer()
+        cp = await create_payment(user_id=user_id, plan=plan)
+    except Exception as e:
+        if str(e) == "trial_already_used":
+            await message.answer("Пробный доступ доступен один раз. Выбери другой тариф.")
+        else:
+            logger.error(f"Payment creation failed after email: {e}")
+            await message.answer("Ошибка при создании платежа. Попробуй позже.")
         return
+    
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Оплатить 2500 руб", url=cp.confirmation_url)],
+        [InlineKeyboardButton(text=f"Оплатить {btn_text}", url=cp.confirmation_url)],
         [InlineKeyboardButton(text="◀️ Вернуться", callback_data="settings:open:subscription")],
     ])
-    await callback.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
-    await callback.answer()
+    await message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
 
 
 def _templates_root_with_back_kb(counts: dict[str, int] | None) -> InlineKeyboardMarkup:
