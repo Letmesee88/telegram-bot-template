@@ -944,6 +944,93 @@ async def cb_subscription_set_next(callback: types.CallbackQuery) -> None:
 async def cb_subscription_buy_trial(callback: types.CallbackQuery) -> None:
     if not callback.from_user:
         return
+    from datetime import datetime, timedelta
+    from bot.services.users import get_user_tzinfo
+    user_id = callback.from_user.id
+    # Compute trial end in user's TZ
+    try:
+        async with sessionmaker() as session:
+            tz = await get_user_tzinfo(session, user_id)
+    except Exception:
+        from datetime import timezone
+        tz = timezone.utc
+    end_dt = (datetime.now(tz) + timedelta(days=3)).strftime("%d.%m.%Y %H:%M")
+    text = (
+        "💎 Оплата подписки\n\n"
+        "План: Пробный доступ\n"
+        "Стоимость: 10 руб\n"
+        "Период: 3 дня\n\n"
+        f"• Пробный период до: {end_dt}\n"
+        "• После пробного периода годовая подписка продлится за 2500 рублей\n\n"
+        "Оплачивая, ты соглашаешься с <a href=\"https://telegra.ph/Polzovatelskoe-soglashenie-12-05-32\">Пользовательским соглашением</a>, "
+        "<a href=\"https://telegra.ph/Politika-konfidencialnosti-12-05-33\">Политикой конфиденциальности</a> и на сохранение способа оплаты для автопродления.\n"
+        "Автосписание можно отключить в разделе «Настройки → Подписка»."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оплатить 10 руб", callback_data="subscription:pay:trial")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
+    ])
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "subscription:buy:month")
+async def cb_subscription_buy_month(callback: types.CallbackQuery) -> None:
+    if not callback.from_user:
+        return
+    text = (
+        "💎 Оплата подписки\n\n"
+        "План: Месячная подписка\n"
+        "Стоимость: 750 руб/месяц\n"
+        "Период: 30 дней\n\n"
+        "После оплаты подписка будет автоматически продлеваться.\n\n"
+        "Оплачивая, ты соглашаешься с <a href=\"https://telegra.ph/Polzovatelskoe-soglashenie-12-05-32\">Пользовательским соглашением</a>, "
+        "<a href=\"https://telegra.ph/Politika-konfidencialnosti-12-05-33\">Политикой конфиденциальности</a> и на сохранение способа оплаты для автопродления.\n"
+        "Автосписание можно отключить в разделе «Настройки → Подписка»."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оплатить 750 руб", callback_data="subscription:pay:month")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
+    ])
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "subscription:buy:year")
+async def cb_subscription_buy_year(callback: types.CallbackQuery) -> None:
+    if not callback.from_user:
+        return
+    text = (
+        "💎 Оплата подписки\n\n"
+        "План: Годовая подписка\n"
+        "Стоимость: 2500 руб/в год\n"
+        "Период: 365 дней\n\n"
+        "После оплаты подписка будет автоматически продлеваться.\n\n"
+        "Оплачивая, ты соглашаешься с <a href=\"https://telegra.ph/Polzovatelskoe-soglashenie-12-05-32\">Пользовательским соглашением</a>, "
+        "<a href=\"https://telegra.ph/Politika-konfidencialnosti-12-05-33\">Политикой конфиденциальности</a> и на сохранение способа оплаты для автопродления.\n"
+        "Автосписание можно отключить в разделе «Настройки → Подписка»."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оплатить 2500 руб", callback_data="subscription:pay:year")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
+    ])
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "subscription:pay:trial")
+async def cb_subscription_pay_trial(callback: types.CallbackQuery) -> None:
+    if not callback.from_user:
+        return
     from bot.services.yookassa import create_payment
     user_id = callback.from_user.id
     try:
@@ -956,13 +1043,16 @@ async def cb_subscription_buy_trial(callback: types.CallbackQuery) -> None:
             await callback.message.answer("Ошибка при создании платежа. Попробуй позже.")
         await callback.answer()
         return
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Оплатить 10 руб", url=cp.confirmation_url)], [InlineKeyboardButton(text="◀️ Вернуться", callback_data="settings:open:subscription")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оплатить 10 руб", url=cp.confirmation_url)],
+        [InlineKeyboardButton(text="◀️ Вернуться", callback_data="settings:open:subscription")],
+    ])
     await callback.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
     await callback.answer()
 
 
-@router.callback_query(F.data == "subscription:buy:month")
-async def cb_subscription_buy_month(callback: types.CallbackQuery) -> None:
+@router.callback_query(F.data == "subscription:pay:month")
+async def cb_subscription_pay_month(callback: types.CallbackQuery) -> None:
     if not callback.from_user:
         return
     from bot.services.yookassa import create_payment
@@ -973,13 +1063,16 @@ async def cb_subscription_buy_month(callback: types.CallbackQuery) -> None:
         await callback.message.answer("Ошибка при создании платежа. Попробуй позже.")
         await callback.answer()
         return
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Оплатить 750 руб", url=cp.confirmation_url)], [InlineKeyboardButton(text="◀️ Вернуться", callback_data="settings:open:subscription")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оплатить 750 руб", url=cp.confirmation_url)],
+        [InlineKeyboardButton(text="◀️ Вернуться", callback_data="settings:open:subscription")],
+    ])
     await callback.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
     await callback.answer()
 
 
-@router.callback_query(F.data == "subscription:buy:year")
-async def cb_subscription_buy_year(callback: types.CallbackQuery) -> None:
+@router.callback_query(F.data == "subscription:pay:year")
+async def cb_subscription_pay_year(callback: types.CallbackQuery) -> None:
     if not callback.from_user:
         return
     from bot.services.yookassa import create_payment
@@ -990,7 +1083,10 @@ async def cb_subscription_buy_year(callback: types.CallbackQuery) -> None:
         await callback.message.answer("Ошибка при создании платежа. Попробуй позже.")
         await callback.answer()
         return
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Оплатить 2500 руб", url=cp.confirmation_url)], [InlineKeyboardButton(text="◀️ Вернуться", callback_data="settings:open:subscription")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оплатить 2500 руб", url=cp.confirmation_url)],
+        [InlineKeyboardButton(text="◀️ Вернуться", callback_data="settings:open:subscription")],
+    ])
     await callback.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
     await callback.answer()
 
