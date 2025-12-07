@@ -57,24 +57,6 @@ router = Router()
 EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}$')
 
 
-@router.message(Command("email"))
-async def cmd_email(message: Message, state: FSMContext) -> None:
-    parts = (message.text or "").split()
-    email = parts[1].strip() if len(parts) >= 2 else ""
-    if not email or ("@" not in email) or ("." not in email):
-        await message.answer("Отправь e-mail в формате: /email your@example.com")
-        return
-    try:
-        async with sessionmaker() as session:
-            await session.execute(
-                update(UserModel).where(UserModel.id == message.from_user.id).values(email=email)
-            )
-            await session.commit()
-        await message.answer("E-mail сохранён. Теперь можно перейти к оплате.")
-    except Exception:
-        await message.answer("Не удалось сохранить e-mail. Попробуй позже.")
-
-
 class OnboardingStates(StatesGroup):
     gender = State()
     age = State()
