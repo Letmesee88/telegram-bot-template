@@ -530,6 +530,26 @@ async def sale_trial(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "sale:choose")
 async def sale_choose(call: CallbackQuery, state: FSMContext) -> None:
+    # Check if user already used trial
+    used_trial = False
+    try:
+        async with sessionmaker() as session:
+            rows = (await session.execute(
+                select(PaymentModel.meta)
+                .where(PaymentModel.user_id == call.from_user.id, PaymentModel.status == "succeeded")
+                .order_by(PaymentModel.id.desc())
+                .limit(50)
+            )).scalars().all()
+        for md in rows:
+            try:
+                if str((md or {}).get("plan", "")).lower() == "trial":
+                    used_trial = True
+                    break
+            except Exception:
+                continue
+    except Exception:
+        used_trial = False
+
     text = (
         "Выбери тариф:\n\n"
         "Месячная подписка — 750 руб/месяц\n"
@@ -539,11 +559,12 @@ async def sale_choose(call: CallbackQuery, state: FSMContext) -> None:
         "• Оплата раз в год\n\n"
         "Подписку можно отменить в любой удобный момент в Личном кабинете бота"
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="750 руб/мес", callback_data="sale:buy:month")],
-        [InlineKeyboardButton(text="2500 руб/в год", callback_data="sale:buy:year")],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:cont2")],
-    ])
+    rows_kb = []
+    if not used_trial:
+        rows_kb.append([InlineKeyboardButton(text="💥 10 руб. за 3 дня", callback_data="sale:trial")])
+    rows_kb.append([InlineKeyboardButton(text="750 руб/мес", callback_data="sale:buy:month")])
+    rows_kb.append([InlineKeyboardButton(text="2500 руб/в год", callback_data="sale:buy:year")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows_kb)
     try:
         await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
     except Exception:
