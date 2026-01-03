@@ -376,9 +376,15 @@ async def cb_settings_back_cabinet(callback: types.CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "settings:open:daily_norm")
-async def cb_settings_open_daily_norm(callback: types.CallbackQuery) -> None:
+async def cb_settings_open_daily_norm(callback: types.CallbackQuery, state: FSMContext) -> None:
     if not callback.from_user:
         return
+    try:
+        cur = await state.get_state()
+        if cur == SettingsDailyNormStates.waiting_text.state:
+            await state.clear()
+    except Exception:
+        pass
     user_id = callback.from_user.id
     try:
         async with sessionmaker() as session:

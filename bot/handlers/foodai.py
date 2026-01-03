@@ -47,8 +47,7 @@ router.callback_query.filter(StateFilter(None))
 
 # Separate router for edit text state (does not have global StateFilter(None))
 router_edit = Router(name="foodai_edit")
-router_edit.message.filter(FoodAIEnabledFilter())
-router_edit.callback_query.filter(FoodAIEnabledFilter())
+ 
 
 async def _gate_msg(message: types.Message) -> bool:
     if not message.from_user:
