@@ -43,6 +43,10 @@ EventType = Literal[
     "Onboarding:Restart",
     "Onboarding:ActivitySelected",
     "Onboarding:SpeedSelected",
+    "onboarding_started",
+    "onboarding_step",
+    "onboarding_completed",
+    "onboarding_abandoned",
     # Recommendations
     "Rec:StartClicked",
     "Rec:TypeChosen",
@@ -67,6 +71,14 @@ class EventProperties(BaseModel):
     text: str | None = None
     command: str | None = None
     payment_method: PaymentMethod | None = None
+    source: str | None = None
+    step_name: str | None = None
+    step_index: int | None = None
+    retry: bool | None = None
+    total_duration_sec: int | None = None
+    last_step_name: str | None = None
+    last_step_index: int | None = None
+    age_hours: int | None = None
     # Vision escalation structured fields for Amplitude segmentation
     esc_chain: str | None = None
     esc_detail_order: str | None = None
@@ -107,7 +119,8 @@ class BaseEvent(BaseModel):
     plan: Plan | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {key: value for key, value in self.model_dump(exclude_none=True).items() if value}
+        data = self.model_dump(exclude_none=True)
+        return {key: value for key, value in data.items() if value != ""}
 
 
 class AbstractAnalyticsLogger(ABC):

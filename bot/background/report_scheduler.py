@@ -17,9 +17,14 @@ from bot.database.models import OnboardingAnswerModel, UserModel, SubscriptionMo
 from bot.services.users import get_user_tzinfo
 from bot.services.reports import assemble_and_send_report
 from bot.metrics import daily_report_queue_lag_seconds
+from bot.services.analytics import analytics
+from bot.analytics.types import BaseEvent, EventProperties, Plan
 
 ZSET_KEY = "reports:schedule"
 LOCK_FMT = "reports:lock:{}"
+
+ONB_ZSET_STARTED = "onboarding:started"
+ONB_ABANDONED_SENT_FMT = "onboarding:abandoned_sent:{user_id}:{start_ts}"
 
 
 def _jitter_minutes() -> int:
@@ -104,11 +109,75 @@ async def _seed_audience() -> None:
         await pipe.execute()
 
 
+async def _scan_onboarding_abandoned() -> None:
+    if not analytics.logger:
+        return
+    now = int(time.time())
+    cutoff = now - 24 * 3600
+    try:
+        due = await redis_client.zrangebyscore(ONB_ZSET_STARTED, min="-inf", max=cutoff, start=0, num=200, withscores=True)
+    except Exception:
+        return
+    if not due:
+        return
+    tasks: list[asyncio.Task] = []
+    for mem, score in due:
+        try:
+            user_id = int(mem)
+            start_ts = int(score)
+        except Exception:
+            continue
+        try:
+            sent_key = ONB_ABANDONED_SENT_FMT.format(user_id=user_id, start_ts=start_ts)
+            if await redis_client.exists(sent_key):
+                await redis_client.zrem(ONB_ZSET_STARTED, user_id)
+                continue
+            last_step = await redis_client.get(f"onboarding:last_step:{user_id}")
+            last_idx = await redis_client.get(f"onboarding:last_step_index:{user_id}")
+            try:
+                if isinstance(last_step, bytes):
+                    last_step = last_step.decode()
+            except Exception:
+                pass
+            try:
+                if isinstance(last_idx, bytes):
+                    last_idx = last_idx.decode()
+            except Exception:
+                pass
+            age_hours = max(0, int((now - start_ts) // 3600))
+            evt = BaseEvent(
+                user_id=user_id,
+                event_type="onboarding_abandoned",
+                event_properties=EventProperties(
+                    chat_id=None,
+                    chat_type=None,
+                    text=None,
+                    command=None,
+                    last_step_name=(str(last_step) if last_step is not None else None),
+                    last_step_index=(int(last_idx) if last_idx is not None and str(last_idx).isdigit() else None),
+                    age_hours=age_hours,
+                ),
+                language=getattr(settings, "DEFAULT_LOCALE", None),
+                plan=Plan(branch="Onboarding", source="onboarding", version="v1"),
+            )
+            analytics.fire_event(evt)
+            await redis_client.set(sent_key, "1", ex=7 * 24 * 3600)
+            await redis_client.zrem(ONB_ZSET_STARTED, user_id)
+        except Exception:
+            continue
+    if tasks:
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception:
+            pass
+
+
 class ReportScheduler:
     def __init__(self) -> None:
         self._task: Optional[asyncio.Task] = None
         self._stopping = asyncio.Event()
         self._sem = asyncio.Semaphore(int(getattr(settings, "DAILY_REPORTS_LLM_CONCURRENCY", 50) or 50))
+        self._last_onb_scan_ts = 0
 
     async def _worker(self, bot: Bot, user_id: int, scheduled_epoch: int) -> None:
         lock_key = LOCK_FMT.format(user_id)
@@ -137,6 +206,13 @@ class ReportScheduler:
         await _seed_audience()
         while not self._stopping.is_set():
             try:
+                try:
+                    now = int(time.time())
+                    if now - int(self._last_onb_scan_ts or 0) >= 300:
+                        self._last_onb_scan_ts = now
+                        await _scan_onboarding_abandoned()
+                except Exception:
+                    pass
                 if not getattr(settings, "DAILY_REPORTS_ENABLED", True):
                     await asyncio.sleep(30)
                     continue

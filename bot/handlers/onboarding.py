@@ -57,6 +57,85 @@ router = Router()
 EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}$')
 
 
+def _onb_step_index(step_name: str) -> int | None:
+    mapping = {
+        "gender": 0,
+        "age": 1,
+        "weight": 2,
+        "height": 3,
+        "activity": 4,
+        "goal": 5,
+        "goal_weight": 6,
+        "speed": 7,
+        "review": 8,
+        "adjust": 9,
+    }
+    return mapping.get(step_name)
+
+
+async def _onb_mark_started(user_id: int, start_ts: int) -> None:
+    try:
+        await redis_client.zadd("onboarding:started", {user_id: start_ts})
+        await redis_client.set(f"onboarding:start_ts:{user_id}", str(start_ts), ex=7 * 24 * 3600)
+    except Exception:
+        pass
+
+
+async def _onb_update_last_step(user_id: int, step_name: str) -> None:
+    idx = _onb_step_index(step_name)
+    try:
+        await redis_client.set(f"onboarding:last_step:{user_id}", step_name, ex=7 * 24 * 3600)
+        if idx is not None:
+            await redis_client.set(f"onboarding:last_step_index:{user_id}", str(idx), ex=7 * 24 * 3600)
+    except Exception:
+        pass
+
+
+async def _onb_clear_redis(user_id: int) -> None:
+    try:
+        await redis_client.zrem("onboarding:started", user_id)
+    except Exception:
+        pass
+    try:
+        await redis_client.delete(
+            f"onboarding:start_ts:{user_id}",
+            f"onboarding:last_step:{user_id}",
+            f"onboarding:last_step_index:{user_id}",
+        )
+    except Exception:
+        pass
+
+
+def _onb_fire_step(
+    *,
+    user_id: int,
+    step_name: str,
+    chat_id: int | None,
+    chat_type: str | None,
+    language: str | None,
+    retry: bool | None = None,
+) -> None:
+    if not analytics.logger:
+        return
+    analytics.fire_event(
+        BaseEvent(
+            user_id=user_id,
+            event_type="onboarding_step",
+            event_properties=EventProperties(
+                chat_id=chat_id,
+                chat_type=chat_type,
+                text=None,
+                command=None,
+                step_name=step_name,
+                step_index=_onb_step_index(step_name),
+                retry=retry,
+            ),
+            language=language,
+            plan=Plan(branch="Onboarding", source="onboarding", version="v1"),
+        )
+    )
+
+
 class OnboardingStates(StatesGroup):
     gender = State()
     age = State()
@@ -220,6 +299,44 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
                 )
                 session.add(record)
             await session.commit()
+
+            # Analytics: onboarding completed (after successful commit)
+            try:
+                if analytics.logger:
+                    d = await state.get_data()
+                    started_ts = int(d.get("onboarding_started_ts") or 0)
+                    completed_sent = bool(d.get("onboarding_completed_sent") is True)
+                    if (started_ts > 0) and (not completed_sent):
+                        now_ts = int(datetime.now(timezone.utc).timestamp())
+                        total_sec = max(0, now_ts - started_ts)
+                        await state.update_data(onboarding_completed_sent=True)
+                        await _onb_update_last_step(user_id, "review")
+                        analytics.fire_event(
+                            BaseEvent(
+                                user_id=user_id,
+                                event_type="onboarding_completed",
+                                event_properties=EventProperties(
+                                    chat_id=getattr(message.chat, 'id', None),
+                                    chat_type=getattr(message.chat, 'type', None),
+                                    text=None,
+                                    command=None,
+                                    total_duration_sec=total_sec,
+                                ),
+                                language=getattr(message.from_user, 'language_code', None),
+                                plan=Plan(branch="Onboarding", source="onboarding", version="v1"),
+                            )
+                        )
+                        _onb_fire_step(
+                            user_id=user_id,
+                            step_name="review",
+                            chat_id=getattr(message.chat, 'id', None),
+                            chat_type=getattr(message.chat, 'type', None),
+                            language=getattr(message.from_user, 'language_code', None),
+                            retry=False,
+                        )
+                        await _onb_clear_redis(user_id)
+            except Exception:
+                pass
             try:
                 if getattr(settings, "DAILY_REPORTS_ENABLED", True):
                     async with sessionmaker() as s2:
@@ -739,7 +856,43 @@ async def cb_onboarding(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "onboarding_start")
 async def cb_onboarding_start(call: CallbackQuery, state: FSMContext) -> None:
+    user_id = call.from_user.id if call.from_user else None
     await state.set_state(OnboardingStates.gender)
+    if user_id is not None:
+        try:
+            data = await state.get_data()
+            started_ts = int(data.get("onboarding_started_ts") or 0)
+            if started_ts <= 0:
+                started_ts = int(datetime.now(timezone.utc).timestamp())
+                await state.update_data(onboarding_started_ts=started_ts, onboarding_completed_sent=False)
+                await _onb_mark_started(user_id, started_ts)
+                await _onb_update_last_step(user_id, "gender")
+                if analytics.logger:
+                    analytics.fire_event(
+                        BaseEvent(
+                            user_id=user_id,
+                            event_type="onboarding_started",
+                            event_properties=EventProperties(
+                                chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
+                                chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                                text=None,
+                                command=None,
+                                source="onboarding_start",
+                            ),
+                            language=getattr(call.from_user, 'language_code', None),
+                            plan=Plan(branch="Onboarding", source="onboarding", version="v1"),
+                        )
+                    )
+            _onb_fire_step(
+                user_id=user_id,
+                step_name="gender",
+                chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
+                chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                language=getattr(call.from_user, 'language_code', None),
+                retry=False,
+            )
+        except Exception:
+            pass
     caption = _("Отлично! Теперь настроим всё под тебя 🎯\nПервый шаг — выбери свой пол, чтобы я точно рассчитал твою норму калорий.")
     kb = _ikb([
         [("Я мужчина", "gender:male"), ("Я девушка", "gender:female")],
@@ -832,6 +985,19 @@ async def cb_activity_select(call: CallbackQuery, state: FSMContext) -> None:
         pass
     # Proceed to goal selection
     await state.set_state(OnboardingStates.goal)
+    if call.from_user:
+        try:
+            await _onb_update_last_step(call.from_user.id, "goal")
+            _onb_fire_step(
+                user_id=call.from_user.id,
+                step_name="goal",
+                chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
+                chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                language=getattr(call.from_user, 'language_code', None),
+                retry=False,
+            )
+        except Exception:
+            pass
     await _ask_goal(call.message)
     try:
         await call.answer()
@@ -971,6 +1137,19 @@ async def cb_gender(call: CallbackQuery, state: FSMContext) -> None:
     gender = call.data.split(":", 1)[1]
     await state.update_data(gender=gender)
     await state.set_state(OnboardingStates.age)
+    if call.from_user:
+        try:
+            await _onb_update_last_step(call.from_user.id, "age")
+            _onb_fire_step(
+                user_id=call.from_user.id,
+                step_name="age",
+                chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
+                chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                language=getattr(call.from_user, 'language_code', None),
+                retry=False,
+            )
+        except Exception:
+            pass
     await call.message.answer(_("Сколько тебе лет?"))
     await call.answer()
 
@@ -1015,11 +1194,36 @@ async def age_set(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(age=age)
     await state.set_state(OnboardingStates.weight)
+    if message.from_user:
+        try:
+            await _onb_update_last_step(message.from_user.id, "weight")
+            _onb_fire_step(
+                user_id=message.from_user.id,
+                step_name="weight",
+                chat_id=getattr(message.chat, 'id', None),
+                chat_type=getattr(message.chat, 'type', None),
+                language=getattr(message.from_user, 'language_code', None),
+                retry=False,
+            )
+        except Exception:
+            pass
     await message.answer(_("Какой у тебя текущий вес в килограммах?"))
 
 
 @router.message(OnboardingStates.age, F.text & (~F.text.startswith("/")))
 async def age_retry(message: Message) -> None:
+    if message.from_user:
+        try:
+            _onb_fire_step(
+                user_id=message.from_user.id,
+                step_name="age",
+                chat_id=getattr(message.chat, 'id', None),
+                chat_type=getattr(message.chat, 'type', None),
+                language=getattr(message.from_user, 'language_code', None),
+                retry=True,
+            )
+        except Exception:
+            pass
     await message.answer(_("Пожалуйста, введите корректный возраст (от 1 до 120 лет)"))
 
 
@@ -1031,11 +1235,36 @@ async def weight_set(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(weight_kg=w)
     await state.set_state(OnboardingStates.height)
+    if message.from_user:
+        try:
+            await _onb_update_last_step(message.from_user.id, "height")
+            _onb_fire_step(
+                user_id=message.from_user.id,
+                step_name="height",
+                chat_id=getattr(message.chat, 'id', None),
+                chat_type=getattr(message.chat, 'type', None),
+                language=getattr(message.from_user, 'language_code', None),
+                retry=False,
+            )
+        except Exception:
+            pass
     await message.answer(_("Какой у тебя рост в сантиметрах?"))
 
 
 @router.message(OnboardingStates.weight, F.text & (~F.text.startswith("/")))
 async def weight_retry(message: Message) -> None:
+    if message.from_user:
+        try:
+            _onb_fire_step(
+                user_id=message.from_user.id,
+                step_name="weight",
+                chat_id=getattr(message.chat, 'id', None),
+                chat_type=getattr(message.chat, 'type', None),
+                language=getattr(message.from_user, 'language_code', None),
+                retry=True,
+            )
+        except Exception:
+            pass
     await message.answer(_("Пожалуйста, введите корректный вес (от 30 до 300 килограммов)"))
 
 
@@ -1047,11 +1276,36 @@ async def height_set(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(height_cm=h)
     await state.set_state(OnboardingStates.activity)
+    if message.from_user:
+        try:
+            await _onb_update_last_step(message.from_user.id, "activity")
+            _onb_fire_step(
+                user_id=message.from_user.id,
+                step_name="activity",
+                chat_id=getattr(message.chat, 'id', None),
+                chat_type=getattr(message.chat, 'type', None),
+                language=getattr(message.from_user, 'language_code', None),
+                retry=False,
+            )
+        except Exception:
+            pass
     await _ask_activity(message)
 
 
 @router.message(OnboardingStates.height, F.text & (~F.text.startswith("/")))
 async def height_retry(message: Message) -> None:
+    if message.from_user:
+        try:
+            _onb_fire_step(
+                user_id=message.from_user.id,
+                step_name="height",
+                chat_id=getattr(message.chat, 'id', None),
+                chat_type=getattr(message.chat, 'type', None),
+                language=getattr(message.from_user, 'language_code', None),
+                retry=True,
+            )
+        except Exception:
+            pass
     await message.answer(_("Пожалуйста, введите корректный рост (от 120 до 250 см)"))
 
 
@@ -1142,6 +1396,19 @@ async def cb_goal(call: CallbackQuery, state: FSMContext) -> None:
     if goal_raw == Goal.maintain.value:
         # Для maintain: оставляем сообщение как есть, сразу финализация
         await state.set_state(OnboardingStates.speed)
+        if call.from_user:
+            try:
+                await _onb_update_last_step(call.from_user.id, "speed")
+                _onb_fire_step(
+                    user_id=call.from_user.id,
+                    step_name="speed",
+                    chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
+                    chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                    language=getattr(call.from_user, 'language_code', None),
+                    retry=False,
+                )
+            except Exception:
+                pass
         await state.update_data(goal_locked=True)
         await _finalize_and_show(call.message, state, call.from_user.id)
         return
@@ -1150,6 +1417,19 @@ async def cb_goal(call: CallbackQuery, state: FSMContext) -> None:
     try:
         await state.set_state(OnboardingStates.goal_weight)
         logger.info("cb_goal.next_state | user_id={} | state=goal_weight", getattr(call.from_user, 'id', None))
+        if call.from_user:
+            try:
+                await _onb_update_last_step(call.from_user.id, "goal_weight")
+                _onb_fire_step(
+                    user_id=call.from_user.id,
+                    step_name="goal_weight",
+                    chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
+                    chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                    language=getattr(call.from_user, 'language_code', None),
+                    retry=False,
+                )
+            except Exception:
+                pass
         try:
             photo = FSInputFile("bot/static/charts.jpg")
             await call.message.answer_photo(photo, caption=_("К какому весу ты стремишься?"))
@@ -1224,6 +1504,19 @@ async def goal_weight_set(message: Message, state: FSMContext) -> None:
 
     await state.update_data(goal_weight_kg=goal_w)
     await state.set_state(OnboardingStates.speed)
+    if message.from_user:
+        try:
+            await _onb_update_last_step(message.from_user.id, "speed")
+            _onb_fire_step(
+                user_id=message.from_user.id,
+                step_name="speed",
+                chat_id=getattr(message.chat, 'id', None),
+                chat_type=getattr(message.chat, 'type', None),
+                language=getattr(message.from_user, 'language_code', None),
+                retry=False,
+            )
+        except Exception:
+            pass
 
     # Динамические N кг/нед
     comfort = _format_rate(current_w, SPEED_PERCENT_BY_WEIGHT[Speed.comfort])
