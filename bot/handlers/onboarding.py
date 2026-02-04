@@ -527,9 +527,41 @@ async def sale_cont1(call: CallbackQuery, state: FSMContext) -> None:
         "• Никаких срывов — белок держит сытость под контролем\n\n"
         "💡 Суть: грамотный баланс БЖУ формирует не просто цифру на весах, а красоту твоего тела!"
     )
-    kb = _ikb([[ ("Супер", "sale:cont2") ]])
+    kb = _ikb([[ ("Супер", "sale:example_food") ]])
     try:
         await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await call.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+    await call.answer()
+
+
+@router.callback_query(F.data == "sale:example_food")
+async def sale_example_food(call: CallbackQuery, state: FSMContext) -> None:
+    """Sales flow: show a concrete example of food photo analysis before plan selection."""
+    text = (
+        "Пример анализа блюда по фото\n"
+        "Завтрак-ассорти с круассаном, тостами и авокадо\n\n"
+        "🍜 Состав:\n"
+        "• круассан (70 г, 260 ккал)\n"
+        "• тост треугольники с песто (80 г, 230 ккал)\n"
+        "• яичница болтунья (100 г, 180 ккал)\n"
+        "• креветки жареные (60 г, 60 ккал)\n"
+        "• авокадо (75 г, 120 ккал)\n"
+        "• свежие овощи (огурец, листовые салаты, томаты) (60 г, 20 ккал)\n"
+        "• соусы и джемы (сметана, томатный, ягодный джем) (35 г, 80 ккал)\n\n"
+        "🔥 Калории: 950 ккал | 🥩 Белки: 31.5 г | 🥑 Жиры: 55.6 г | 🍞 Углеводы: 84.8 г\n\n"
+        "⚖️ Вес: 430.0 г\n\n"
+        "------------------------------\n\n"
+        "📊 Итого за день:\n"
+        "🔥 Калории: 1650 ккал (86.4% от нормы)\n"
+        "🥩 Белки: 42.5 г (95.4% от нормы)\n"
+        "🥑 Жиры: 55.6 г (93.9% от нормы)\n"
+        "🍞 Углеводы: 99.8 г (82.5% от нормы)"
+    )
+    kb = _ikb([[("Отлично", "sale:cont2")]])
+    try:
+        photo = FSInputFile("bot/static/example_food.jpg")
+        await call.message.answer_photo(photo, caption=text, reply_markup=kb)
     except Exception:
         await call.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
     await call.answer()
