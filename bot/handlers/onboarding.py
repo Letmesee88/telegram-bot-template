@@ -560,6 +560,12 @@ async def sale_example_food(call: CallbackQuery, state: FSMContext) -> None:
     )
     kb = _ikb([[("Отлично", "sale:cont2")]])
     try:
+        # Remove previous text-only sales screen (sale_cont1) so we keep a single "active" screen.
+        try:
+            if call.message:
+                await call.message.delete()
+        except Exception:
+            pass
         photo = FSInputFile("bot/static/example_food.jpg")
         await call.message.answer_photo(photo, caption=text, reply_markup=kb)
     except Exception:
