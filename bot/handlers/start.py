@@ -2,7 +2,7 @@ from aiogram import Router, types
 import os
 from aiogram.filters import CommandStart, Command
 from aiogram.utils.i18n import gettext as _
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram import F
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import select
@@ -30,13 +30,11 @@ async def start_handler(message: types.Message, state: FSMContext) -> None:
     # Intro text unified with /onboarding
     intro = _(
         "Привет! 👋\n"
-        "Знаю, как бесит считать калории вручную... А потом срываться и начинать \"с понедельника\" 😅\n\n"
-        "Я ИИ-нутрициолог, и моя задача — сделать так, чтобы ты наконец достиг своей цели без мучений.\n\n"
+        "Я помогу скинуть лишний вес, сохраняя ваш обычный ритм жизни\n\n"
         "Как это работает:\n"
-        "1. За 2 минуты определяем твои цели и рассчитываем норму\n"
+        "1. За 2 минуты определяем твои цели и рассчитываем дневную норму\n"
         "2. Получаешь персональный план питания\n"
         "3. Просто фотографируешь еду — я всё считаю за тебя\n\n"
-        "Самое крутое: мои пользователи достигают результата в 2 раза чаще. Потому что когда не нужно париться с подсчётами — легче не сдаваться.\n\n"
     )
 
     completed = False
@@ -117,6 +115,19 @@ async def start_handler(message: types.Message, state: FSMContext) -> None:
                 pass
         else:
             analytics.fire_event(evt)
+    # Fresh: show intro video + caption (Telegram caption limit is ~1024 chars)
+    if (not completed) and (not in_progress):
+        try:
+            video = FSInputFile("bot/static/intro.mp4")
+            if len(text) <= 1024:
+                await message.answer_video(video=video, caption=text, reply_markup=kb)
+            else:
+                await message.answer_video(video=video, caption=_("Приступим? 🚀"), reply_markup=kb)
+                await message.answer(text)
+            return
+        except Exception:
+            pass
+
     await message.answer(text, reply_markup=kb)
 
 
