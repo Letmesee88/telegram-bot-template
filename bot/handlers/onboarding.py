@@ -603,6 +603,22 @@ async def sale_cont2(call: CallbackQuery, state: FSMContext) -> None:
     rows.append([InlineKeyboardButton(text="💎 Выбрать тариф", callback_data="sale:choose")])
     rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:back:final")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    # If we came here from a media message (e.g. example_food photo), delete it first so we don't
+    # leave the user with stacked screens in the chat.
+    try:
+        msg = call.message
+        if msg and (getattr(msg, "photo", None) or getattr(msg, "video", None) or getattr(msg, "animation", None) or getattr(msg, "document", None)):
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+            await msg.answer(text, reply_markup=kb, disable_web_page_preview=True)
+            await call.answer()
+            return
+    except Exception:
+        pass
+
     try:
         await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
     except Exception:
