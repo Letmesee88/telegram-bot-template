@@ -162,6 +162,6 @@ async def cmd_support(message: types.Message) -> None:
     text = (
         "☕️ Поддержка  пользователей\n\n"
         "По любым вопросам пишите:\n"
-        "@Calorissimo_support"
+        "@Tonya_19_93"
     )
     await message.answer(text, disable_web_page_preview=True)

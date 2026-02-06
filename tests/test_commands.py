@@ -47,7 +47,7 @@ async def test_cmd_support_text_and_no_cta():
     assert len(m._answers) == 1
     txt = m._answers[0][0]
     assert "Поддержка  пользователей" in txt
-    assert "@Calorissimo_support" in txt
+    assert "@Tonya_19_93" in txt
     assert "подписка не активна" not in txt.lower()
 
 
