@@ -13,13 +13,14 @@ class UserView(RoleView):
     details_modal = True
     export_types = ["csv", "xlsx", "json", "yaml"]
 
-    column_searchable_list = ["id", "username", "first_name", "last_name"]
-    column_filters = ["is_admin", "is_suspicious", "is_block", "is_premium", "created_at"]
+    column_searchable_list = ["id", "username", "first_name", "last_name", "email"]
+    column_filters = ["email", "is_admin", "is_suspicious", "is_block", "is_premium", "created_at"]
     column_list = [
         "id",
         "username",
         "first_name",
         "last_name",
+        "email",
         "language_code",
         "is_admin",
         "is_suspicious",
