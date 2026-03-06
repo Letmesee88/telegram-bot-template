@@ -865,11 +865,11 @@ async def cb_settings_open_subscription(callback: types.CallbackQuery) -> None:
             kb_rows.append([InlineKeyboardButton(text="Включить автопродление", callback_data="subscription:autorenew:enable")])
         kb_rows.append([InlineKeyboardButton(text="Назад", callback_data="settings:open")])
     else:
-        lines.append("Управление подпиской")
+        lines.append("💎 Управление подпиской")
         lines.append("")
-        lines.append("У вас нет активной подписки.")
+        lines.append("У тебя нет активной подписки.")
         lines.append("")
-        lines.append("Доступные тарифы:")
+        lines.append("Выбери вариант:")
 
         trial_available = False
         try:
