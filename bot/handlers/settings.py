@@ -54,12 +54,12 @@ EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}$")
 def _kb_settings() -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     rows.append([
-        InlineKeyboardButton(text="рџ“Љ РЎСѓС‚РѕС‡РЅР°СЏ РЅРѕСЂРјР°", callback_data="settings:open:daily_norm"),
-        InlineKeyboardButton(text="рџ“Њ РЁР°Р±Р»РѕРЅС‹ Р±Р»СЋРґ", callback_data="settings:open:templates"),
+        InlineKeyboardButton(text="📊 Суточная норма", callback_data="settings:open:daily_norm"),
+        InlineKeyboardButton(text="📌 Шаблоны блюд", callback_data="settings:open:templates"),
     ])
     rows.append([
-        InlineKeyboardButton(text="рџ’Ћ РџРѕРґРїРёСЃРєР°", callback_data="settings:open:subscription"),
-        InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:back:cabinet"),
+        InlineKeyboardButton(text="💎 Подписка", callback_data="settings:open:subscription"),
+        InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:back:cabinet"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -84,9 +84,9 @@ async def _render_settings(callback: types.CallbackQuery) -> None:
         tzinfo = await get_user_tzinfo(session, user_id)
     def _fmt(dt):
         try:
-            return dt.astimezone(tzinfo).strftime("%d.%m.%Y") if dt else "вЂ”"
+            return dt.astimezone(tzinfo).strftime("%d.%m.%Y") if dt else "—"
         except Exception:
-            return "вЂ”"
+            return "—"
     plan_map_short = {"trial": "пробный", "month": "месяц", "year": "год"}
     now_utc = datetime.now(timezone.utc)
     sub_is_active_now = bool(
@@ -137,45 +137,45 @@ async def cb_subscription_change_plan(callback: types.CallbackQuery) -> None:
     if not sub or not sub.expires_at_utc:
         await cb_settings_open_subscription(callback)
         return
-    plan_map = {"trial": "РџСЂРѕР±РЅС‹Р№ РґРѕСЃС‚СѓРї", "month": "РњРµСЃСЏС‡РЅР°СЏ РїРѕРґРїРёСЃРєР°", "year": "Р“РѕРґРѕРІР°СЏ РїРѕРґРїРёСЃРєР°"}
+    plan_map = {"trial": "Пробный доступ", "month": "Месячная подписка", "year": "Годовая подписка"}
     base_plan = getattr(sub, "next_plan", None)
     base_plan = base_plan if base_plan in {"month", "year"} else sub.plan
     target = "year" if base_plan == "month" else "month"
-    title = "рџ”„ РЎРјРµРЅР° РїР»Р°РЅР° РїРѕРґРїРёСЃРєРё"
+    title = "🔄 Смена плана подписки"
     datetime.now(timezone.utc)
     try:
         cur_until = sub.expires_at_utc.astimezone(tzinfo).strftime("%d.%m.%Y")
     except Exception:
-        cur_until = "вЂ”"
+        cur_until = "—"
     lines = [
         title,
         "",
-        f"РўРµРєСѓС‰РёР№ РїР»Р°РЅ: {plan_map.get(sub.plan, sub.plan)}",
-        f"рџ“… Р”РµР№СЃС‚РІСѓРµС‚ РґРѕ: {cur_until}",
+        f"Текущий план: {plan_map.get(sub.plan, sub.plan)}",
+        f"📅 Действует до: {cur_until}",
         "",
     ]
     if target == "year":
         lines += [
-            "РџСЂРµРґР»Р°РіР°РµРјС‹Р№ РїР»Р°РЅ: Р“РѕРґРѕРІР°СЏ РїРѕРґРїРёСЃРєР°",
+            "Предлагаемый план: Годовая подписка",
             "",
-            "рџ’° РЎС‚РѕРёРјРѕСЃС‚СЊ: 2500 СЂСѓР±/РіРѕРґ",
+            "💰 Стоимость: 2500 руб/год",
             "",
-            "РџСЂРё СЃРјРµРЅРµ РЅР° РіРѕРґРѕРІРѕР№ РїР»Р°РЅ:",
-            "вЂў Р’С‹ СЃСЌРєРѕРЅРѕРјРёС‚Рµ 6 500 СЂСѓР±Р»РµР№ РІ РіРѕРґ",
-            "вЂў РќРµ РЅСѓР¶РЅРѕ Р±РµСЃРїРѕРєРѕРёС‚СЊСЃСЏ Рѕ РµР¶РµРјРµСЃСЏС‡РЅС‹С… РїР»Р°С‚РµР¶Р°С…",
-            "вЂў Р’СЃРµ С„СѓРЅРєС†РёРё РѕСЃС‚Р°СЋС‚СЃСЏ РґРѕСЃС‚СѓРїРЅС‹РјРё",
+            "При смене на годовой план:",
+            "• Вы сэкономите 6 500 рублей в год",
+            "• Не нужно беспокоиться о ежемесячных платежах",
+            "• Все функции остаются доступными",
         ]
-        cta = "рџ’Ћ РџРµСЂРµР№С‚Рё РЅР° РіРѕРґРѕРІСѓСЋ РїРѕРґРїРёСЃРєСѓ"
+        cta = "💎 Перейти на годовую подписку"
     else:
         lines += [
-            "РџСЂРµРґР»Р°РіР°РµРјС‹Р№ РїР»Р°РЅ: РњРµСЃСЏС‡РЅР°СЏ РїРѕРґРїРёСЃРєР°",
+            "Предлагаемый план: Месячная подписка",
             "",
-            "рџ’° РЎС‚РѕРёРјРѕСЃС‚СЊ: 750 СЂСѓР±/РјРµСЃСЏС†",
+            "💰 Стоимость: 750 руб/месяц",
         ]
-        cta = "рџ’Ћ РџРµСЂРµР№С‚Рё РЅР° РјРµСЃСЏС‡РЅСѓСЋ РїРѕРґРїРёСЃРєСѓ"
+        cta = "💎 Перейти на месячную подписку"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=cta, callback_data=f"subscription:change_plan_confirm:{target}")],
-        [InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open:subscription")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
     ])
     text = "\n".join(lines)
     try:
@@ -202,20 +202,20 @@ async def cb_subscription_autorenew_disable(callback: types.CallbackQuery) -> No
     now_utc = datetime.now(timezone.utc).astimezone(tzinfo)
     days_left = max(0, (until.date() - now_utc.date()).days)
     lines = [
-        "вњ… РђРІС‚РѕРїСЂРѕРґР»РµРЅРёРµ РѕС‚РєР»СЋС‡РµРЅРѕ",
+        "✅ Автопродление отключено",
         "",
-        f"РџРѕРґРїРёСЃРєР° РѕСЃС‚Р°РµС‚СЃСЏ Р°РєС‚РёРІРЅРѕР№ РґРѕ {until.strftime('%d.%m.%Y')}",
-        f"РћСЃС‚Р°Р»РѕСЃСЊ РґРЅРµР№: {days_left}",
+        f"Подписка остается активной до {until.strftime('%d.%m.%Y')}",
+        f"Осталось дней: {days_left}",
         "",
-        "РђРІС‚РѕРјР°С‚РёС‡РµСЃРєРѕРµ РїСЂРѕРґР»РµРЅРёРµ Р±РѕР»СЊС€Рµ РЅРµ Р±СѓРґРµС‚ РїСЂРѕРёСЃС…РѕРґРёС‚СЊ.",
-        "Р’С‹ РјРѕР¶РµС‚Рµ РІРѕР·РѕР±РЅРѕРІРёС‚СЊ РїРѕРґРїРёСЃРєСѓ РІ Р»СЋР±РѕРµ РІСЂРµРјСЏ.",
+        "Автоматическое продление больше не будет происходить.",
+        "Вы можете возобновить подписку в любое время.",
         "",
-        "РЎРїР°СЃРёР±Рѕ Р·Р° РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ Calorissimo ai! рџЌ¬",
+        "Спасибо за использование Calorissimo ai! 🍬",
     ]
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="в†”пёЏ РЎРјРµРЅРёС‚СЊ РїР»Р°РЅ", callback_data="subscription:change_plan")],
-        [InlineKeyboardButton(text="вњ… Р’РєР»СЋС‡РёС‚СЊ Р°РІС‚РѕРїСЂРѕРґР»РµРЅРёРµ", callback_data="subscription:autorenew:enable")],
-        [InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open:subscription")],
+        [InlineKeyboardButton(text="↔️ Сменить план", callback_data="subscription:change_plan")],
+        [InlineKeyboardButton(text="✅ Включить автопродление", callback_data="subscription:autorenew:enable")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
     ])
     text = "\n".join(lines)
     try:
@@ -242,17 +242,17 @@ async def cb_subscription_autorenew_enable(callback: types.CallbackQuery) -> Non
     now_utc = datetime.now(timezone.utc).astimezone(tzinfo)
     days_left = max(0, (until.date() - now_utc.date()).days)
     lines = [
-        "вњ… РђРІС‚РѕРїСЂРѕРґР»РµРЅРёРµ РІРєР»СЋС‡РµРЅРѕ",
+        "✅ Автопродление включено",
         "",
-        f"РџРѕРґРїРёСЃРєР° Р±СѓРґРµС‚ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё РїСЂРѕРґР»РµРЅР° {until.strftime('%d.%m.%Y')}",
-        f"РћСЃС‚Р°Р»РѕСЃСЊ РґРЅРµР№: {days_left}",
+        f"Подписка будет автоматически продлена {until.strftime('%d.%m.%Y')}",
+        f"Осталось дней: {days_left}",
         "",
-        "РЎРїР°СЃРёР±Рѕ, С‡С‚Рѕ РѕСЃС‚Р°РµС‚РµСЃСЊ СЃ РЅР°РјРё! рџЋ‰",
+        "Спасибо, что остаетесь с нами! 🎉",
     ]
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="в†”пёЏ РЎРјРµРЅРёС‚СЊ РїР»Р°РЅ", callback_data="subscription:change_plan")],
-        [InlineKeyboardButton(text="вќЊ РћС‚РєР»СЋС‡РёС‚СЊ РїРѕРґРїРёСЃРєСѓ", callback_data="subscription:autorenew:disable")],
-        [InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open:subscription")],
+        [InlineKeyboardButton(text="↔️ Сменить план", callback_data="subscription:change_plan")],
+        [InlineKeyboardButton(text="❌ Отключить подписку", callback_data="subscription:autorenew:disable")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
     ])
     text = "\n".join(lines)
     try:
@@ -277,22 +277,22 @@ async def cb_subscription_change_plan_confirm(callback: types.CallbackQuery) -> 
     if not sub or not sub.expires_at_utc:
         await cb_settings_open_subscription(callback)
         return
-    plan_map = {"trial": "РџСЂРѕР±РЅС‹Р№ РґРѕСЃС‚СѓРї", "month": "РњРµСЃСЏС‡РЅР°СЏ РїРѕРґРїРёСЃРєР°", "year": "Р“РѕРґРѕРІР°СЏ РїРѕРґРїРёСЃРєР°"}
+    plan_map = {"trial": "Пробный доступ", "month": "Месячная подписка", "year": "Годовая подписка"}
     cur_plan = plan_map.get(sub.plan, sub.plan)
     new_plan = plan_map.get(target, target)
     until = sub.expires_at_utc.astimezone(tzinfo).strftime("%d.%m.%Y")
     lines = [
-        "вњ… РџРѕРґС‚РІРµСЂР¶РґРµРЅРёРµ СЃРјРµРЅС‹ РїР»Р°РЅР°",
+        "✅ Подтверждение смены плана",
         "",
-        f"РЎРµР№С‡Р°СЃ: {cur_plan}",
-        f"РќР°: {new_plan}",
+        f"Сейчас: {cur_plan}",
+        f"На: {new_plan}",
         "",
-        "рџ“… РљРѕРіРґР° РїСЂРѕРёР·РѕР№РґРµС‚ СЃРјРµРЅР°:",
-        f"Р’ РєРѕРЅС†Рµ С‚РµРєСѓС‰РµРіРѕ РїРµСЂРёРѕРґР° ({until})",
+        "📅 Когда произойдет смена:",
+        f"В конце текущего периода ({until})",
     ]
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="вњ… РџРѕРґС‚РІРµСЂРґРёС‚СЊ СЃРјРµРЅСѓ", callback_data=f"subscription:change_plan_apply:{target}")],
-        [InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="subscription:change_plan")],
+        [InlineKeyboardButton(text="✅ Подтвердить смену", callback_data=f"subscription:change_plan_apply:{target}")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="subscription:change_plan")],
     ])
     text = "\n".join(lines)
     try:
@@ -321,9 +321,9 @@ async def cb_subscription_change_plan_apply(callback: types.CallbackQuery) -> No
             update(SubscriptionModel).where(SubscriptionModel.id == sub.id).values(next_plan=target)
         )
         await session.commit()
-    plan_map = {"trial": "РџСЂРѕР±РЅС‹Р№ РґРѕСЃС‚СѓРї", "month": "РњРµСЃСЏС‡РЅР°СЏ РїРѕРґРїРёСЃРєР°", "year": "Р“РѕРґРѕРІР°СЏ РїРѕРґРїРёСЃРєР°"}
+    plan_map = {"trial": "Пробный доступ", "month": "Месячная подписка", "year": "Годовая подписка"}
     new_plan = plan_map.get(target, target)
-    until = "вЂ”"
+    until = "—"
     try:
         async with sessionmaker() as session:
             sub2 = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
@@ -333,23 +333,23 @@ async def cb_subscription_change_plan_apply(callback: types.CallbackQuery) -> No
     except Exception:
         pass
     lines = [
-        "рџЋ‰ РџР»Р°РЅ СѓСЃРїРµС€РЅРѕ РёР·РјРµРЅРµРЅ!",
+        "🎉 План успешно изменен!",
         "",
-        f"РќРѕРІС‹Р№ РїР»Р°РЅ: {new_plan}",
-        f"рџ“… Р”Р°С‚Р° СЃРїРёСЃР°РЅРёСЏ: {until}",
-        "вњ… РЎРјРµРЅР° РїР»Р°РЅР° Р·Р°РІРµСЂС€РµРЅР°!",
+        f"Новый план: {new_plan}",
+        f"📅 Дата списания: {until}",
+        "✅ Смена плана завершена!",
         "",
-        "РЎР»РµРґСѓСЋС‰РёР№ РїР»Р°С‚РµР¶ Р±СѓРґРµС‚ РїРѕ РЅРѕРІРѕРјСѓ С‚Р°СЂРёС„Сѓ.",
+        "Следующий платеж будет по новому тарифу.",
     ]
     # Actions after success
     async with sessionmaker() as session:
         sub = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
-    kb_rows = [[InlineKeyboardButton(text="в†”пёЏ РЎРјРµРЅРёС‚СЊ РїР»Р°РЅ", callback_data="subscription:change_plan")]]
+    kb_rows = [[InlineKeyboardButton(text="↔️ Сменить план", callback_data="subscription:change_plan")]]
     if sub and bool(getattr(sub, "auto_renew", True)):
-        kb_rows.append([InlineKeyboardButton(text="вќЊ РћС‚РєР»СЋС‡РёС‚СЊ РїРѕРґРїРёСЃРєСѓ", callback_data="subscription:autorenew:disable")])
+        kb_rows.append([InlineKeyboardButton(text="❌ Отключить подписку", callback_data="subscription:autorenew:disable")])
     else:
-        kb_rows.append([InlineKeyboardButton(text="вњ… Р’РєР»СЋС‡РёС‚СЊ Р°РІС‚РѕРїСЂРѕРґР»РµРЅРёРµ", callback_data="subscription:autorenew:enable")])
-    kb_rows.append([InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open:subscription")])
+        kb_rows.append([InlineKeyboardButton(text="✅ Включить автопродление", callback_data="subscription:autorenew:enable")])
+    kb_rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     text = "\n".join(lines)
     try:
@@ -409,11 +409,11 @@ async def cb_settings_open_daily_norm(callback: types.CallbackQuery, state: FSMC
 
     if not existing:
         text = (
-            "рџ“Љ РЎСѓС‚РѕС‡РЅР°СЏ РЅРѕСЂРјР°\n\n"
-            "РќРµ РЅР°С€С‘Р» Р±Р°Р·РѕРІС‹Рµ РґР°РЅРЅС‹Рµ. РџСЂРѕР№РґРё РєРѕСЂРѕС‚РєСѓСЋ РЅР°СЃС‚СЂРѕР№РєСѓ: /start"
+            "📊 Суточная норма\n\n"
+            "Не нашёл базовые данные. Пройди короткую настройку: /start"
         )
         kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open")]]
+            inline_keyboard=[[InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open")]]
         )
         try:
             await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
@@ -454,27 +454,27 @@ async def cb_settings_open_daily_norm(callback: types.CallbackQuery, state: FSMC
             cw = float(data_json.get("weight_kg")) if data_json.get("weight_kg") is not None else None
         except Exception:
             cw = None
-    remain_str = "РЅРµС‚ РґР°РЅРЅС‹С…"
-    goal_str = "РЅРµС‚ РґР°РЅРЅС‹С…"
+    remain_str = "нет данных"
+    goal_str = "нет данных"
     try:
         if goal_weight is not None:
-            goal_str = f"{float(goal_weight)} РєРі"
+            goal_str = f"{float(goal_weight)} кг"
         if cw is not None and goal_weight is not None:
             remain = abs(float(cw) - float(goal_weight))
-            remain_str = f"{round(remain, 1)} РєРі"
+            remain_str = f"{round(remain, 1)} кг"
     except Exception:
         pass
 
     text = (
-        "рџ“Љ РЎСѓС‚РѕС‡РЅР°СЏ РЅРѕСЂРјР°\n\n"
-        f"рџ”Ґ РљР°Р»РѕСЂРёРё: {cal_val} РєРєР°Р»\n"
-        f"рџҐ© Р‘РµР»РєРё: {p_val} Рі\n"
-        f"рџҐ‘ Р–РёСЂС‹: {f_val} Рі\n"
-        f"рџЌћ РЈРіР»РµРІРѕРґС‹: {c_val} Рі\n\n"
-        f"рџЋЇ Р¦РµР»СЊ: {goal_str} | Р”Рѕ С†РµР»Рё: {remain_str}"
+        "📊 Суточная норма\n\n"
+        f"🔥 Калории: {cal_val} ккал\n"
+        f"🥩 Белки: {p_val} г\n"
+        f"🥑 Жиры: {f_val} г\n"
+        f"🍞 Углеводы: {c_val} г\n\n"
+        f"🎯 Цель: {goal_str} | До цели: {remain_str}"
     )
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="вњЏпёЏ РР·РјРµРЅРёС‚СЊ РїР»Р°РЅ РїРёС‚Р°РЅРёСЏ", callback_data="daily_norm:edit_start"), InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open")]]
+        inline_keyboard=[[InlineKeyboardButton(text="✏️ Изменить план питания", callback_data="daily_norm:edit_start"), InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open")]]
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
@@ -500,9 +500,9 @@ async def cb_daily_norm_edit_start(callback: types.CallbackQuery, state: FSMCont
     if not callback.from_user:
         return
     await state.set_state(SettingsDailyNormStates.waiting_text)
-    text = "РќР°РїРёС€Рё, РІ СЃРІРѕР±РѕРґРЅРѕРј С„РѕСЂРјР°С‚Рµ, С‡С‚Рѕ РЅСѓР¶РЅРѕ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°С‚СЊ РІ С‚РІРѕС‘Рј РёРЅРґРёРІРёРґСѓР°Р»СЊРЅРѕРј РїР»Р°РЅРµ"
+    text = "Напиши, в свободном формате, что нужно скорректировать в твоём индивидуальном плане"
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open:daily_norm")]]
+        inline_keyboard=[[InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:daily_norm")]]
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb)
@@ -528,7 +528,7 @@ async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> 
     user_id = message.from_user.id
     text_raw = (message.text or "").strip()
     with contextlib.suppress(Exception):
-        await message.answer(_("вњЁ РР·СѓС‡Р°СЋ РІР°С€Рё РїРѕР¶РµР»Р°РЅРёСЏ Рё РѕР±РЅРѕРІР»СЏСЋ РїР»Р°РЅ..."))
+        await message.answer(_("✨ Изучаю ваши пожелания и обновляю план..."))
 
     try:
         async with sessionmaker() as session:
@@ -536,7 +536,7 @@ async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> 
                 select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id)
             )
             if not existing:
-                await message.answer(_("РќРµ РЅР°С€С‘Р» Р±Р°Р·РѕРІС‹Рµ РґР°РЅРЅС‹Рµ. РџСЂРѕР№РґРё РєРѕСЂРѕС‚РєСѓСЋ РЅР°СЃС‚СЂРѕР№РєСѓ: /start"))
+                await message.answer(_("Не нашёл базовые данные. Пройди короткую настройку: /start"))
                 await state.clear()
                 return
 
@@ -548,7 +548,7 @@ async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> 
                 payload = OnboardingData.model_validate(data_json)
             except Exception as e:
                 logger.warning("settings.daily_norm.payload_invalid | user_id={} | err={}", user_id, e)
-                await message.answer(_("Р”Р°РЅРЅС‹Рµ РїРѕРІСЂРµР¶РґРµРЅС‹. РџРѕРїСЂРѕР±СѓР№ Р·Р°РЅРѕРІРѕ: /start"))
+                await message.answer(_("Данные повреждены. Попробуй заново: /start"))
                 await state.clear()
                 return
 
@@ -613,13 +613,13 @@ async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> 
             )
             if not parsed:
                 if str(getattr(settings, "ADJUST_ENGINE_MODE", "")).lower() == "llm_only":
-                    await message.answer(_("РќРµ РґРѕ РєРѕРЅС†Р° РїРѕРЅСЏР» Р·Р°РїСЂРѕСЃ. РЎС„РѕСЂРјСѓР»РёСЂСѓР№ РѕРґРЅРѕР№ С„СЂР°Р·РѕР№, РЅР°РїСЂРёРјРµСЂ: \nвЂў 'СѓРјРµРЅСЊС€Рё СѓРіР»РµРІРѕРґС‹ РЅР° 10%' \nвЂў 'С…РѕС‡Сѓ Р±С‹СЃС‚СЂРµРµ РїРѕС…СѓРґРµС‚СЊ' \nвЂў 'Рє 01.03.2026' \nвЂў 'РјР°Р»Рѕ РґРІРёРіР°СЋСЃСЊ вЂ” РїРѕСЃС‚Р°РІСЊ РЅРёР·РєСѓСЋ Р°РєС‚РёРІРЅРѕСЃС‚СЊ'"))
+                    await message.answer(_("Не до конца понял запрос. Сформулируй одной фразой, например: \n• 'уменьши углеводы на 10%' \n• 'хочу быстрее похудеть' \n• 'к 01.03.2026' \n• 'мало двигаюсь — поставь низкую активность'"))
                     return
                 h = parse_adjustment_heuristic(text_raw)
                 if h:
                     parsed = h
                 else:
-                    await message.answer(_("РќРµ РґРѕ РєРѕРЅС†Р° РїРѕРЅСЏР» Р·Р°РїСЂРѕСЃ. РЎС„РѕСЂРјСѓР»РёСЂСѓР№ РѕРґРЅРѕР№ С„СЂР°Р·РѕР№, РЅР°РїСЂРёРјРµСЂ: \nвЂў 'СѓР±РµСЂРёС‚Рµ СѓРіР»РµРІРѕРґС‹' \nвЂў 'РґРѕР±Р°РІСЊ 200 РєРєР°Р»' \nвЂў 'РјР°Р»Рѕ РґРІРёРіР°СЋСЃСЊ вЂ” РїРѕСЃС‚Р°РІСЊ РЅРёР·РєСѓСЋ Р°РєС‚РёРІРЅРѕСЃС‚СЊ'"))
+                    await message.answer(_("Не до конца понял запрос. Сформулируй одной фразой, например: \n• 'уберите углеводы' \n• 'добавь 200 ккал' \n• 'мало двигаюсь — поставь низкую активность'"))
                     return
 
             new_plan, explanation, summary = apply_adjustment(base_plan, payload, parsed)
@@ -636,7 +636,7 @@ async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> 
 
     except Exception as e:
         logger.exception("settings.daily_norm.apply_error | user_id={} | err={}", user_id, e)
-        await message.answer(_("РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕС…СЂР°РЅРёС‚СЊ РёР·РјРµРЅРµРЅРёСЏ. РџРѕРїСЂРѕР±СѓР№ РїРѕР·Р¶Рµ."))
+        await message.answer(_("Не удалось сохранить изменения. Попробуй позже."))
         await state.clear()
         return
 
@@ -645,33 +645,33 @@ async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> 
         note = getattr(parsed, "rationale", None)
         intents = list(getattr(parsed, "intents", []) or [])
         if isinstance(note, str) and note.strip():
-            personal_line = "РЈС‡С‘Р» Р·Р°РїСЂРѕСЃ: " + note.strip()
+            personal_line = "Учёл запрос: " + note.strip()
         else:
             intent_map = {
-                "low_fodmap_candidate": "СѓРјРµРЅСЊС€РёС‚СЊ FODMAP-РїСЂРѕРґСѓРєС‚С‹",
-                "lactose_free": "РёР·Р±РµРіР°С‚СЊ Р»Р°РєС‚РѕР·С‹",
-                "gluten_free": "Р±РµР· РіР»СЋС‚РµРЅР°",
-                "sugar_free": "РѕРіСЂР°РЅРёС‡РёС‚СЊ СЃР°С…Р°СЂ",
-                "keto": "РєРµС‚Рѕ-СЃС…РµРјСѓ",
-                "low_carb": "СЃРЅРёР·РёС‚СЊ СѓРіР»РµРІРѕРґС‹",
-                "high_protein": "Р°РєС†РµРЅС‚ РЅР° Р±РµР»РѕРє",
-                "raise_calories": "СѓРІРµР»РёС‡РёС‚СЊ РєР°Р»РѕСЂРёР№РЅРѕСЃС‚СЊ",
-                "lower_calories": "СЃРЅРёР·РёС‚СЊ РєР°Р»РѕСЂРёР№РЅРѕСЃС‚СЊ",
-                "activity_down": "РїРѕРЅРёР·РёС‚СЊ Р°РєС‚РёРІРЅРѕСЃС‚СЊ",
-                "activity_up": "РїРѕРІС‹СЃРёС‚СЊ Р°РєС‚РёРІРЅРѕСЃС‚СЊ",
-                "reduce_protein": "СЃРЅРёР·РёС‚СЊ Р±РµР»РѕРє",
-                "reduce_fat": "СЃРЅРёР·РёС‚СЊ Р¶РёСЂС‹",
-                "increase_fat": "РїРѕРІС‹СЃРёС‚СЊ Р¶РёСЂС‹",
-                "custom_macros": "РєР°СЃС‚РѕРјРЅС‹Рµ РјР°РєСЂРѕСЃС‹",
+                "low_fodmap_candidate": "уменьшить FODMAP-продукты",
+                "lactose_free": "избегать лактозы",
+                "gluten_free": "без глютена",
+                "sugar_free": "ограничить сахар",
+                "keto": "кето-схему",
+                "low_carb": "снизить углеводы",
+                "high_protein": "акцент на белок",
+                "raise_calories": "увеличить калорийность",
+                "lower_calories": "снизить калорийность",
+                "activity_down": "понизить активность",
+                "activity_up": "повысить активность",
+                "reduce_protein": "снизить белок",
+                "reduce_fat": "снизить жиры",
+                "increase_fat": "повысить жиры",
+                "custom_macros": "кастомные макросы",
             }
             phrases = [intent_map[i] for i in intents if i in intent_map]
             if phrases:
-                personal_line = "РЈС‡С‘Р» Р·Р°РїСЂРѕСЃ: " + ", ".join(phrases)
+                personal_line = "Учёл запрос: " + ", ".join(phrases)
     except Exception:
         personal_line = None
 
     lines: list[str] = []
-    lines.append("<b>РўРІРѕР№ РїР»Р°РЅ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°РЅ!</b>")
+    lines.append("<b>Твой план скорректирован!</b>")
     lines.append("")
     try:
         if payload.goal != Goal.maintain:
@@ -679,33 +679,33 @@ async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> 
                 delta = abs(float(payload.weight_kg) - float(payload.goal_weight_kg))
                 formatted_date = new_plan.eta_date.strftime("%d.%m.%Y")
                 if payload.goal == Goal.lose:
-                    lines.append(f"РўС‹ СЃР±СЂРѕСЃРёС€СЊ {round(delta, 1)} РєРі Рє {formatted_date}")
+                    lines.append(f"Ты сбросишь {round(delta, 1)} кг к {formatted_date}")
                 elif payload.goal == Goal.gain:
-                    lines.append(f"РўС‹ РЅР°Р±РµСЂРµС€СЊ {round(delta, 1)} РєРі Рє {formatted_date}")
-            lines.append(f"РЎРєРѕСЂРѕСЃС‚СЊ: {getattr(new_plan, 'weekly_rate_kg', 0)} РєРі РІ РЅРµРґРµР»СЋ")
+                    lines.append(f"Ты наберешь {round(delta, 1)} кг к {formatted_date}")
+            lines.append(f"Скорость: {getattr(new_plan, 'weekly_rate_kg', 0)} кг в неделю")
     except Exception:
         pass
     lines.append("")
-    lines.append("<b>РћР±РЅРѕРІР»РµРЅРЅР°СЏ РґРЅРµРІРЅР°СЏ РЅРѕСЂРјР°:</b>")
-    lines.append(f"рџ”Ґ РљР°Р»РѕСЂРёРё: {new_plan.calories} РєРєР°Р»")
-    lines.append(f"рџҐ© Р‘РµР»РєРё: {new_plan.protein_g} Рі")
-    lines.append(f"рџҐ‘ Р–РёСЂС‹: {new_plan.fat_g} Рі")
-    lines.append(f"рџЌћ РЈРіР»РµРІРѕРґС‹: {new_plan.carbs_g} Рі")
+    lines.append("<b>Обновленная дневная норма:</b>")
+    lines.append(f"🔥 Калории: {new_plan.calories} ккал")
+    lines.append(f"🥩 Белки: {new_plan.protein_g} г")
+    lines.append(f"🥑 Жиры: {new_plan.fat_g} г")
+    lines.append(f"🍞 Углеводы: {new_plan.carbs_g} г")
     lines.append("")
     if personal_line:
         def _norm_txt(s: str) -> str:
             return re.sub(r"\s+", " ", (s or "").lower()).strip()
-        pl_core = re.sub(r"^СѓС‡[РµС‘]Р»\s+Р·Р°РїСЂРѕСЃ:\s*", "", personal_line, flags=re.IGNORECASE)
+        pl_core = re.sub(r"^уч[её]л\s+запрос:\s*", "", personal_line, flags=re.IGNORECASE)
         if _norm_txt(pl_core) and _norm_txt(pl_core) not in _norm_txt(explanation):
             lines.append(personal_line)
     lines.append(explanation)
     lines.append("")
-    lines.append("РћСЃС‚Р°РІРёРј С‚Р°Рє РёР»Рё РЅСѓР¶РЅР° РµС‰Рµ РєРѕСЂСЂРµРєС‚РёСЂРѕРІРєР°?")
+    lines.append("Оставим так или нужна еще корректировка?")
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="РћС‚Р»РёС‡РЅРѕ", callback_data="daily_norm:final:ok")],
-            [InlineKeyboardButton(text="РҐРѕС‡Сѓ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°С‚СЊ", callback_data="daily_norm:final:adjust")],
+            [InlineKeyboardButton(text="Отлично", callback_data="daily_norm:final:ok")],
+            [InlineKeyboardButton(text="Хочу скорректировать", callback_data="daily_norm:final:adjust")],
         ]
     )
     sent_msg = await message.answer("\n".join(lines), reply_markup=kb, disable_web_page_preview=True)
@@ -722,7 +722,7 @@ async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> 
                     if not rewritten:
                         return
                     new_lines: list[str] = []
-                    new_lines.append("<b>РўРІРѕР№ РїР»Р°РЅ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°РЅ!</b>")
+                    new_lines.append("<b>Твой план скорректирован!</b>")
                     new_lines.append("")
                     try:
                         if payload.goal != Goal.maintain:
@@ -730,28 +730,28 @@ async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> 
                                 delta2 = abs(float(payload.weight_kg) - float(payload.goal_weight_kg))
                                 formatted_date2 = new_plan.eta_date.strftime("%d.%m.%Y")
                                 if payload.goal == Goal.lose:
-                                    new_lines.append(f"РўС‹ СЃР±СЂРѕСЃРёС€СЊ {round(delta2, 1)} РєРі Рє {formatted_date2}")
+                                    new_lines.append(f"Ты сбросишь {round(delta2, 1)} кг к {formatted_date2}")
                                 elif payload.goal == Goal.gain:
-                                    new_lines.append(f"РўС‹ РЅР°Р±РµСЂРµС€СЊ {round(delta2, 1)} РєРі Рє {formatted_date2}")
-                            new_lines.append(f"РЎРєРѕСЂРѕСЃС‚СЊ: {getattr(new_plan, 'weekly_rate_kg', 0)} РєРі РІ РЅРµРґРµР»СЋ")
+                                    new_lines.append(f"Ты наберешь {round(delta2, 1)} кг к {formatted_date2}")
+                            new_lines.append(f"Скорость: {getattr(new_plan, 'weekly_rate_kg', 0)} кг в неделю")
                     except Exception:
                         pass
                     new_lines.append("")
-                    new_lines.append("<b>РћР±РЅРѕРІР»РµРЅРЅР°СЏ РґРЅРµРІРЅР°СЏ РЅРѕСЂРјР°:</b>")
-                    new_lines.append(f"рџ”Ґ РљР°Р»РѕСЂРёРё: {new_plan.calories} РєРєР°Р»")
-                    new_lines.append(f"рџҐ© Р‘РµР»РєРё: {new_plan.protein_g} Рі")
-                    new_lines.append(f"рџҐ‘ Р–РёСЂС‹: {new_plan.fat_g} Рі")
-                    new_lines.append(f"рџЌћ РЈРіР»РµРІРѕРґС‹: {new_plan.carbs_g} Рі")
+                    new_lines.append("<b>Обновленная дневная норма:</b>")
+                    new_lines.append(f"🔥 Калории: {new_plan.calories} ккал")
+                    new_lines.append(f"🥩 Белки: {new_plan.protein_g} г")
+                    new_lines.append(f"🥑 Жиры: {new_plan.fat_g} г")
+                    new_lines.append(f"🍞 Углеводы: {new_plan.carbs_g} г")
                     new_lines.append("")
                     if personal_line:
                         def _norm_txt2(s: str) -> str:
                             return re.sub(r"\s+", " ", (s or "").lower()).strip()
-                        pl_core2 = re.sub(r"^СѓС‡[РµС‘]Р»\s+Р·Р°РїСЂРѕСЃ:\s*", "", personal_line, flags=re.IGNORECASE)
+                        pl_core2 = re.sub(r"^уч[её]л\s+запрос:\s*", "", personal_line, flags=re.IGNORECASE)
                         if _norm_txt2(pl_core2) and _norm_txt2(pl_core2) not in _norm_txt2(rewritten):
                             new_lines.append(personal_line)
                     new_lines.append(rewritten)
                     new_lines.append("")
-                    new_lines.append("РћСЃС‚Р°РІРёРј С‚Р°Рє РёР»Рё РЅСѓР¶РЅР° РµС‰Рµ РєРѕСЂСЂРµРєС‚РёСЂРѕРІРєР°?")
+                    new_lines.append("Оставим так или нужна еще корректировка?")
                     with contextlib.suppress(Exception):
                         await sent_msg.edit_text("\n".join(new_lines), reply_markup=kb)
                 except Exception:
@@ -795,9 +795,9 @@ async def cb_daily_norm_final_ok(callback: types.CallbackQuery) -> None:
 @router.callback_query(F.data == "daily_norm:final:adjust")
 async def cb_daily_norm_final_adjust(callback: types.CallbackQuery, state: FSMContext) -> None:
     await state.set_state(SettingsDailyNormStates.waiting_text)
-    text = "РќР°РїРёС€Рё, РІ СЃРІРѕР±РѕРґРЅРѕРј С„РѕСЂРјР°С‚Рµ, С‡С‚Рѕ РЅСѓР¶РЅРѕ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°С‚СЊ РІ С‚РІРѕС‘Рј РёРЅРґРёРІРёРґСѓР°Р»СЊРЅРѕРј РїР»Р°РЅРµ"
+    text = "Напиши, в свободном формате, что нужно скорректировать в твоём индивидуальном плане"
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open:daily_norm")]]
+        inline_keyboard=[[InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:daily_norm")]]
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb)
@@ -1195,7 +1195,7 @@ async def handle_subscription_email(message: types.Message, state: FSMContext) -
 def _templates_root_with_back_kb(counts: dict[str, int] | None) -> InlineKeyboardMarkup:
     base = categories_browse_kb(counts)
     rows = [list(row) for row in base.inline_keyboard]
-    rows.append([InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="templates:back:settings")])
+    rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="templates:back:settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1206,7 +1206,7 @@ async def cb_settings_open_templates(callback: types.CallbackQuery) -> None:
     user_id = callback.from_user.id
     async with sessionmaker() as session:
         counts = await list_categories_with_counts(session, user_id)
-    text = _("Р’С‹Р±РµСЂРё РєР°С‚РµРіРѕСЂРёСЋ РїСЂРёС‘РјР° РїРёС‰Рё:")
+    text = _("Выбери категорию приёма пищи:")
     kb = _templates_root_with_back_kb(counts)
     try:
         await callback.message.edit_text(text, reply_markup=kb)
