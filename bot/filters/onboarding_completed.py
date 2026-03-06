@@ -1,12 +1,14 @@
-from aiogram.filters import BaseFilter
-from aiogram.types import Message, CallbackQuery
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+import contextlib
 
+from aiogram.filters import BaseFilter
+from aiogram.types import CallbackQuery, Message
+from aiogram.utils.i18n import gettext as _
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from bot.analytics.types import BaseEvent, EventProperties
 from bot.database.models.onboarding_answer import OnboardingAnswerModel
 from bot.services.analytics import analytics
-from bot.analytics.types import BaseEvent, EventProperties
-from aiogram.utils.i18n import gettext as _
 
 
 class OnboardingCompletedFilter(BaseFilter):
@@ -31,10 +33,8 @@ class OnboardingCompletedFilter(BaseFilter):
         text = _("Завершите онбординг за пару минут, чтобы получить полный доступ к данным")
         try:
             if hasattr(event, "answer"):
-                try:
+                with contextlib.suppress(Exception):
                     await event.answer()
-                except Exception:
-                    pass
             msg_obj = getattr(event, "message", None)
             if msg_obj and hasattr(msg_obj, "answer"):
                 try:
@@ -73,7 +73,7 @@ class OnboardingCompletedFilter(BaseFilter):
 
     @staticmethod
     def _cta_kb():
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
         return InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
         )

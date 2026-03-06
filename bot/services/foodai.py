@@ -1,30 +1,34 @@
 from __future__ import annotations
-
-from typing import Any
+import asyncio
 import json
 import re
-import asyncio
 import time
+from typing import Any
+
 from aiohttp import ClientSession
+
 try:
     from bot.services.foodai_edit_llm import interpret_edit
 except Exception:  # pragma: no cover
     interpret_edit = None  # type: ignore
-from bot.core.config import settings
+import contextlib
+
 from loguru import logger
+
+from bot.core.config import settings
 from bot.metrics import (
     foodai_analysis_text_rewrite,
-    foodai_precheck_is_food,
-    foodai_precheck_not_food,
-    foodai_precheck_error,
-    foodai_provider_error,
+    foodai_escalation_attempt_dur_ms,
+    foodai_escalation_attempts,
+    foodai_escalation_failed,
+    foodai_escalation_success,
+    foodai_escalation_total_dur_ms,
     foodai_file_url_missing,
     foodai_lexicon_is_food,
-    foodai_escalation_attempts,
-    foodai_escalation_success,
-    foodai_escalation_failed,
-    foodai_escalation_attempt_dur_ms,
-    foodai_escalation_total_dur_ms,
+    foodai_precheck_error,
+    foodai_precheck_is_food,
+    foodai_precheck_not_food,
+    foodai_provider_error,
 )
 
 
@@ -50,20 +54,18 @@ async def _tg_file_url(file_id: str) -> str | None:
                 async with sess.get(f"{api_base}/getFile", params={"file_id": file_id}, timeout=settings.FOODAI_TIMEOUT) as r:
                     data = await r.json()
             if not data.get("ok"):
-                raise RuntimeError("tg_api_not_ok")
+                msg = "tg_api_not_ok"
+                raise RuntimeError(msg)
             file_path = (data.get("result") or {}).get("file_path")
             if not file_path:
-                raise RuntimeError("file_path_missing")
-            try:
+                msg = "file_path_missing"
+                raise RuntimeError(msg)
+            with contextlib.suppress(Exception):
                 logger.debug("FoodAI: TG file_path resolved (len={}): {}", len(file_path), file_path)
-            except Exception:
-                pass
             return f"https://api.telegram.org/file/bot{token}/{file_path}"
         except Exception:
-            try:
+            with contextlib.suppress(Exception):
                 await asyncio.sleep(0.2)
-            except Exception:
-                pass
             continue
     return None
 
@@ -80,7 +82,8 @@ async def _openai_chat(payload: dict[str, Any]) -> dict[str, Any] | None:
             async with sess.post(url, headers=headers, data=json.dumps(payload), timeout=settings.FOODAI_TIMEOUT) as r:
                 if r.status >= 400:
                     text = await r.text()
-                    raise RuntimeError(f"OpenAI HTTP {r.status}: {text}")
+                    msg = f"OpenAI HTTP {r.status}: {text}"
+                    raise RuntimeError(msg)
                 return await r.json()
     except Exception:
         return None
@@ -105,20 +108,16 @@ async def _openai_request(kind: str, payload: dict[str, Any]) -> str | None:
             async with sess.post(url, headers=headers, data=json.dumps(payload), timeout=settings.FOODAI_TIMEOUT) as r:
                 if r.status >= 400:
                     body = await r.text()
-                    try:
+                    with contextlib.suppress(Exception):
                         logger.error("OpenAI error | kind={} | endpoint={} | model={} | status={} | body={}",
                                      kind, endpoint, model, r.status, (body or "")[:512])
-                    except Exception:
-                        pass
                     return None
                 data = await r.json()
     except Exception as e:
         dt = int((time.time() - t0) * 1000)
-        try:
+        with contextlib.suppress(Exception):
             logger.exception("OpenAI exception | kind={} | endpoint={} | model={} | dur_ms={} | err={}",
                              kind, endpoint, model, dt, repr(e))
-        except Exception:
-            pass
         return None
 
     # Extract assistant text
@@ -362,7 +361,7 @@ def _sanitize_first_sentence(items: list | None, text: str) -> str:
     return text
 
 
-async def _compose_analysis_text(items: list | None, appearance: dict | None, confidence: float | int | None) -> str | None:
+async def _compose_analysis_text(items: list | None, appearance: dict | None, confidence: float | None) -> str | None:
     """Generate a concise analysis paragraph 350–420 chars based on structured inputs.
 
     Returns None on failure.
@@ -382,7 +381,7 @@ async def _compose_analysis_text(items: list | None, appearance: dict | None, co
         "Ты — ИИ-нутрициолог. Сформулируй один абзац (350–420 символов) на русском, без markdown. "
         "Начни первое предложение со слов: 'На фото …' и перечисли 2–3 основных компонента дословно из списка. "
         "Опиши вид: " + pkg_hint + ". Объясни, как оценивалась порция (" + method_hint + "). "
-        "Обязательно включи точную фразу: \"" + MUST_PHRASE + "\". "
+        'Обязательно включи точную фразу: "' + MUST_PHRASE + '". '
         "Запрещено использовать слова с корнями 'выгляд' и 'похож' в первом предложении. Без брендов, если их нет. "
         "Не упоминай уровень уверенности."
     )
@@ -443,608 +442,585 @@ async def analyze_photo(file_id: str) -> dict[str, Any]:
         # Try real provider first
         file_url = await _tg_file_url(file_id)
         if not file_url:
-            try:
+            with contextlib.suppress(Exception):
                 foodai_file_url_missing.labels(source="photo").inc()
+            return {"error": "file_url_unavailable"}
+        # Pre-check with a single retry; failures -> provider_error (not not_food)
+        is_food = await _foodness_photo(file_url)
+        if is_food is None:
+            with contextlib.suppress(Exception):
+                await asyncio.sleep(0.2)
+            is_food = await _foodness_photo(file_url)
+        if is_food is False:
+            return {
+                "title": None,
+                "calories": 0,
+                "protein_g": 0.0,
+                "fat_g": 0.0,
+                "carbs_g": 0.0,
+                "weight_g": 0.0,
+                "confidence": 0.0,
+                "items": [],
+                "references": {"sources": [
+                    'ФГБУН "ФИЦ питания и биотехнологии"',
+                    "USDA FoodData Central",
+                ]},
+                "analysis_text": None,
+                "appearance": {},
+                "not_food": True,
+            }
+        if is_food is None:
+            # Precheck failed (HTTP/JSON/Other). By default, do NOT abort; proceed with analysis.
+            with contextlib.suppress(Exception):
+                foodai_precheck_error.labels(source="photo", reason="precheck_failed").inc()
+            try:
+                strict = bool(getattr(settings, "FOODAI_PRECHECK_STRICT", False))
+            except Exception:
+                strict = False
+            if strict:
+                return {"error": "provider_unavailable"}
+        # Optional Visual Facts pre-step (pure LMM grounding)
+        facts_text: str | None = None
+        try:
+            facts_enabled = bool(getattr(settings, "FOODAI_FACTS_ENABLED", False))
+        except Exception:
+            facts_enabled = False
+        async def _call_facts(model_id: str, detail: str) -> str | None:
+            facts_instructions = (
+                "Extract observable visual facts ONLY (no grams/kcal). Return a single compact JSON object. "
+                "Fill only what is clearly visible; if unsure, omit the key; if nothing is clear, return {}. "
+                "No slashes or alternatives. Suggested keys (all optional): \n"
+                "container: {type:string, size_hint:string, diameter_cm:int|null, width_cm:int|null, length_cm:int|null, fill_fraction:number|null}, \n"
+                "scale_refs: {spoon:bool, fork:bool, mug:bool, chopsticks:bool}, \n"
+                "base_present:string (e.g., rice|noodles|bread|potato|none|unknown), \n"
+                "unit_items: [{kind:string, count:int}], \n"
+                "sauce_coverage:number|null (0..1), toppings_hint:string, packaging:string, confidence_facts:number|null (0..1)."
+            )
+            payload = {
+                "model": model_id,
+                "instructions": facts_instructions,
+                "reasoning": {"effort": settings.FOODAI_REASONING_EFFORT},
+                "text": {"verbosity": settings.FOODAI_TEXT_VERBOSITY},
+                "max_output_tokens": int(getattr(settings, "FOODAI_FACTS_MAX_TOKENS", 400) or 400),
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Extract visual facts for this image only and return a single JSON object."},
+                            {"type": "input_image", "image_url": file_url, "detail": detail},
+                        ],
+                    }
+                ],
+            }
+            return await _openai_request("responses", payload)
+
+        if facts_enabled:
+            try:
+                facts_text = await _call_facts(getattr(settings, "FOODAI_VISION_MODEL", None) or settings.FOODAI_DEFAULT_MODEL, _norm_detail(getattr(settings, "FOODAI_IMAGE_DETAIL", "high")))
+                if facts_text:
+                    try:
+                        obj = json.loads(_strip_code_fence(facts_text) or "{}")
+                        keys = list((obj or {}).keys())
+                        logger.info("foodai.facts | present=True | len={} | keys={}", len(facts_text or ""), keys)
+                    except Exception:
+                        logger.info("foodai.facts | present=True | len={} | keys=?", len(facts_text or ""))
             except Exception:
                 pass
-            return {"error": "file_url_unavailable"}
-        else:
-            # Pre-check with a single retry; failures -> provider_error (not not_food)
-            is_food = await _foodness_photo(file_url)
-            if is_food is None:
-                try:
-                    await asyncio.sleep(0.2)
-                except Exception:
-                    pass
-                is_food = await _foodness_photo(file_url)
-            if is_food is False:
-                return {
-                    "title": None,
-                    "calories": 0,
-                    "protein_g": 0.0,
-                    "fat_g": 0.0,
-                    "carbs_g": 0.0,
-                    "weight_g": 0.0,
-                    "confidence": 0.0,
-                    "items": [],
-                    "references": {"sources": [
-                        "ФГБУН \"ФИЦ питания и биотехнологии\"",
-                        "USDA FoodData Central",
-                    ]},
-                    "analysis_text": None,
-                    "appearance": {},
-                    "not_food": True,
-                }
-            if is_food is None:
-                # Precheck failed (HTTP/JSON/Other). By default, do NOT abort; proceed with analysis.
-                try:
-                    foodai_precheck_error.labels(source="photo", reason="precheck_failed").inc()
-                except Exception:
-                    pass
-                try:
-                    strict = bool(getattr(settings, "FOODAI_PRECHECK_STRICT", False))
-                except Exception:
-                    strict = False
-                if strict:
-                    return {"error": "provider_unavailable"}
-            # Optional Visual Facts pre-step (pure LMM grounding)
-            facts_text: str | None = None
+
+        system = (
+            "You are a nutrition analyst. Given an image, estimate total calories, protein_g, fat_g, carbs_g, "
+            "and weight_g for the pictured dish. Return ONLY a compact JSON with keys: \n"
+            "title(string), calories(int), protein_g(float), fat_g(float), carbs_g(float), weight_g(float), confidence(float 0..1),\n"
+            "items(list of {name, calories, protein_g, fat_g, carbs_g, weight_g, is_liquid:boolean}), references({sources: [string]}), analysis_text(string), appearance({is_packaged: boolean, plate_visible: boolean, plate_diameter_cm: int|null}), not_food(boolean).\n"
+            "Important: Answer in Russian language. Field 'title' must be in Russian. Ingredient names (items[].name) must be in Russian. "
+            'Always set references.sources to exactly ["ФГБУН \\"ФИЦ питания и биотехнологии\\"", "USDA FoodData Central"]. '
+            "If the image clearly does not contain any food or drinks, set not_food=true and keep items minimal. "
+            "For liquids, set items[].is_liquid=true (e.g., вода, сок, кофе, чай, молоко, кефир, йогурт питьевой, бульон, суп-пюре, лимонад). "
+            "HARD RULE: Container/tableware mass is ZERO — never add any grams for plate, bowl, cup, box, spoon, fork, or packaging; count ONLY edible items. Use container ONLY to infer usable area/volume and fill level. If a plate has a visible rim, use inner/usable diameter (exclude rim). Do not create items like 'тарелка/миска/чашка/контейнер'. If such an item appears, remove it and re-balance before returning JSON. "
+            "First, mentally classify dish archetype (do NOT output it): salad_no_base | bowl_with_base | burger_sandwich | pizza_slice | soup | sushi_set | dessert | beverage | mixed_plate. "
+            "Estimate TOTAL edible weight first. If Visual Facts are provided as 'Visual Facts: {...}', use them as ground truth for unit counts, container fill_fraction and presence of base. If base_present is none/unknown, treat as salad_no_base (no dense carb base) and set weight_g within 300±40 g (i.e., 260–340 g). Do NOT exceed this band unless strong facts show otherwise; when uncertain, use the lower end. For other archetypes use conservative ranges and override only if facts clearly indicate otherwise (bowl_with_base ~300–450 g; burger_sandwich ~180–320 g; pizza_slice ~90–180 g; soup (liquid) ~250–400 g; sushi_set(10–12 pcs) ~200–320 g; dessert(piece) ~70–160 g; beverage(cup) ~200–350 g). "
+            "Then distribute weights across items so that baskets are combined where appropriate: Fresh vegetables as ONE item with specifics in parentheses (e.g., 'свежие овощи (помидоры, огурцы, перец)'); pickled vegetables as ONE item; sauces/dressings as ONE item unless clearly distinct. Merge small herbs/greens into fresh vegetables unless they are a substantial separate component (>10 г). Protein units (e.g., фалафель/котлеты/роллы) may use counts from Facts. Bread/pita/rice/noodles/poached grains are separate base items. "
+            "Default conservative masses when unsure (do not exceed without strong evidence): falafel 30–35 г per piece (keep the counted number of pieces), pita/bread 30–45 г (for half/small pieces), hummus 40–60 г, fresh vegetables (single basket) 80–120 г, pickled vegetables (single basket) 20–40 г, sauce/dressing (single basket) 10–20 г. Prefer the lower bound when in doubt. "
+            "Atomic naming: strictly forbid slashes/alternatives ('/','или'). Use ONE concrete name for each item; for combined baskets, list specifics in parentheses. Outputs that contain '/' or 'или' in names are invalid; correct them before returning JSON. "
+            "Balance requirements: ensure sum(items.weight_g)=weight_g within ±2% and sum(items.calories)=calories within ±2%. If mismatch occurs, reduce first sauces, then pickles, then fresh vegetables, then bread/pita, then hummus. Do not change the counted number of unit items. Re-check before returning JSON. "
+            "analysis_text: a single paragraph of 350–420 characters in Russian that (1) states whether the dish appears homemade or packaged (do not invent brands unless clearly visible), "
+            "(2) names 2–3 visually identified main components, (3) explains how portion size was estimated (container size/fill and counts). "
+            "Include the exact sentence: \"Использованы справочные данные ФИЦ питания и USDA.\" Add the clause: 'Вес посуды не учитывался.' Return JSON only, without explanations."
+        )
+
+        async def _build_and_call(detail: str, model_id: str) -> dict[str, Any] | None:
+            is_gpt5 = str(model_id).startswith("gpt-5")
+            use_responses = False
             try:
-                facts_enabled = bool(getattr(settings, "FOODAI_FACTS_ENABLED", False))
+                use_responses = bool(getattr(settings, "FOODAI_USE_RESPONSES_FOR_5", False)) and is_gpt5
             except Exception:
-                facts_enabled = False
-            async def _call_facts(model_id: str, detail: str) -> str | None:
-                facts_instructions = (
-                    "Extract observable visual facts ONLY (no grams/kcal). Return a single compact JSON object. "
-                    "Fill only what is clearly visible; if unsure, omit the key; if nothing is clear, return {}. "
-                    "No slashes or alternatives. Suggested keys (all optional): \n"
-                    "container: {type:string, size_hint:string, diameter_cm:int|null, width_cm:int|null, length_cm:int|null, fill_fraction:number|null}, \n"
-                    "scale_refs: {spoon:bool, fork:bool, mug:bool, chopsticks:bool}, \n"
-                    "base_present:string (e.g., rice|noodles|bread|potato|none|unknown), \n"
-                    "unit_items: [{kind:string, count:int}], \n"
-                    "sauce_coverage:number|null (0..1), toppings_hint:string, packaging:string, confidence_facts:number|null (0..1)."
-                )
-                payload = {
+                use_responses = is_gpt5 and False
+
+            # Helper: Chat payload call
+            async def _call_chat() -> str | None:
+                payload_chat = {
                     "model": model_id,
-                    "instructions": facts_instructions,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": ("Visual Facts: " + (facts_text or "{}")) if facts_text else ""},
+                                {"type": "text", "text": "Estimate nutrition for this dish and return json only."},
+                                {"type": "image_url", "image_url": {"url": file_url, "detail": detail}},
+                            ],
+                        },
+                    ],
+                }
+                try:
+                    if not str(model_id).startswith("gpt-5"):
+                        payload_chat["temperature"] = 0
+                except Exception:
+                    pass
+                return await _openai_request("chat", payload_chat)
+
+            # Helper: Responses payload call
+            async def _call_responses() -> str | None:
+                payload_resp = {
+                    "model": model_id,
+                    "instructions": system,
                     "reasoning": {"effort": settings.FOODAI_REASONING_EFFORT},
-                    "text": {"verbosity": settings.FOODAI_TEXT_VERBOSITY},
-                    "max_output_tokens": int(getattr(settings, "FOODAI_FACTS_MAX_TOKENS", 400) or 400),
+                    "text": {
+                        "verbosity": settings.FOODAI_TEXT_VERBOSITY,
+                        "format": {
+                            "type": "json_schema",
+                            "name": "foodai_result",
+                            "strict": True,
+                            "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {"type": ["string", "null"]},
+                                        "calories": {"type": "integer", "minimum": 0},
+                                        "protein_g": {"type": "number", "minimum": 0},
+                                        "fat_g": {"type": "number", "minimum": 0},
+                                        "carbs_g": {"type": "number", "minimum": 0},
+                                        "weight_g": {"type": "number", "minimum": 0},
+                                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                                        "items": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "name": {"type": "string"},
+                                                    "calories": {"type": "integer", "minimum": 0},
+                                                    "protein_g": {"type": "number", "minimum": 0},
+                                                    "fat_g": {"type": "number", "minimum": 0},
+                                                    "carbs_g": {"type": "number", "minimum": 0},
+                                                    "weight_g": {"type": "number", "minimum": 0},
+                                                    "is_liquid": {"type": "boolean"}
+                                                },
+                                                "required": [
+                                                    "name",
+                                                    "calories",
+                                                    "protein_g",
+                                                    "fat_g",
+                                                    "carbs_g",
+                                                    "weight_g",
+                                                    "is_liquid"
+                                                ],
+                                                "additionalProperties": False
+                                            }
+                                        },
+                                        "references": {
+                                            "type": "object",
+                                            "properties": {
+                                                "sources": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+                                            },
+                                            "required": ["sources"],
+                                            "additionalProperties": False
+                                        },
+                                        "analysis_text": {"type": ["string", "null"]},
+                                        "appearance": {
+                                            "type": "object",
+                                            "properties": {
+                                                "is_packaged": {"type": "boolean"},
+                                                "plate_visible": {"type": "boolean"},
+                                                "plate_diameter_cm": {"type": ["integer", "null"], "minimum": 0}
+                                            },
+                                            "required": ["is_packaged", "plate_visible", "plate_diameter_cm"],
+                                            "additionalProperties": False
+                                        },
+                                        "not_food": {"type": "boolean"}
+                                    },
+                                    "required": [
+                                        "title",
+                                        "calories",
+                                        "protein_g",
+                                        "fat_g",
+                                        "carbs_g",
+                                        "weight_g",
+                                        "confidence",
+                                        "items",
+                                        "references",
+                                        "analysis_text",
+                                        "appearance",
+                                        "not_food"
+                                    ],
+                                    "additionalProperties": False
+                                }
+                        }
+                    },
+                    "max_output_tokens": 1600,
                     "input": [
                         {
                             "role": "user",
                             "content": [
-                                {"type": "input_text", "text": "Extract visual facts for this image only and return a single JSON object."},
+                                {"type": "input_text", "text": (("Visual Facts: " + (facts_text or "{}") + "\n\n") if facts_text else "") + "Estimate nutrition for this dish and return json only."},
                                 {"type": "input_image", "image_url": file_url, "detail": detail},
                             ],
                         }
                     ],
                 }
-                return await _openai_request("responses", payload)
+                return await _openai_request("responses", payload_resp)
 
-            if facts_enabled:
+            content_local: str | None = None
+            if use_responses:
+                # Use Responses API (no Chat fallback)
+                content_local = await _call_responses()
+            else:
+                # Use Chat API when Responses disabled for this model
+                content_local = await _call_chat()
+
+            if content_local:
+                parsed_local = _normalize_openai_json(content_local)
+                # treat empty {} as failure to trigger fallback/retry
                 try:
-                    facts_text = await _call_facts(getattr(settings, "FOODAI_VISION_MODEL", None) or settings.FOODAI_DEFAULT_MODEL, _norm_detail(getattr(settings, "FOODAI_IMAGE_DETAIL", "high")))
-                    if facts_text:
-                        try:
-                            obj = json.loads(_strip_code_fence(facts_text) or "{}")
-                            keys = list((obj or {}).keys())
-                            logger.info("foodai.facts | present=True | len={} | keys={}", len(facts_text or ""), keys)
-                        except Exception:
-                            logger.info("foodai.facts | present=True | len={} | keys=?", len(facts_text or ""))
-                except Exception:
-                    pass
-
-            system = (
-                "You are a nutrition analyst. Given an image, estimate total calories, protein_g, fat_g, carbs_g, "
-                "and weight_g for the pictured dish. Return ONLY a compact JSON with keys: \n"
-                "title(string), calories(int), protein_g(float), fat_g(float), carbs_g(float), weight_g(float), confidence(float 0..1),\n"
-                "items(list of {name, calories, protein_g, fat_g, carbs_g, weight_g, is_liquid:boolean}), references({sources: [string]}), analysis_text(string), appearance({is_packaged: boolean, plate_visible: boolean, plate_diameter_cm: int|null}), not_food(boolean).\n"
-                "Important: Answer in Russian language. Field 'title' must be in Russian. Ingredient names (items[].name) must be in Russian. "
-                "Always set references.sources to exactly [\"ФГБУН \\\"ФИЦ питания и биотехнологии\\\"\", \"USDA FoodData Central\"]. "
-                "If the image clearly does not contain any food or drinks, set not_food=true and keep items minimal. "
-                "For liquids, set items[].is_liquid=true (e.g., вода, сок, кофе, чай, молоко, кефир, йогурт питьевой, бульон, суп-пюре, лимонад). "
-                "HARD RULE: Container/tableware mass is ZERO — never add any grams for plate, bowl, cup, box, spoon, fork, or packaging; count ONLY edible items. Use container ONLY to infer usable area/volume and fill level. If a plate has a visible rim, use inner/usable diameter (exclude rim). Do not create items like 'тарелка/миска/чашка/контейнер'. If such an item appears, remove it and re-balance before returning JSON. "
-                "First, mentally classify dish archetype (do NOT output it): salad_no_base | bowl_with_base | burger_sandwich | pizza_slice | soup | sushi_set | dessert | beverage | mixed_plate. "
-                "Estimate TOTAL edible weight first. If Visual Facts are provided as 'Visual Facts: {...}', use them as ground truth for unit counts, container fill_fraction and presence of base. If base_present is none/unknown, treat as salad_no_base (no dense carb base) and set weight_g within 300±40 g (i.e., 260–340 g). Do NOT exceed this band unless strong facts show otherwise; when uncertain, use the lower end. For other archetypes use conservative ranges and override only if facts clearly indicate otherwise (bowl_with_base ~300–450 g; burger_sandwich ~180–320 g; pizza_slice ~90–180 g; soup (liquid) ~250–400 g; sushi_set(10–12 pcs) ~200–320 g; dessert(piece) ~70–160 g; beverage(cup) ~200–350 g). "
-                "Then distribute weights across items so that baskets are combined where appropriate: Fresh vegetables as ONE item with specifics in parentheses (e.g., 'свежие овощи (помидоры, огурцы, перец)'); pickled vegetables as ONE item; sauces/dressings as ONE item unless clearly distinct. Merge small herbs/greens into fresh vegetables unless they are a substantial separate component (>10 г). Protein units (e.g., фалафель/котлеты/роллы) may use counts from Facts. Bread/pita/rice/noodles/poached grains are separate base items. "
-                "Default conservative masses when unsure (do not exceed without strong evidence): falafel 30–35 г per piece (keep the counted number of pieces), pita/bread 30–45 г (for half/small pieces), hummus 40–60 г, fresh vegetables (single basket) 80–120 г, pickled vegetables (single basket) 20–40 г, sauce/dressing (single basket) 10–20 г. Prefer the lower bound when in doubt. "
-                "Atomic naming: strictly forbid slashes/alternatives ('/','или'). Use ONE concrete name for each item; for combined baskets, list specifics in parentheses. Outputs that contain '/' or 'или' in names are invalid; correct them before returning JSON. "
-                "Balance requirements: ensure sum(items.weight_g)=weight_g within ±2% and sum(items.calories)=calories within ±2%. If mismatch occurs, reduce first sauces, then pickles, then fresh vegetables, then bread/pita, then hummus. Do not change the counted number of unit items. Re-check before returning JSON. "
-                "analysis_text: a single paragraph of 350–420 characters in Russian that (1) states whether the dish appears homemade or packaged (do not invent brands unless clearly visible), "
-                "(2) names 2–3 visually identified main components, (3) explains how portion size was estimated (container size/fill and counts). "
-                "Include the exact sentence: \"Использованы справочные данные ФИЦ питания и USDA.\" Add the clause: 'Вес посуды не учитывался.' Return JSON only, without explanations."
-            )
-
-            async def _build_and_call(detail: str, model_id: str) -> dict[str, Any] | None:
-                is_gpt5 = str(model_id).startswith("gpt-5")
-                use_responses = False
-                try:
-                    use_responses = bool(getattr(settings, "FOODAI_USE_RESPONSES_FOR_5", False)) and is_gpt5
-                except Exception:
-                    use_responses = is_gpt5 and False
-
-                # Helper: Chat payload call
-                async def _call_chat() -> str | None:
-                    payload_chat = {
-                        "model": model_id,
-                        "messages": [
-                            {"role": "system", "content": system},
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": ("Visual Facts: " + (facts_text or "{}")) if facts_text else ""},
-                                    {"type": "text", "text": "Estimate nutrition for this dish and return json only."},
-                                    {"type": "image_url", "image_url": {"url": file_url, "detail": detail}},
-                                ],
-                            },
-                        ],
-                    }
-                    try:
-                        if not str(model_id).startswith("gpt-5"):
-                            payload_chat["temperature"] = 0
-                    except Exception:
-                        pass
-                    return await _openai_request("chat", payload_chat)
-
-                # Helper: Responses payload call
-                async def _call_responses() -> str | None:
-                    payload_resp = {
-                        "model": model_id,
-                        "instructions": system,
-                        "reasoning": {"effort": settings.FOODAI_REASONING_EFFORT},
-                        "text": {
-                            "verbosity": settings.FOODAI_TEXT_VERBOSITY,
-                            "format": {
-                                "type": "json_schema",
-                                "name": "foodai_result",
-                                "strict": True,
-                                "schema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "title": {"type": ["string", "null"]},
-                                            "calories": {"type": "integer", "minimum": 0},
-                                            "protein_g": {"type": "number", "minimum": 0},
-                                            "fat_g": {"type": "number", "minimum": 0},
-                                            "carbs_g": {"type": "number", "minimum": 0},
-                                            "weight_g": {"type": "number", "minimum": 0},
-                                            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                                            "items": {
-                                                "type": "array",
-                                                "items": {
-                                                    "type": "object",
-                                                    "properties": {
-                                                        "name": {"type": "string"},
-                                                        "calories": {"type": "integer", "minimum": 0},
-                                                        "protein_g": {"type": "number", "minimum": 0},
-                                                        "fat_g": {"type": "number", "minimum": 0},
-                                                        "carbs_g": {"type": "number", "minimum": 0},
-                                                        "weight_g": {"type": "number", "minimum": 0},
-                                                        "is_liquid": {"type": "boolean"}
-                                                    },
-                                                    "required": [
-                                                        "name",
-                                                        "calories",
-                                                        "protein_g",
-                                                        "fat_g",
-                                                        "carbs_g",
-                                                        "weight_g",
-                                                        "is_liquid"
-                                                    ],
-                                                    "additionalProperties": False
-                                                }
-                                            },
-                                            "references": {
-                                                "type": "object",
-                                                "properties": {
-                                                    "sources": {"type": "array", "items": {"type": "string"}, "minItems": 1}
-                                                },
-                                                "required": ["sources"],
-                                                "additionalProperties": False
-                                            },
-                                            "analysis_text": {"type": ["string", "null"]},
-                                            "appearance": {
-                                                "type": "object",
-                                                "properties": {
-                                                    "is_packaged": {"type": "boolean"},
-                                                    "plate_visible": {"type": "boolean"},
-                                                    "plate_diameter_cm": {"type": ["integer", "null"], "minimum": 0}
-                                                },
-                                                "required": ["is_packaged", "plate_visible", "plate_diameter_cm"],
-                                                "additionalProperties": False
-                                            },
-                                            "not_food": {"type": "boolean"}
-                                        },
-                                        "required": [
-                                            "title",
-                                            "calories",
-                                            "protein_g",
-                                            "fat_g",
-                                            "carbs_g",
-                                            "weight_g",
-                                            "confidence",
-                                            "items",
-                                            "references",
-                                            "analysis_text",
-                                            "appearance",
-                                            "not_food"
-                                        ],
-                                        "additionalProperties": False
-                                    }
-                            }
-                        },
-                        "max_output_tokens": 1600,
-                        "input": [
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "input_text", "text": (("Visual Facts: " + (facts_text or "{}") + "\n\n") if facts_text else "") + "Estimate nutrition for this dish and return json only."},
-                                    {"type": "input_image", "image_url": file_url, "detail": detail},
-                                ],
-                            }
-                        ],
-                    }
-                    return await _openai_request("responses", payload_resp)
-
-                content_local: str | None = None
-                if use_responses:
-                    # Use Responses API (no Chat fallback)
-                    content_local = await _call_responses()
-                else:
-                    # Use Chat API when Responses disabled for this model
-                    content_local = await _call_chat()
-
-                if content_local:
-                    parsed_local = _normalize_openai_json(content_local)
-                    # treat empty {} as failure to trigger fallback/retry
-                    try:
-                        if parsed_local and int(parsed_local.get("calories") or 0) == 0 and float(parsed_local.get("protein_g") or 0) == 0 and float(parsed_local.get("fat_g") or 0) == 0 and float(parsed_local.get("carbs_g") or 0) == 0:
-                            parsed_local = None
-                    except Exception:
+                    if parsed_local and int(parsed_local.get("calories") or 0) == 0 and float(parsed_local.get("protein_g") or 0) == 0 and float(parsed_local.get("fat_g") or 0) == 0 and float(parsed_local.get("carbs_g") or 0) == 0:
                         parsed_local = None
-                    # Chat fallback if Responses failed to produce parsable/non-zero content
-                    if parsed_local is None:
+                except Exception:
+                    parsed_local = None
+                # Chat fallback if Responses failed to produce parsable/non-zero content
+                if parsed_local is None:
+                    try:
+                        chat_enabled = bool(getattr(settings, "FOODAI_TEXT_FALLBACK_TO_CHAT", False))
+                    except Exception:
+                        chat_enabled = False
+                    if use_responses and chat_enabled:
                         try:
-                            chat_enabled = bool(getattr(settings, "FOODAI_TEXT_FALLBACK_TO_CHAT", False))
+                            chat_content = await _call_chat()
                         except Exception:
-                            chat_enabled = False
-                        if use_responses and chat_enabled:
-                            try:
-                                chat_content = await _call_chat()
-                            except Exception:
-                                chat_content = None
-                            if chat_content:
-                                parsed_local = _normalize_openai_json(chat_content)
-                    return parsed_local
-                return None
+                            chat_content = None
+                        if chat_content:
+                            parsed_local = _normalize_openai_json(chat_content)
+                return parsed_local
+            return None
 
-            # Escalation chain (env-driven) — try models and detail levels in order
+        # Escalation chain (env-driven) — try models and detail levels in order
+        try:
+            escalation_enabled = bool(getattr(settings, "FOODAI_VISION_ESCALATION_ENABLED", True))
+        except Exception:
+            escalation_enabled = True
+        if escalation_enabled:
+            _chain_t0 = time.perf_counter()
             try:
-                escalation_enabled = bool(getattr(settings, "FOODAI_VISION_ESCALATION_ENABLED", True))
+                chain_raw = str(getattr(settings, "FOODAI_VISION_ESCALATION_CHAIN", "") or "").strip()
+                model_chain = [m.strip() for m in chain_raw.split(">") if m and m.strip()]
             except Exception:
-                escalation_enabled = True
-            if escalation_enabled:
-                _chain_t0 = time.perf_counter()
-                try:
-                    chain_raw = str(getattr(settings, "FOODAI_VISION_ESCALATION_CHAIN", "") or "").strip()
-                    model_chain = [m.strip() for m in chain_raw.split(">") if m and m.strip()]
-                except Exception:
-                    model_chain = []
-                if not model_chain:
-                    model_chain = [vision_model]
-                # optional fallback to 4o-mini if 5-series unavailable
-                try:
-                    if bool(getattr(settings, "FOODAI_ALLOW_FALLBACK_TO_4O_MINI", True)) and "gpt-4o-mini" not in model_chain:
-                        model_chain.append("gpt-4o-mini")
-                except Exception:
-                    pass
-                try:
-                    order = str(getattr(settings, "FOODAI_VISION_DETAIL_ORDER", "low>high") or "low>high").split(">")
-                    detail_seq = [d.strip().lower() for d in order if d and d.strip().lower() in {"low", "high", "auto"}] or ["low", "high"]
-                except Exception:
-                    detail_seq = ["low", "high"]
+                model_chain = []
+            if not model_chain:
+                model_chain = [vision_model]
+            # optional fallback to 4o-mini if 5-series unavailable
+            try:
+                if bool(getattr(settings, "FOODAI_ALLOW_FALLBACK_TO_4O_MINI", True)) and "gpt-4o-mini" not in model_chain:
+                    model_chain.append("gpt-4o-mini")
+            except Exception:
+                pass
+            try:
+                order = str(getattr(settings, "FOODAI_VISION_DETAIL_ORDER", "low>high") or "low>high").split(">")
+                detail_seq = [d.strip().lower() for d in order if d and d.strip().lower() in {"low", "high", "auto"}] or ["low", "high"]
+            except Exception:
+                detail_seq = ["low", "high"]
 
-                def _is_weak(res: dict[str, Any]) -> bool:
-                    try:
-                        conf_th = float(getattr(settings, "FOODAI_ESCALATE_CONF", getattr(settings, "FOODAI_CONFIDENCE_ESCALATE", 0.7)))
-                    except Exception:
-                        conf_th = 0.7
-                    try:
-                        conf = float(res.get("confidence") or 0)
-                    except Exception:
-                        conf = 0.0
-                    zero_guard = bool(getattr(settings, "FOODAI_ESCALATE_ZERO_FIELDS", True))
-                    items_min = int(getattr(settings, "FOODAI_ESCALATE_ITEMS_MIN", 3) or 3)
-                    try:
-                        has_zero = int(res.get("calories") or 0) == 0 or float(res.get("protein_g") or 0) == 0 or float(res.get("fat_g") or 0) == 0 or float(res.get("carbs_g") or 0) == 0 or float(res.get("weight_g") or 0) == 0
-                    except Exception:
-                        has_zero = False
-                    try:
-                        many_items = len(list(res.get("items") or [])) >= items_min
-                    except Exception:
-                        many_items = False
-                    if conf < conf_th:
-                        return True
-                    if zero_guard and has_zero:
-                        return True
-                    if many_items and conf < max(0.75, conf_th):
-                        return True
-                    return False
+            def _is_weak(res: dict[str, Any]) -> bool:
+                try:
+                    conf_th = float(getattr(settings, "FOODAI_ESCALATE_CONF", getattr(settings, "FOODAI_CONFIDENCE_ESCALATE", 0.7)))
+                except Exception:
+                    conf_th = 0.7
+                try:
+                    conf = float(res.get("confidence") or 0)
+                except Exception:
+                    conf = 0.0
+                zero_guard = bool(getattr(settings, "FOODAI_ESCALATE_ZERO_FIELDS", True))
+                items_min = int(getattr(settings, "FOODAI_ESCALATE_ITEMS_MIN", 3) or 3)
+                try:
+                    has_zero = int(res.get("calories") or 0) == 0 or float(res.get("protein_g") or 0) == 0 or float(res.get("fat_g") or 0) == 0 or float(res.get("carbs_g") or 0) == 0 or float(res.get("weight_g") or 0) == 0
+                except Exception:
+                    has_zero = False
+                try:
+                    many_items = len(list(res.get("items") or [])) >= items_min
+                except Exception:
+                    many_items = False
+                if conf < conf_th:
+                    return True
+                if zero_guard and has_zero:
+                    return True
+                return bool(many_items and conf < max(0.75, conf_th))
 
-                steps = 0
-                max_steps = int(getattr(settings, "FOODAI_VISION_MAX_STEPS", 2) or 2)
-                best: dict[str, Any] | None = None
-                detail_seq_norm = [
-                    _norm_detail(d) for d in detail_seq
-                ]
-                for midx, mid in enumerate(model_chain):
-                    for det in detail_seq:
-                        steps += 1
-                        _attempt_t0 = time.perf_counter()
-                        parsed_try = await _build_and_call(_norm_detail(det), mid)
-                        # attempt metrics
-                        try:
-                            foodai_escalation_attempts.labels(
-                                from_model=(model_chain[midx - 1] if midx > 0 else "start"),
-                                to_model=mid,
-                                reason="attempt",
-                            ).inc()
-                        except Exception:
-                            pass
-                        try:
-                            foodai_escalation_attempt_dur_ms.labels(model=mid, detail=_norm_detail(det)).observe(
-                                (time.perf_counter() - _attempt_t0) * 1000.0
-                            )
-                        except Exception:
-                            pass
-                        if parsed_try:
-                            best = parsed_try
-                            last_step = (midx == len(model_chain) - 1 and det == detail_seq[-1])
-                            should_stop = (not _is_weak(parsed_try)) or last_step or (steps >= max_steps)
-                            if should_stop:
-                                # Optional rewrite + sanitize
+            steps = 0
+            max_steps = int(getattr(settings, "FOODAI_VISION_MAX_STEPS", 2) or 2)
+            best: dict[str, Any] | None = None
+            detail_seq_norm = [
+                _norm_detail(d) for d in detail_seq
+            ]
+            for midx, mid in enumerate(model_chain):
+                for det in detail_seq:
+                    steps += 1
+                    _attempt_t0 = time.perf_counter()
+                    parsed_try = await _build_and_call(_norm_detail(det), mid)
+                    # attempt metrics
+                    with contextlib.suppress(Exception):
+                        foodai_escalation_attempts.labels(
+                            from_model=(model_chain[midx - 1] if midx > 0 else "start"),
+                            to_model=mid,
+                            reason="attempt",
+                        ).inc()
+                    with contextlib.suppress(Exception):
+                        foodai_escalation_attempt_dur_ms.labels(model=mid, detail=_norm_detail(det)).observe(
+                            (time.perf_counter() - _attempt_t0) * 1000.0
+                        )
+                    if parsed_try:
+                        best = parsed_try
+                        last_step = (midx == len(model_chain) - 1 and det == detail_seq[-1])
+                        should_stop = (not _is_weak(parsed_try)) or last_step or (steps >= max_steps)
+                        if should_stop:
+                            # Optional rewrite + sanitize
+                            try:
+                                mode = (getattr(settings, "FOODAI_ANALYSIS_REWRITE", "auto") or "auto").lower()
+                            except Exception:
+                                mode = "auto"
+                            do_rewrite = mode == "always"
+                            reason = ""
+                            if mode == "auto":
+                                do_rewrite, reason = _needs_rewrite(parsed_try.get("analysis_text"), parsed_try.get("items"))
+                            if do_rewrite:
                                 try:
-                                    mode = (getattr(settings, "FOODAI_ANALYSIS_REWRITE", "auto") or "auto").lower()
-                                except Exception:
-                                    mode = "auto"
-                                do_rewrite = mode == "always"
-                                reason = ""
-                                if mode == "auto":
-                                    do_rewrite, reason = _needs_rewrite(parsed_try.get("analysis_text"), parsed_try.get("items"))
-                                if do_rewrite:
-                                    try:
-                                        new_txt = await _compose_analysis_text(parsed_try.get("items"), parsed_try.get("appearance") or {}, parsed_try.get("confidence"))
-                                        if new_txt:
-                                            parsed_try["analysis_text"] = new_txt
-                                            foodai_analysis_text_rewrite.labels(reason=reason or "auto").inc()
-                                        else:
-                                            foodai_analysis_text_rewrite.labels(reason or "error").inc()
-                                    except Exception:
-                                        try:
-                                            foodai_analysis_text_rewrite.labels("error").inc()
-                                        except Exception:
-                                            pass
-                                try:
-                                    if parsed_try.get("analysis_text"):
-                                        txt = _sanitize_first_sentence(parsed_try.get("items"), str(parsed_try.get("analysis_text") or ""))
-                                        if txt:
-                                            if len(txt) > 420:
-                                                txt = txt[:417].rstrip() + "…"
-                                            parsed_try["analysis_text"] = txt
-                                except Exception:
-                                    pass
-                                # chain stop metrics
-                                try:
-                                    total_ms = (time.perf_counter() - _chain_t0) * 1000.0
-                                    foodai_escalation_total_dur_ms.observe(total_ms)
-                                except Exception:
-                                    pass
-                                # Log final model used for this photo analysis (for debugging/UX visibility)
-                                try:
-                                    logger.info(
-                                        "foodai.final | model={} | detail={} | steps={} | total_ms={} | conf={} | items={}",
-                                        mid,
-                                        _norm_detail(det),
-                                        steps,
-                                        int(total_ms),
-                                        parsed_try.get("confidence"),
-                                        len(list(parsed_try.get("items") or [])),
-                                    )
-                                except Exception:
-                                    pass
-                                # attach escalation meta for UX analytics
-                                try:
-                                    esc = {
-                                        "enabled": True,
-                                        "chain": model_chain,
-                                        "detail_order": detail_seq_norm,
-                                        "steps": steps,
-                                        "final_model": mid,
-                                        "stopped_reason": ("strong" if not _is_weak(parsed_try) else ("steps_exhausted" if (steps >= max_steps or last_step) else "weak")),
-                                        "total_ms": int(total_ms),
-                                    }
-                                    m = parsed_try.get("meta") or {}
-                                    m["escalation"] = esc
-                                    parsed_try["meta"] = m
-                                except Exception:
-                                    pass
-                                try:
-                                    if not _is_weak(parsed_try):
-                                        foodai_escalation_success.labels(
-                                            from_model=(model_chain[midx - 1] if midx > 0 else "start"),
-                                            to_model=mid,
-                                            reason="strong",
-                                        ).inc()
+                                    new_txt = await _compose_analysis_text(parsed_try.get("items"), parsed_try.get("appearance") or {}, parsed_try.get("confidence"))
+                                    if new_txt:
+                                        parsed_try["analysis_text"] = new_txt
+                                        foodai_analysis_text_rewrite.labels(reason=reason or "auto").inc()
                                     else:
-                                        reason_lbl = "steps_exhausted" if (steps >= max_steps or last_step) else "weak"
-                                        foodai_escalation_failed.labels(
-                                            from_model=(model_chain[midx - 1] if midx > 0 else "start"),
-                                            to_model=mid,
-                                            reason=reason_lbl,
-                                        ).inc()
+                                        foodai_analysis_text_rewrite.labels(reason or "error").inc()
                                 except Exception:
-                                    pass
-                                return parsed_try
-                        if steps >= max_steps:
-                            break
+                                    with contextlib.suppress(Exception):
+                                        foodai_analysis_text_rewrite.labels("error").inc()
+                            try:
+                                if parsed_try.get("analysis_text"):
+                                    txt = _sanitize_first_sentence(parsed_try.get("items"), str(parsed_try.get("analysis_text") or ""))
+                                    if txt:
+                                        if len(txt) > 420:
+                                            txt = txt[:417].rstrip() + "…"
+                                        parsed_try["analysis_text"] = txt
+                            except Exception:
+                                pass
+                            # chain stop metrics
+                            try:
+                                total_ms = (time.perf_counter() - _chain_t0) * 1000.0
+                                foodai_escalation_total_dur_ms.observe(total_ms)
+                            except Exception:
+                                pass
+                            # Log final model used for this photo analysis (for debugging/UX visibility)
+                            with contextlib.suppress(Exception):
+                                logger.info(
+                                    "foodai.final | model={} | detail={} | steps={} | total_ms={} | conf={} | items={}",
+                                    mid,
+                                    _norm_detail(det),
+                                    steps,
+                                    int(total_ms),
+                                    parsed_try.get("confidence"),
+                                    len(list(parsed_try.get("items") or [])),
+                                )
+                            # attach escalation meta for UX analytics
+                            try:
+                                esc = {
+                                    "enabled": True,
+                                    "chain": model_chain,
+                                    "detail_order": detail_seq_norm,
+                                    "steps": steps,
+                                    "final_model": mid,
+                                    "stopped_reason": ("strong" if not _is_weak(parsed_try) else ("steps_exhausted" if (steps >= max_steps or last_step) else "weak")),
+                                    "total_ms": int(total_ms),
+                                }
+                                m = parsed_try.get("meta") or {}
+                                m["escalation"] = esc
+                                parsed_try["meta"] = m
+                            except Exception:
+                                pass
+                            try:
+                                if not _is_weak(parsed_try):
+                                    foodai_escalation_success.labels(
+                                        from_model=(model_chain[midx - 1] if midx > 0 else "start"),
+                                        to_model=mid,
+                                        reason="strong",
+                                    ).inc()
+                                else:
+                                    reason_lbl = "steps_exhausted" if (steps >= max_steps or last_step) else "weak"
+                                    foodai_escalation_failed.labels(
+                                        from_model=(model_chain[midx - 1] if midx > 0 else "start"),
+                                        to_model=mid,
+                                        reason=reason_lbl,
+                                    ).inc()
+                            except Exception:
+                                pass
+                            return parsed_try
                     if steps >= max_steps:
                         break
-                if best:
-                    # exhausted chain, returning best available (weak)
-                    try:
-                        total_ms = (time.perf_counter() - _chain_t0) * 1000.0
-                        foodai_escalation_total_dur_ms.observe(total_ms)
-                    except Exception:
-                        pass
-                    try:
-                        foodai_escalation_failed.labels(
-                            from_model=(model_chain[-2] if len(model_chain) >= 2 else "start"),
-                            to_model=(model_chain[-1] if len(model_chain) >= 1 else "none"),
-                            reason="exhausted",
-                        ).inc()
-                    except Exception:
-                        pass
-                    # attach escalation meta
-                    try:
-                        esc = {
-                            "enabled": True,
-                            "chain": model_chain,
-                            "detail_order": detail_seq_norm,
-                            "steps": steps,
-                            "final_model": model_chain[-1],
-                            "stopped_reason": "exhausted",
-                            "total_ms": int(total_ms),
-                        }
-                        m = best.get("meta") or {}
-                        m["escalation"] = esc
-                        best["meta"] = m
-                    except Exception:
-                        pass
-                    return best
+                if steps >= max_steps:
+                    break
+            if best:
+                # exhausted chain, returning best available (weak)
+                try:
+                    total_ms = (time.perf_counter() - _chain_t0) * 1000.0
+                    foodai_escalation_total_dur_ms.observe(total_ms)
+                except Exception:
+                    pass
+                with contextlib.suppress(Exception):
+                    foodai_escalation_failed.labels(
+                        from_model=(model_chain[-2] if len(model_chain) >= 2 else "start"),
+                        to_model=(model_chain[-1] if len(model_chain) >= 1 else "none"),
+                        reason="exhausted",
+                    ).inc()
+                # attach escalation meta
+                try:
+                    esc = {
+                        "enabled": True,
+                        "chain": model_chain,
+                        "detail_order": detail_seq_norm,
+                        "steps": steps,
+                        "final_model": model_chain[-1],
+                        "stopped_reason": "exhausted",
+                        "total_ms": int(total_ms),
+                    }
+                    m = best.get("meta") or {}
+                    m["escalation"] = esc
+                    best["meta"] = m
+                except Exception:
+                    pass
+                return best
 
-            initial_detail = _norm_detail(getattr(settings, "FOODAI_IMAGE_DETAIL", "low"))
-            vision_model = getattr(settings, "FOODAI_VISION_MODEL", None) or settings.FOODAI_DEFAULT_MODEL
-            _t0_local = time.perf_counter()
-            parsed = await _build_and_call(initial_detail, vision_model)
-            if parsed:
-                conf = float(parsed.get("confidence") or 0)
-                need_retry = (
-                    bool(getattr(settings, "FOODAI_IMAGE_DETAIL_HIGH_RETRY", True))
-                    and initial_detail != "high"
-                    and conf < float(getattr(settings, "FOODAI_CONFIDENCE_ESCALATE", 0.7))
-                )
-                if need_retry:
-                    _t1 = time.perf_counter()
-                    parsed_hi = await _build_and_call("high", vision_model)
-                    if parsed_hi:
-                        try:
-                            m = parsed_hi.get("meta") or {}
-                            m["escalation"] = {"enabled": False}
-                            parsed_hi["meta"] = m
-                        except Exception:
-                            pass
-                        # final log (non-escalation path, high-detail retry)
-                        try:
-                            total_ms = int((time.perf_counter() - _t1) * 1000.0)
-                            logger.info(
-                                "foodai.final | model={} | detail={} | steps={} | total_ms={} | conf={} | items={}",
-                                vision_model,
-                                _norm_detail("high"),
-                                1,
-                                total_ms,
-                                parsed_hi.get("confidence"),
-                                len(list(parsed_hi.get("items") or [])),
-                            )
-                        except Exception:
-                            pass
-                        return parsed_hi
-                # Optional rewrite of analysis_text
-                try:
-                    mode = (getattr(settings, "FOODAI_ANALYSIS_REWRITE", "auto") or "auto").lower()
-                except Exception:
-                    mode = "auto"
-                do_rewrite = mode == "always"
-                reason = ""
-                if mode == "auto":
-                    do_rewrite, reason = _needs_rewrite(parsed.get("analysis_text"), parsed.get("items"))
-                if do_rewrite:
+        initial_detail = _norm_detail(getattr(settings, "FOODAI_IMAGE_DETAIL", "low"))
+        vision_model = getattr(settings, "FOODAI_VISION_MODEL", None) or settings.FOODAI_DEFAULT_MODEL
+        _t0_local = time.perf_counter()
+        parsed = await _build_and_call(initial_detail, vision_model)
+        if parsed:
+            conf = float(parsed.get("confidence") or 0)
+            need_retry = (
+                bool(getattr(settings, "FOODAI_IMAGE_DETAIL_HIGH_RETRY", True))
+                and initial_detail != "high"
+                and conf < float(getattr(settings, "FOODAI_CONFIDENCE_ESCALATE", 0.7))
+            )
+            if need_retry:
+                _t1 = time.perf_counter()
+                parsed_hi = await _build_and_call("high", vision_model)
+                if parsed_hi:
                     try:
-                        new_txt = await _compose_analysis_text(parsed.get("items"), parsed.get("appearance") or {}, parsed.get("confidence"))
-                        if new_txt:
-                            parsed["analysis_text"] = new_txt
-                            foodai_analysis_text_rewrite.labels(reason=reason or "auto").inc()
-                        else:
-                            foodai_analysis_text_rewrite.labels(reason or "error").inc()
+                        m = parsed_hi.get("meta") or {}
+                        m["escalation"] = {"enabled": False}
+                        parsed_hi["meta"] = m
                     except Exception:
-                        try:
-                            foodai_analysis_text_rewrite.labels("error").inc()
-                        except Exception:
-                            pass
-                # Final safety: sanitize opener even if rewrite didn't trigger
+                        pass
+                    # final log (non-escalation path, high-detail retry)
+                    try:
+                        total_ms = int((time.perf_counter() - _t1) * 1000.0)
+                        logger.info(
+                            "foodai.final | model={} | detail={} | steps={} | total_ms={} | conf={} | items={}",
+                            vision_model,
+                            _norm_detail("high"),
+                            1,
+                            total_ms,
+                            parsed_hi.get("confidence"),
+                            len(list(parsed_hi.get("items") or [])),
+                        )
+                    except Exception:
+                        pass
+                    return parsed_hi
+            # Optional rewrite of analysis_text
+            try:
+                mode = (getattr(settings, "FOODAI_ANALYSIS_REWRITE", "auto") or "auto").lower()
+            except Exception:
+                mode = "auto"
+            do_rewrite = mode == "always"
+            reason = ""
+            if mode == "auto":
+                do_rewrite, reason = _needs_rewrite(parsed.get("analysis_text"), parsed.get("items"))
+            if do_rewrite:
                 try:
-                    if parsed.get("analysis_text"):
-                        txt = _sanitize_first_sentence(parsed.get("items"), str(parsed.get("analysis_text") or ""))
-                        if txt:
-                            # re-cap length after sanitation
-                            if len(txt) > 420:
-                                txt = txt[:417].rstrip() + "…"
-                            parsed["analysis_text"] = txt
+                    new_txt = await _compose_analysis_text(parsed.get("items"), parsed.get("appearance") or {}, parsed.get("confidence"))
+                    if new_txt:
+                        parsed["analysis_text"] = new_txt
+                        foodai_analysis_text_rewrite.labels(reason=reason or "auto").inc()
+                    else:
+                        foodai_analysis_text_rewrite.labels(reason or "error").inc()
                 except Exception:
-                    pass
+                    with contextlib.suppress(Exception):
+                        foodai_analysis_text_rewrite.labels("error").inc()
+            # Final safety: sanitize opener even if rewrite didn't trigger
+            try:
+                if parsed.get("analysis_text"):
+                    txt = _sanitize_first_sentence(parsed.get("items"), str(parsed.get("analysis_text") or ""))
+                    if txt:
+                        # re-cap length after sanitation
+                        if len(txt) > 420:
+                            txt = txt[:417].rstrip() + "…"
+                        parsed["analysis_text"] = txt
+            except Exception:
+                pass
+            try:
+                m = parsed.get("meta") or {}
+                m["escalation"] = {"enabled": False}
+                parsed["meta"] = m
+            except Exception:
+                pass
+            # final log (non-escalation path, initial detail)
+            try:
+                total_ms = int((time.perf_counter() - _t0_local) * 1000.0)
+                logger.info(
+                    "foodai.final | model={} | detail={} | steps={} | total_ms={} | conf={} | items={}",
+                    vision_model,
+                    initial_detail,
+                    1,
+                    total_ms,
+                    parsed.get("confidence"),
+                    len(list(parsed.get("items") or [])),
+                )
+            except Exception:
+                pass
+            return parsed
+        # parsing failed — try a single high-detail retry if enabled
+        if bool(getattr(settings, "FOODAI_IMAGE_DETAIL_HIGH_RETRY", True)) and initial_detail != "high":
+            _t2 = time.perf_counter()
+            parsed_hi = await _build_and_call("high", vision_model)
+            if parsed_hi:
                 try:
-                    m = parsed.get("meta") or {}
+                    m = parsed_hi.get("meta") or {}
                     m["escalation"] = {"enabled": False}
-                    parsed["meta"] = m
+                    parsed_hi["meta"] = m
                 except Exception:
                     pass
-                # final log (non-escalation path, initial detail)
+                # final log (non-escalation path, high-detail single retry after initial fail)
                 try:
-                    total_ms = int((time.perf_counter() - _t0_local) * 1000.0)
+                    total_ms = int((time.perf_counter() - _t2) * 1000.0)
                     logger.info(
                         "foodai.final | model={} | detail={} | steps={} | total_ms={} | conf={} | items={}",
                         vision_model,
-                        initial_detail,
+                        _norm_detail("high"),
                         1,
                         total_ms,
-                        parsed.get("confidence"),
-                        len(list(parsed.get("items") or [])),
+                        parsed_hi.get("confidence"),
+                        len(list(parsed_hi.get("items") or [])),
                     )
                 except Exception:
                     pass
-                return parsed
-            else:
-                # parsing failed — try a single high-detail retry if enabled
-                if bool(getattr(settings, "FOODAI_IMAGE_DETAIL_HIGH_RETRY", True)) and initial_detail != "high":
-                    _t2 = time.perf_counter()
-                    parsed_hi = await _build_and_call("high", vision_model)
-                    if parsed_hi:
-                        try:
-                            m = parsed_hi.get("meta") or {}
-                            m["escalation"] = {"enabled": False}
-                            parsed_hi["meta"] = m
-                        except Exception:
-                            pass
-                        # final log (non-escalation path, high-detail single retry after initial fail)
-                        try:
-                            total_ms = int((time.perf_counter() - _t2) * 1000.0)
-                            logger.info(
-                                "foodai.final | model={} | detail={} | steps={} | total_ms={} | conf={} | items={}",
-                                vision_model,
-                                _norm_detail("high"),
-                                1,
-                                total_ms,
-                                parsed_hi.get("confidence"),
-                                len(list(parsed_hi.get("items") or [])),
-                            )
-                        except Exception:
-                            pass
-                        return parsed_hi
+                return parsed_hi
         # If we are here and parsing still failed — return provider error (no stub)
-        try:
+        with contextlib.suppress(Exception):
             foodai_provider_error.labels(source="photo", error="provider_unavailable").inc()
-        except Exception:
-            pass
         return {"error": "provider_unavailable"}
+    return None
 
 
 async def _foodness_photo(file_url: str) -> bool | None:
@@ -1053,7 +1029,7 @@ async def _foodness_photo(file_url: str) -> bool | None:
         return None
     system = (
         "You are a binary classifier. Determine if the image shows edible food or a drink. "
-        "Respond with strict JSON: {\"is_food\": boolean}. "
+        'Respond with strict JSON: {"is_food": boolean}. '
         "If a cup, glass, mug, bottle, plate or bowl is visible, or a food package/container is visible, set is_food=true. "
         "If unsure or ambiguous, set is_food=false."
     )
@@ -1095,33 +1071,25 @@ async def _foodness_photo(file_url: str) -> bool | None:
             precheck_timeout = 8
         content = await asyncio.wait_for(_openai_request("responses", payload), timeout=precheck_timeout)
         if not content:
-            try:
+            with contextlib.suppress(Exception):
                 foodai_precheck_error.labels(source="photo", reason="http").inc()
-            except Exception:
-                pass
             return None
         try:
             data = json.loads(content)
         except Exception:
             try:
-                data = json.loads((_strip_code_fence(content) or "{}"))
+                data = json.loads(_strip_code_fence(content) or "{}")
             except Exception:
-                try:
+                with contextlib.suppress(Exception):
                     foodai_precheck_error.labels(source="photo", reason="json").inc()
-                except Exception:
-                    pass
                 return None
         is_food = bool((data or {}).get("is_food"))
-        try:
+        with contextlib.suppress(Exception):
             (foodai_precheck_is_food if is_food else foodai_precheck_not_food).labels(source="photo").inc()
-        except Exception:
-            pass
         return is_food
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             foodai_precheck_error.labels(source="photo", reason="other").inc()
-        except Exception:
-            pass
         return None
 
 
@@ -1131,7 +1099,7 @@ async def _foodness_text(text: str) -> bool | None:
         return None
     system = (
         "You are a binary classifier. Determine if the text describes edible food or a drink. "
-        "Respond with strict JSON: {\"is_food\": boolean}. If unsure or ambiguous, set is_food=false. "
+        'Respond with strict JSON: {"is_food": boolean}. If unsure or ambiguous, set is_food=false. '
         "If the text is a single common beverage name in Russian (e.g., кофе, чай, вода, сок, компот, морс, квас, лимонад, молоко, кефир, какао, йогурт), set is_food=true. "
         "If the text is a single common household object (e.g., телефон, ноутбук, книга, машина, иконка, смайлик), set is_food=false."
     )
@@ -1150,7 +1118,7 @@ async def _foodness_text(text: str) -> bool | None:
         pass
     try:
         content = await _openai_request("chat", payload)
-        if not content and getattr(settings, "FOODAI_VISION_MODEL", None) and settings.FOODAI_VISION_MODEL != primary_model:
+        if not content and getattr(settings, "FOODAI_VISION_MODEL", None) and primary_model != settings.FOODAI_VISION_MODEL:
             payload["model"] = settings.FOODAI_VISION_MODEL
             try:
                 if str(payload["model"]).startswith("gpt-5"):
@@ -1161,33 +1129,25 @@ async def _foodness_text(text: str) -> bool | None:
                 pass
             content = await _openai_request("chat", payload)
         if not content:
-            try:
+            with contextlib.suppress(Exception):
                 foodai_precheck_error.labels(source="text", reason="http").inc()
-            except Exception:
-                pass
             return None
         try:
             data = json.loads(content)
         except Exception:
             try:
-                data = json.loads((_strip_code_fence(content) or "{}"))
+                data = json.loads(_strip_code_fence(content) or "{}")
             except Exception:
-                try:
+                with contextlib.suppress(Exception):
                     foodai_precheck_error.labels(source="text", reason="json").inc()
-                except Exception:
-                    pass
                 return None
         is_food = bool((data or {}).get("is_food"))
-        try:
+        with contextlib.suppress(Exception):
             (foodai_precheck_is_food if is_food else foodai_precheck_not_food).labels(source="text").inc()
-        except Exception:
-            pass
         return is_food
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             foodai_precheck_error.labels(source="text", reason="other").inc()
-        except Exception:
-            pass
         return None
 
 
@@ -1201,10 +1161,8 @@ async def analyze_text(text: str) -> dict[str, Any]:
         # Lexicon whitelist for short beverage/food names
         lex_hit = _lexicon_is_food_text(text)
         if lex_hit is True:
-            try:
+            with contextlib.suppress(Exception):
                 foodai_lexicon_is_food.labels(source="text").inc()
-            except Exception:
-                pass
             is_food = True
         else:
             # Strict pre-check; any failure counts as not_food (conservative)
@@ -1220,7 +1178,7 @@ async def analyze_text(text: str) -> dict[str, Any]:
                 "confidence": 0.0,
                 "items": [],
                 "references": {"sources": [
-                    "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                    'ФГБУН "ФИЦ питания и биотехнологии"',
                     "USDA FoodData Central",
                 ]},
                 "analysis_text": None,
@@ -1232,12 +1190,12 @@ async def analyze_text(text: str) -> dict[str, Any]:
             "fat_g, carbs_g and weight_g. Return ONLY JSON with keys: title(string), calories(int), protein_g(float), fat_g(float), "
             "carbs_g(float), weight_g(float), confidence(float 0..1), items(list of {name, calories, protein_g, fat_g, carbs_g, weight_g, is_liquid:boolean}), references({sources: [string]}), analysis_text(string), appearance({is_packaged: boolean, plate_visible: boolean, plate_diameter_cm: int|null}), not_food(boolean).\n"
             "Important: Answer in Russian language. Field 'title' must be in Russian. Ingredient names (items[].name) must be in Russian. "
-            "Always set references.sources to exactly [\"ФГБУН \\\"ФИЦ питания и биотехнологии\\\"\", \"USDA FoodData Central\"]. "
+            'Always set references.sources to exactly ["ФГБУН \\"ФИЦ питания и биотехнологии\\"", "USDA FoodData Central"]. '
             "If the description clearly does not refer to food or drinks, set not_food=true and keep items minimal. "
             "For liquids, set items[].is_liquid=true. "
             "analysis_text: a single paragraph of 350–420 characters in Russian that (1) states whether the dish appears homemade or packaged (do not invent brands unless clearly visible), "
             "(2) names 2–3 visually identified main components, (3) explains how portion size was estimated (e.g., by plate size ~24 cm and ingredient count/volume); "
-            "include the exact sentence: \"Использованы справочные данные ФИЦ питания и USDA.\" Return JSON only, without explanations."
+            'include the exact sentence: "Использованы справочные данные ФИЦ питания и USDA." Return JSON only, without explanations.'
         )
         api = (settings.FOODAI_API or "chat").lower()
         if api == "responses":
@@ -1410,10 +1368,8 @@ async def analyze_text(text: str) -> dict[str, Any]:
                             else:
                                 foodai_analysis_text_rewrite.labels(reason or "error").inc()
                         except Exception:
-                            try:
+                            with contextlib.suppress(Exception):
                                 foodai_analysis_text_rewrite.labels("error").inc()
-                            except Exception:
-                                pass
                     # Final safety: sanitize opener even if rewrite didn't trigger
                     try:
                         if parsed.get("analysis_text"):
@@ -1445,7 +1401,7 @@ async def analyze_text(text: str) -> dict[str, Any]:
                     return parsed
     # Fallback: if content mentions not_food=true but parsing failed, return a minimal not_food result
     try:
-        if isinstance(content, str) and '"not_food"' in content and 'true' in content:
+        if isinstance(content, str) and '"not_food"' in content and "true" in content:
             return {
                 "title": None,
                 "calories": 0,
@@ -1456,7 +1412,7 @@ async def analyze_text(text: str) -> dict[str, Any]:
                 "confidence": 0.0,
                 "items": [],
                 "references": {"sources": [
-                    "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                    'ФГБУН "ФИЦ питания и биотехнологии"',
                     "USDA FoodData Central",
                 ]},
                 "analysis_text": None,
@@ -1465,10 +1421,8 @@ async def analyze_text(text: str) -> dict[str, Any]:
             }
     except Exception:
         pass
-    try:
+    with contextlib.suppress(Exception):
         foodai_provider_error.labels(source="text", error="provider_unavailable").inc()
-    except Exception:
-        pass
     return {"error": "provider_unavailable"}
 
 
@@ -1604,10 +1558,8 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         n_raw = (needle or "").strip()
         def _norm(s: str) -> str:
             s = (s or "").lower()
-            try:
+            with contextlib.suppress(Exception):
                 s = s.replace("ё", "е")
-            except Exception:
-                pass
             return s
         def _tokens(s: str) -> list[str]:
             try:
@@ -1761,10 +1713,9 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             factor_pre = (1.0 / k) if dec else (k if inc or not dec else None)
 
         # 1.1) 'в полтора раза'
-        if factor_pre is None:
-            if re.search(r"\bв\s+полтора\s+раз[а]?\b", text_l):
-                k = 1.5
-                factor_pre = (1.0 / k) if dec else k
+        if factor_pre is None and re.search(r"\bв\s+полтора\s+раз[а]?\b", text_l):
+            k = 1.5
+            factor_pre = (1.0 / k) if dec else k
 
         # 1.2) 'x2' / 'х2' без 'раза'
         if factor_pre is None:
@@ -1789,10 +1740,9 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                     break
 
         # 1.4) 'наполовину' и 'на <долю>'
-        if factor_pre is None:
-            if re.search(r"\bнаполовину\b", text_l):
-                # по умолчанию трактуем как 0.5; при явном увеличении — 1.5
-                factor_pre = 0.5 if (dec or not inc) else 1.5
+        if factor_pre is None and re.search(r"\bнаполовину\b", text_l):
+            # по умолчанию трактуем как 0.5; при явном увеличении — 1.5
+            factor_pre = 0.5 if (dec or not inc) else 1.5
         if factor_pre is None:
             mf = re.search(r"\bна\s+(половину|треть|четверть|пятую|десятую)\b", text_l)
             if mf:
@@ -1839,7 +1789,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                         and it.get("fat_g") is not None and it.get("carbs_g") is not None
                     )
                     if has_macros:
-                        it["calories"] = int(round(float(it.get("calories") or 0) * factor_pre))
+                        it["calories"] = round(float(it.get("calories") or 0) * factor_pre)
                         it["protein_g"] = round(float(it.get("protein_g") or 0) * factor_pre, 1)
                         it["fat_g"] = round(float(it.get("fat_g") or 0) * factor_pre, 1)
                         it["carbs_g"] = round(float(it.get("carbs_g") or 0) * factor_pre, 1)
@@ -1864,15 +1814,12 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                 base_scaled_w = 0.0
             wg_items_scaled = round(out_w, 1)
             wg_out = base_scaled_w if base_scaled_w > 0 else wg_items_scaled
-            if wg_items_scaled > wg_out:
-                wg_out = wg_items_scaled
-            try:
+            wg_out = max(wg_out, wg_items_scaled)
+            with contextlib.suppress(Exception):
                 logger.info("FoodAI:scale | path=pre | instr='{}' | factor_pre={}", instr_raw, factor_pre)
-            except Exception:
-                pass
             return {
                 "title": title or "Блюдо",
-                "calories": int(out_cal if out_cal > 0 else int(round(base_cal * factor_pre))),
+                "calories": int(out_cal if out_cal > 0 else round(base_cal * factor_pre)),
                 "protein_g": float(out_p if out_p > 0 else round(base_p * factor_pre, 1)),
                 "fat_g": float(out_f if out_f > 0 else round(base_f * factor_pre, 1)),
                 "carbs_g": float(out_c if out_c > 0 else round(base_c * factor_pre, 1)),
@@ -1880,13 +1827,13 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                 "confidence": float((base or {}).get("confidence") or 0.8),
                 "items": items,
                 "references": {"sources": [
-                    "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                    'ФГБУН "ФИЦ питания и биотехнологии"',
                     "USDA FoodData Central",
                 ]},
                 "analysis_text": None,
                 "appearance": {},
                 "not_food": False,
-                "meta": {"action": "scale", "delta_cal": int((out_cal if out_cal > 0 else int(round(base_cal * factor_pre))) - base_cal)},
+                "meta": {"action": "scale", "delta_cal": int((out_cal if out_cal > 0 else round(base_cal * factor_pre)) - base_cal)},
             }
     except Exception:
         pass
@@ -2026,14 +1973,14 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         }
         n = (name or "").lower()
         hit = None
-        for k in per100.keys():
+        for k in per100:
             if k in n:
                 hit = per100[k]
                 break
         if not hit:
             hit = {"cal": 250, "p": 8.0, "f": 18.0, "c": 12.0}
         factor = max(qty_g, 0.0) / 100.0
-        cal = int(round(hit["cal"] * factor))
+        cal = round(hit["cal"] * factor)
         p = round(hit["p"] * factor, 1)
         f = round(hit["f"] * factor, 1)
         c = round(hit["c"] * factor, 1)
@@ -2075,7 +2022,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                     "confidence": float((base or {}).get("confidence") or 0.8),
                     "items": items,
                     "references": {"sources": [
-                        "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                        'ФГБУН "ФИЦ питания и биотехнологии"',
                         "USDA FoodData Central",
                     ]},
                     "analysis_text": None,
@@ -2105,7 +2052,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                     "confidence": float((base or {}).get("confidence") or 0.8),
                     "items": items,
                     "references": {"sources": [
-                        "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                        'ФГБУН "ФИЦ питания и биотехнологии"',
                         "USDA FoodData Central",
                     ]},
                     "analysis_text": None,
@@ -2171,16 +2118,14 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                     pass
                 try:
                     # If converter told us it's liquid — mark it
-                    if qty is not None and '_is_liq' in locals() and bool(_is_liq):
+                    if qty is not None and "_is_liq" in locals() and bool(_is_liq):
                         _item_out["is_liquid"] = True
                 except Exception:
                     pass
                 items.append(_item_out)
                 out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
-                try:
+                with contextlib.suppress(Exception):
                     logger.info("FoodAI:edit | replace | ok | old='{}' new='{}' | new_qty_g={} | delta_cal={}", old_name, new_name, new_qty_g, int(out_cal - base_cal))
-                except Exception:
-                    pass
                 return {
                     "title": (title or "Блюдо"),
                     "calories": int(out_cal),
@@ -2191,7 +2136,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                     "confidence": float((base or {}).get("confidence") or 0.8),
                     "items": items,
                     "references": {"sources": [
-                        "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                        'ФГБУН "ФИЦ питания и биотехнологии"',
                         "USDA FoodData Central",
                     ]},
                     "analysis_text": None,
@@ -2255,7 +2200,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                     "confidence": float((base or {}).get("confidence") or 0.8),
                     "items": items,
                     "references": {"sources": [
-                        "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                        'ФГБУН "ФИЦ питания и биотехнологии"',
                         "USDA FoodData Central",
                     ]},
                     "analysis_text": None,
@@ -2277,10 +2222,8 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                         elif re.search(r"\bувелич\w*", text_l):
                             factor = k
                         # else keep LLM factor
-                        try:
+                        with contextlib.suppress(Exception):
                             logger.info("FoodAI:scale | path=nlu | override=times | k={} | factor_final={}", k, factor)
-                        except Exception:
-                            pass
                     else:
                         # 2) percent pattern like +30%, -30%, 'на 30%'
                         mp = re.search(r"([+\-−–]?\d{1,3})\s*%", text_l)
@@ -2291,10 +2234,8 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                             else:
                                 is_dec = re.search(r"\b(уменьш|сократ|меньш)\w*", text_l) is not None
                                 factor = 1.0 - (p / 100.0) if is_dec else 1.0 + (p / 100.0)
-                            try:
+                            with contextlib.suppress(Exception):
                                 logger.info("FoodAI:scale | path=nlu | override=percent | p={} | factor_final={}", p, factor)
-                            except Exception:
-                                pass
                     # 3) If user explicitly asked to decrease and factor>1 -> interpret as divide (safety)
                     if re.search(r"\b(уменьш|сократ|меньш)\w*", text_l) and factor > 1.0:
                         factor = 1.0 / factor
@@ -2306,10 +2247,8 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                 except Exception:
                     factor = 1.0
                 # Debug log
-                try:
+                with contextlib.suppress(Exception):
                     logger.info("FoodAI:scale | path=nlu | instr='{}' | factor_final={}", instr_raw, factor)
-                except Exception:
-                    pass
                 items = _clone_items(items_in)
                 for it in items:
                     try:
@@ -2322,7 +2261,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                             and it.get("fat_g") is not None and it.get("carbs_g") is not None
                         )
                         if has_macros:
-                            it["calories"] = int(round(float(it.get("calories") or 0) * factor))
+                            it["calories"] = round(float(it.get("calories") or 0) * factor)
                             it["protein_g"] = round(float(it.get("protein_g") or 0) * factor, 1)
                             it["fat_g"] = round(float(it.get("fat_g") or 0) * factor, 1)
                             it["carbs_g"] = round(float(it.get("carbs_g") or 0) * factor, 1)
@@ -2335,13 +2274,11 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                         continue
                 out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
                 wg_out = round(out_w, 1)
-                try:
+                with contextlib.suppress(Exception):
                     logger.info("FoodAI:scale | path=nlu | instr='{}' | factor={} | out_w={}", instr_raw, factor, wg_out)
-                except Exception:
-                    pass
                 return {
                     "title": title or "Блюдо",
-                    "calories": int(out_cal if out_cal > 0 else int(round(base_cal * factor))),
+                    "calories": int(out_cal if out_cal > 0 else round(base_cal * factor)),
                     "protein_g": float(out_p if out_p > 0 else round(base_p * factor, 1)),
                     "fat_g": float(out_f if out_f > 0 else round(base_f * factor, 1)),
                     "carbs_g": float(out_c if out_c > 0 else round(base_c * factor, 1)),
@@ -2349,13 +2286,13 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                     "confidence": float((base or {}).get("confidence") or 0.8),
                     "items": items,
                     "references": {"sources": [
-                        "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                        'ФГБУН "ФИЦ питания и биотехнологии"',
                         "USDA FoodData Central",
                     ]},
                     "analysis_text": None,
                     "appearance": {},
                     "not_food": False,
-                    "meta": {"action": action, "delta_cal": int((out_cal if out_cal > 0 else int(round(base_cal * factor))) - base_cal)},
+                    "meta": {"action": action, "delta_cal": int((out_cal if out_cal > 0 else round(base_cal * factor)) - base_cal)},
                 }
 
     def _qty_to_grams(name: str, qty: float, unit: str | None) -> tuple[float, bool]:
@@ -2485,14 +2422,14 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         }
         n = (name or "").lower()
         hit = None
-        for k in per100.keys():
+        for k in per100:
             if k in n:
                 hit = per100[k]
                 break
         if not hit:
             hit = {"cal": 250, "p": 8.0, "f": 18.0, "c": 12.0}
         factor = max(qty_g, 0.0) / 100.0
-        cal = int(round(hit["cal"] * factor))
+        cal = round(hit["cal"] * factor)
         p = round(hit["p"] * factor, 1)
         f = round(hit["f"] * factor, 1)
         c = round(hit["c"] * factor, 1)
@@ -2557,16 +2494,12 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         items = _clone_items(items_in)
         idxs = _find_indices(items, old_name)
         if len(idxs) == 0:
-            try:
+            with contextlib.suppress(Exception):
                 logger.info("FoodAI:edit | replace | match=0 | old='{}'", old_name)
-            except Exception:
-                pass
             return {"error": "not_found", "meta": {"action": action, "reason": "not_found"}}
         if len(idxs) > 1:
-            try:
+            with contextlib.suppress(Exception):
                 logger.info("FoodAI:edit | replace | match>1 | idxs={} | old='{}'", idxs, old_name)
-            except Exception:
-                pass
             return {"error": "ambiguous", "meta": {"action": action, "reason": "ambiguous"}}
         idx = idxs[0]
         # Foodness gate for new item in replace
@@ -2581,10 +2514,8 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         except Exception:
             is_food_flag = None
         if is_food_flag is False:
-            try:
+            with contextlib.suppress(Exception):
                 logger.info("FoodAI:edit | replace | rejected_not_food | new='{}'", new_name)
-            except Exception:
-                pass
             return {"error": "not_food", "meta": {"action": action, "reason": "not_food"}}
         # decide new qty
         new_qty_g: float
@@ -2631,16 +2562,14 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             pass
         try:
             # If converter told us it's liquid — mark it
-            if qty is not None and '_is_liq' in locals() and bool(_is_liq):
+            if qty is not None and "_is_liq" in locals() and bool(_is_liq):
                 _item_out["is_liquid"] = True
         except Exception:
             pass
         items[idx] = _item_out
         out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
-        try:
+        with contextlib.suppress(Exception):
             logger.info("FoodAI:edit | replace | ok | old='{}' new='{}' | new_qty_g={} | delta_cal={}", old_name, new_name, new_qty_g, int(out_cal - base_cal))
-        except Exception:
-            pass
         return {
             "title": (title or "Блюдо"),
             "calories": int(out_cal),
@@ -2651,7 +2580,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "confidence": float((base or {}).get("confidence") or 0.8),
             "items": items,
             "references": {"sources": [
-                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                'ФГБУН "ФИЦ питания и биотехнологии"',
                 "USDA FoodData Central",
             ]},
             "analysis_text": None,
@@ -2716,7 +2645,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             pass
         try:
             # If converter told us it's liquid — mark it
-            if unit is not None and '_is_liq' in locals() and bool(_is_liq):
+            if unit is not None and "_is_liq" in locals() and bool(_is_liq):
                 _item_out["is_liquid"] = True
         except Exception:
             pass
@@ -2732,7 +2661,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "confidence": float((base or {}).get("confidence") or 0.8),
             "items": items,
             "references": {"sources": [
-                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                'ФГБУН "ФИЦ питания и биотехнологии"',
                 "USDA FoodData Central",
             ]},
             "analysis_text": None,
@@ -2783,7 +2712,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "confidence": float((base or {}).get("confidence") or 0.8),
             "items": items,
             "references": {"sources": [
-                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                'ФГБУН "ФИЦ питания и биотехнологии"',
                 "USDA FoodData Central",
             ]},
             "analysis_text": None,
@@ -2830,7 +2759,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "confidence": float((base or {}).get("confidence") or 0.8),
             "items": items,
             "references": {"sources": [
-                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                'ФГБУН "ФИЦ питания и биотехнологии"',
                 "USDA FoodData Central",
             ]},
             "analysis_text": None,
@@ -2844,7 +2773,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
     m = re.match(r"^\s*(?:добавить|добавь|положить|прибавить|\+)\s*([a-zа-яё\-\s]+?)\s*(\d{1,4})\s*(г|гр|грамм|мл|ml|л|l|шт|pc|pcs|ч\.л\.?|ст\.л\.?|стакан|кружка|чашка|щепотка|горсть)?\b", instr, flags=re.IGNORECASE)
     if m:
         action = "add"
-        add_name = _normalize_name_ru((m.group(1) or "").strip().strip('- '))
+        add_name = _normalize_name_ru((m.group(1) or "").strip().strip("- "))
         add_name = re.sub(r"^(?:добавить|добавь|положить|прибавить)\s+", "", add_name, flags=re.IGNORECASE)
         add_qty = float(m.group(2))
         unit = (m.group(3) or None)
@@ -2898,7 +2827,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             pass
         try:
             # If converter told us it's liquid — mark it
-            if unit is not None and '_is_liq' in locals() and bool(_is_liq):
+            if unit is not None and "_is_liq" in locals() and bool(_is_liq):
                 _item_out["is_liquid"] = True
         except Exception:
             pass
@@ -2916,7 +2845,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "confidence": float((base or {}).get("confidence") or 0.8),
             "items": items,
             "references": {"sources": [
-                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                'ФГБУН "ФИЦ питания и биотехнологии"',
                 "USDA FoodData Central",
             ]},
             "analysis_text": None,
@@ -2929,7 +2858,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
     m = re.match(r"^\s*(?:добавить|добавь|положить|прибавить|\+)\s*([a-zа-яё\-\s]+?)\s*$", instr, flags=re.IGNORECASE)
     if m:
         action = "add"
-        add_name = _normalize_name_ru((m.group(1) or "").strip().strip('- '))
+        add_name = _normalize_name_ru((m.group(1) or "").strip().strip("- "))
         add_name = re.sub(r"^(?:добавить|добавь|положить|прибавить)\s+", "", add_name, flags=re.IGNORECASE)
         # Foodness gate (None -> allow)
         try:
@@ -2976,7 +2905,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "confidence": float((base or {}).get("confidence") or 0.8),
             "items": items,
             "references": {"sources": [
-                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                'ФГБУН "ФИЦ питания и биотехнологии"',
                 "USDA FoodData Central",
             ]},
             "analysis_text": None,
@@ -3011,7 +2940,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "confidence": float((base or {}).get("confidence") or 0.8),
             "items": items,
             "references": {"sources": [
-                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                'ФГБУН "ФИЦ питания и биотехнологии"',
                 "USDA FoodData Central",
             ]},
             "analysis_text": None,
@@ -3069,7 +2998,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         wg_out = round(max(out_w, wg_scaled), 1) if (wg_base or out_w) else 0.0
         return {
             "title": title or "Блюдо",
-            "calories": int(out_cal if out_cal > 0 else int(round(base_cal * factor))),
+            "calories": int(out_cal if out_cal > 0 else round(base_cal * factor)),
             "protein_g": float(out_p if out_p > 0 else round(base_p * factor, 1)),
             "fat_g": float(out_f if out_f > 0 else round(base_f * factor, 1)),
             "carbs_g": float(out_c if out_c > 0 else round(base_c * factor, 1)),
@@ -3077,13 +3006,13 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "confidence": float((base or {}).get("confidence") or 0.8),
             "items": items,
             "references": {"sources": [
-                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                'ФГБУН "ФИЦ питания и биотехнологии"',
                 "USDA FoodData Central",
             ]},
             "analysis_text": None,
             "appearance": {},
             "not_food": False,
-            "meta": {"action": action, "delta_cal": int((out_cal if out_cal > 0 else int(round(base_cal * factor))) - base_cal)},
+            "meta": {"action": action, "delta_cal": int((out_cal if out_cal > 0 else round(base_cal * factor)) - base_cal)},
         }
 
     # scale (times or percent) — fallback when NLU didn't trigger
@@ -3110,10 +3039,8 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         except Exception:
             factor = 1.0
         # Debug log
-        try:
+        with contextlib.suppress(Exception):
             logger.info("FoodAI:scale | path=regex | instr='{}' | factor_final={}", instr_raw, factor)
-        except Exception:
-            pass
         items = _clone_items(items_in)
         for it in items:
             try:
@@ -3125,7 +3052,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
                     and it.get("fat_g") is not None and it.get("carbs_g") is not None
                 )
                 if has_macros:
-                    it["calories"] = int(round(float(it.get("calories") or 0) * factor))
+                    it["calories"] = round(float(it.get("calories") or 0) * factor)
                     it["protein_g"] = round(float(it.get("protein_g") or 0) * factor, 1)
                     it["fat_g"] = round(float(it.get("fat_g") or 0) * factor, 1)
                     it["carbs_g"] = round(float(it.get("carbs_g") or 0) * factor, 1)
@@ -3139,7 +3066,7 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
         out_cal, out_p, out_f, out_c, out_w = _sum_items(items)
         return {
             "title": title or "Блюдо",
-            "calories": int(out_cal if out_cal > 0 else int(round(base_cal * factor))),
+            "calories": int(out_cal if out_cal > 0 else round(base_cal * factor)),
             "protein_g": float(out_p if out_p > 0 else round(base_p * factor, 1)),
             "fat_g": float(out_f if out_f > 0 else round(base_f * factor, 1)),
             "carbs_g": float(out_c if out_c > 0 else round(base_c * factor, 1)),
@@ -3147,13 +3074,13 @@ async def refine_meal(base: dict[str, Any], instruction: str) -> dict[str, Any]:
             "confidence": float((base or {}).get("confidence") or 0.8),
             "items": items,
             "references": {"sources": [
-                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                'ФГБУН "ФИЦ питания и биотехнологии"',
                 "USDA FoodData Central",
             ]},
             "analysis_text": None,
             "appearance": {},
             "not_food": False,
-            "meta": {"action": "scale", "delta_cal": int((out_cal if out_cal > 0 else int(round(base_cal * factor))) - base_cal)},
+            "meta": {"action": "scale", "delta_cal": int((out_cal if out_cal > 0 else round(base_cal * factor)) - base_cal)},
         }
 
     # Fallback: unsupported

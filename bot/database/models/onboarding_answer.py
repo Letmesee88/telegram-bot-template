@@ -1,8 +1,5 @@
 from __future__ import annotations
-
-from typing import Optional
 from datetime import datetime
-
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -23,10 +20,10 @@ class OnboardingAnswerModel(Base):
     daily_plan: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
     # Denormalized fields for fast admin filtering/sorting
-    goal: Mapped[Optional[str]] = mapped_column(String(16), index=True)
-    calories: Mapped[Optional[int]] = mapped_column(Integer, index=True)
+    goal: Mapped[str | None] = mapped_column(String(16), index=True)
+    calories: Mapped[int | None] = mapped_column(Integer, index=True)
 
     created_at: Mapped[created_at]
-    updated_at: Mapped[Optional[datetime]] = mapped_column(
+    updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(), server_default=text("TIMEZONE('utc', now())"), onupdate=text("TIMEZONE('utc', now())")
     )

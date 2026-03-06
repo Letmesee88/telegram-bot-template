@@ -4,7 +4,7 @@ import json
 import math
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Optional, Tuple, List
+
 try:
     from PIL import Image, ImageDraw, ImageFont  # type: ignore
     _PIL_OK = True
@@ -12,22 +12,23 @@ except Exception:
     Image = ImageDraw = ImageFont = None  # type: ignore
     _PIL_OK = False
 
-import aiohttp
 import asyncio
 import urllib.parse
+
+import aiohttp
 from loguru import logger
 
+from bot.cache.redis import build_key, cached
 from bot.core.config import settings
-from bot.cache.redis import cached, build_key
 
 
 @dataclass
 class Projection:
-    labels: List[str]
-    values: List[float]
-    band_low: Optional[List[float]] = None
-    band_high: Optional[List[float]] = None
-    target_value: Optional[float] = None
+    labels: list[str]
+    values: list[float]
+    band_low: list[float] | None = None
+    band_high: list[float] | None = None
+    target_value: float | None = None
     mode: str = "percent"  # percent|kg
 
 
@@ -39,11 +40,10 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
-def _date_range_by_week(start: date, end: date) -> List[date]:
+def _date_range_by_week(start: date, end: date) -> list[date]:
     days = []
     cur = start
-    if end < start:
-        end = start
+    end = max(end, start)
     while cur <= end:
         days.append(cur)
         cur += timedelta(days=7)
@@ -63,15 +63,15 @@ def _ease_progress(idx: int, total_steps: int) -> float:
     return t
 
 
-def _build_projection_percent(start_w: float, goal_w: Optional[float], weekly_rate: float,
-                              start_date: date, eta_date: Optional[date]) -> Projection:
+def _build_projection_percent(start_w: float, goal_w: float | None, weekly_rate: float,
+                              start_date: date, eta_date: date | None) -> Projection:
     horizon_end = eta_date or (start_date + timedelta(weeks=12))
     dates = _date_range_by_week(start_date, horizon_end)
 
     def to_pct(w: float) -> float:
         return round(w / start_w * 100.0, 2)
 
-    values: List[float] = []
+    values: list[float] = []
     steps = max(1, len(dates) - 1)
     for i, _ in enumerate(dates):
         if goal_w is not None and weekly_rate > 0:
@@ -87,12 +87,12 @@ def _build_projection_percent(start_w: float, goal_w: Optional[float], weekly_ra
     target_value = to_pct(goal_w) if goal_w is not None else None
 
     band_frac = settings.CHARTS_BAND_FRAC
-    band_low: Optional[List[float]] = None
-    band_high: Optional[List[float]] = None
+    band_low: list[float] | None = None
+    band_high: list[float] | None = None
     if weekly_rate and band_frac > 0:
-        low: List[float] = []
-        high: List[float] = []
-        for i, v in enumerate(values):
+        low: list[float] = []
+        high: list[float] = []
+        for i, _v in enumerate(values):
             # corridor around the curve based on ±band around weekly rate (linear approx)
             delta_kg = weekly_rate * i
             delta_low = delta_kg * (1 - band_frac)
@@ -104,14 +104,13 @@ def _build_projection_percent(start_w: float, goal_w: Optional[float], weekly_ra
                 else:  # gain
                     w_low = min(start_w + delta_low, goal_w)
                     w_high = min(start_w + delta_high, goal_w)
+            # no goal: free trajectory
+            elif goal_w is None and weekly_rate >= 0:
+                w_low = start_w + delta_low
+                w_high = start_w + delta_high
             else:
-                # no goal: free trajectory
-                if goal_w is None and weekly_rate >= 0:
-                    w_low = start_w + delta_low
-                    w_high = start_w + delta_high
-                else:
-                    w_low = start_w - delta_high
-                    w_high = start_w - delta_low
+                w_low = start_w - delta_high
+                w_high = start_w - delta_low
             low.append(round(w_low / start_w * 100.0, 2))
             high.append(round(w_high / start_w * 100.0, 2))
         band_low = low
@@ -122,12 +121,12 @@ def _build_projection_percent(start_w: float, goal_w: Optional[float], weekly_ra
                       target_value=target_value, mode="percent")
 
 
-def _build_projection_kg(start_w: float, goal_w: Optional[float], weekly_rate: float,
-                         start_date: date, eta_date: Optional[date]) -> Projection:
+def _build_projection_kg(start_w: float, goal_w: float | None, weekly_rate: float,
+                         start_date: date, eta_date: date | None) -> Projection:
     horizon_end = eta_date or (start_date + timedelta(weeks=12))
     dates = _date_range_by_week(start_date, horizon_end)
 
-    values: List[float] = []
+    values: list[float] = []
     steps = max(1, len(dates) - 1)
     for i, _ in enumerate(dates):
         if goal_w is not None and weekly_rate > 0:
@@ -142,11 +141,11 @@ def _build_projection_kg(start_w: float, goal_w: Optional[float], weekly_rate: f
     target_value = round(goal_w, 2) if goal_w is not None else None
 
     band_frac = settings.CHARTS_BAND_FRAC
-    band_low: Optional[List[float]] = None
-    band_high: Optional[List[float]] = None
+    band_low: list[float] | None = None
+    band_high: list[float] | None = None
     if weekly_rate and band_frac > 0:
-        low: List[float] = []
-        high: List[float] = []
+        low: list[float] = []
+        high: list[float] = []
         for i, _ in enumerate(values):
             delta_kg = weekly_rate * i
             delta_low = delta_kg * (1 - band_frac)
@@ -158,13 +157,12 @@ def _build_projection_kg(start_w: float, goal_w: Optional[float], weekly_rate: f
                 else:
                     w_low = min(start_w + delta_low, goal_w)
                     w_high = min(start_w + delta_high, goal_w)
+            elif weekly_rate >= 0:
+                w_low = start_w + delta_low
+                w_high = start_w + delta_high
             else:
-                if weekly_rate >= 0:
-                    w_low = start_w + delta_low
-                    w_high = start_w + delta_high
-                else:
-                    w_low = start_w - delta_high
-                    w_high = start_w - delta_low
+                w_low = start_w - delta_high
+                w_high = start_w - delta_low
             low.append(round(w_low, 2))
             high.append(round(w_high, 2))
         band_low = low
@@ -175,8 +173,8 @@ def _build_projection_kg(start_w: float, goal_w: Optional[float], weekly_rate: f
                       target_value=target_value, mode="kg")
 
 
-def build_projection(start_weight: float, goal_weight: Optional[float], weekly_rate: float,
-                     start_date: date, eta_date: Optional[date], mode: str = "percent") -> Projection:
+def build_projection(start_weight: float, goal_weight: float | None, weekly_rate: float,
+                     start_date: date, eta_date: date | None, mode: str = "percent") -> Projection:
     rate = abs(weekly_rate)
     if mode == "kg":
         return _build_projection_kg(start_weight, goal_weight, rate, start_date, eta_date)
@@ -354,8 +352,8 @@ def _config_cache_key(user_id: int, payload_hash: str, *args, **kwargs) -> str:
 
 @cached(ttl=300, namespace="charts", key_builder=_config_cache_key)
 async def get_plan_chart_png(user_id: int, payload_hash: str, *,
-                             start_weight: float, goal_weight: Optional[float], weekly_rate: float,
-                             start_date: date, eta_date: Optional[date]) -> Optional[bytes]:
+                             start_weight: float, goal_weight: float | None, weekly_rate: float,
+                             start_date: date, eta_date: date | None) -> bytes | None:
     logger.info(
         "charts.invoke | user_id={} | enabled={} | provider={} | mode={} | weekly={} | start={} | eta={}",
         user_id,
@@ -456,8 +454,8 @@ async def get_plan_chart_png(user_id: int, payload_hash: str, *,
         return None
 
 
-def _history_panel_config(title: str, labels: List[str], values: List[int], *,
-                         bar_color: str, norm_value: Optional[float]) -> dict:
+def _history_panel_config(title: str, labels: list[str], values: list[int], *,
+                         bar_color: str, norm_value: float | None) -> dict:
     bg = getattr(settings, "CHARTS_COLOR_BG", None) or "#0b1220"
     grid = getattr(settings, "CHARTS_COLOR_GRID", None) or "#203049"
     axis = getattr(settings, "CHARTS_COLOR_AXIS", None) or "#94a3b8"
@@ -513,7 +511,7 @@ def _history_panel_config(title: str, labels: List[str], values: List[int], *,
     annotations: dict = {}
     if norm_value is not None and float(norm_value) > 0 and labels:
         mid = max(0, min(len(labels) - 1, len(labels) // 2))
-        label_text = f"Норма: {int(round(float(norm_value)))}"
+        label_text = f"Норма: {round(float(norm_value))}"
         annotations["normLabel"] = {
             "type": "label",
             "xValue": labels[mid],
@@ -526,7 +524,7 @@ def _history_panel_config(title: str, labels: List[str], values: List[int], *,
             "textAlign": "center",
         }
 
-    cfg = {
+    return {
         "type": "bar",
         "data": {"labels": labels, "datasets": datasets},
         "options": {
@@ -547,10 +545,9 @@ def _history_panel_config(title: str, labels: List[str], values: List[int], *,
         },
         "backgroundColor": bg,
     }
-    return cfg
 
 
-async def _render_quickchart(config: dict, *, width: int, height: int) -> Optional[bytes]:
+async def _render_quickchart(config: dict, *, width: int, height: int) -> bytes | None:
     if settings.CHARTS_PROVIDER != "quickchart":
         logger.info("charts.skip | reason=provider:{}", settings.CHARTS_PROVIDER)
         return None
@@ -610,8 +607,8 @@ async def _render_quickchart(config: dict, *, width: int, height: int) -> Option
 
 @cached(ttl=300, namespace="charts", key_builder=_config_cache_key)
 async def get_history_chart_png(user_id: int, payload_hash: str, *,
-                                x_labels: List[str], cal: List[int], p: List[int], f: List[int], c: List[int],
-                                norms: Optional[dict]) -> Optional[bytes]:
+                                x_labels: list[str], cal: list[int], p: list[int], f: list[int], c: list[int],
+                                norms: dict | None) -> bytes | None:
     if not settings.CHARTS_ENABLED:
         logger.info("charts.skip | reason=disabled")
         return None
@@ -636,7 +633,7 @@ async def get_history_chart_png(user_id: int, payload_hash: str, *,
         (norms or {}).get("c"),
     ]
 
-    panels: List[Optional[bytes]] = []
+    panels: list[bytes | None] = []
     for i in range(4):
         cfg = _history_panel_config(titles[i], x_labels, values[i], bar_color=colors[i], norm_value=norms_seq[i])
         png = await _render_quickchart(cfg, width=panel_w, height=panel_h)

@@ -5,12 +5,12 @@ from decimal import Decimal
 from uuid import uuid4
 
 from loguru import logger
+from sqlalchemy import select
 from yookassa import Configuration, Payment
 
 from bot.core.config import settings
 from bot.database.database import sessionmaker
 from bot.database.models import PaymentModel, UserModel
-from sqlalchemy import select
 
 
 @dataclass
@@ -22,7 +22,8 @@ class CreatedPayment:
 
 def _configure() -> None:
     if not settings.YOOKASSA_SHOP_ID or not settings.YOOKASSA_SECRET_KEY:
-        raise RuntimeError("YooKassa credentials are not configured")
+        msg = "YooKassa credentials are not configured"
+        raise RuntimeError(msg)
     Configuration.configure(settings.YOOKASSA_SHOP_ID, settings.YOOKASSA_SECRET_KEY)
 
 
@@ -34,7 +35,8 @@ def _amount_for_plan(plan: str) -> Decimal:
         return Decimal(str(settings.PRICE_MONTH_RUB))
     if plan == "year":
         return Decimal(str(settings.PRICE_YEAR_RUB))
-    raise ValueError(f"unknown plan: {plan}")
+    msg = f"unknown plan: {plan}"
+    raise ValueError(msg)
 
 
 async def create_payment(user_id: int, plan: str, next_plan: str | None = None, return_url: str | None = None) -> CreatedPayment:
@@ -59,7 +61,8 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
                 except Exception:
                     md = {}
                 if str(md.get("plan", "")).lower() == "trial":
-                    raise RuntimeError("trial_already_used")
+                    msg = "trial_already_used"
+                    raise RuntimeError(msg)
 
     # Derive default next_plan if not explicitly provided
     eff_next_plan = next_plan
@@ -79,7 +82,8 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
             select(UserModel.email).where(UserModel.id == user_id)  # type: ignore[name-defined]
         )
     if not user_email:
-        raise RuntimeError("email_required")
+        msg = "email_required"
+        raise RuntimeError(msg)
 
     def _desc(p: str) -> str:
         if p == "trial":
@@ -130,11 +134,12 @@ async def create_payment(user_id: int, plan: str, next_plan: str | None = None, 
         logger.error(f"YK create payment failed: {e}")
         raise
 
-    payment_id: str = getattr(yk_payment, "id")
+    payment_id: str = yk_payment.id
     confirmation = getattr(yk_payment, "confirmation", None)
     confirmation_url: str = getattr(confirmation, "confirmation_url", None) if confirmation else None
     if not confirmation_url:
-        raise RuntimeError("No confirmation_url returned by YooKassa")
+        msg = "No confirmation_url returned by YooKassa"
+        raise RuntimeError(msg)
     logger.info(f"YK payment created: id={payment_id} idem={idem} url={confirmation_url}")
 
     async with sessionmaker() as session:
@@ -183,7 +188,8 @@ async def create_recurring_payment(
             select(UserModel.email).where(UserModel.id == user_id)  # type: ignore[name-defined]
         )
     if not user_email:
-        raise RuntimeError("email_required")
+        msg = "email_required"
+        raise RuntimeError(msg)
 
     def _desc(p: str) -> str:
         if p == "trial":
@@ -230,7 +236,7 @@ async def create_recurring_payment(
         logger.error(f"YK create recurring failed: {e}")
         raise
 
-    payment_id: str = getattr(yk_payment, "id")
+    payment_id: str = yk_payment.id
     logger.info(f"YK recurring created: id={payment_id} idem={idem}")
 
     # Persist pending record for correlation with webhook

@@ -1,9 +1,7 @@
 from __future__ import annotations
-from enum import Enum
-from typing import Optional
 from datetime import date
-
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from enum import Enum
+from pydantic import BaseModel, Field, field_validator
 
 
 class Gender(str, Enum):
@@ -46,31 +44,34 @@ class OnboardingData(BaseModel):
     age: int
     weight_kg: float
     height_cm: float
-    activity_text: Optional[str] = None
-    activity_level: Optional[ActivityLevel] = None
+    activity_text: str | None = None
+    activity_level: ActivityLevel | None = None
     goal: Goal
-    goal_weight_kg: Optional[float] = None
-    speed: Optional[Speed] = None
+    goal_weight_kg: float | None = None
+    speed: Speed | None = None
 
     @field_validator("age")
     @classmethod
     def validate_age(cls, v: int) -> int:
         if not (1 <= v <= 120):
-            raise ValueError("age must be between 1 and 120")
+            msg = "age must be between 1 and 120"
+            raise ValueError(msg)
         return v
 
     @field_validator("weight_kg")
     @classmethod
     def validate_weight(cls, v: float) -> float:
         if not (30 <= v <= 300):
-            raise ValueError("weight must be between 30 and 300 kg")
+            msg = "weight must be between 30 and 300 kg"
+            raise ValueError(msg)
         return v
 
     @field_validator("height_cm")
     @classmethod
     def validate_height(cls, v: float) -> float:
         if not (120 <= v <= 250):
-            raise ValueError("height must be between 120 and 250 cm")
+            msg = "height must be between 120 and 250 cm"
+            raise ValueError(msg)
         return v
 
     # activity_text is optional in the new button-based flow
@@ -84,4 +85,4 @@ class DailyPlan(BaseModel):
     sources: list[str]
     tdee: int
     weekly_rate_kg: float
-    eta_date: Optional[date]
+    eta_date: date | None

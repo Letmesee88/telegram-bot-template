@@ -1,13 +1,20 @@
 from aiogram import Router
 
-from . import admin, export_users, onboarding, start, foodai, menu
-from . import history
-from . import templates
-from . import recommendations
-from . import account
-from . import weight
-from . import settings
-from . import gate
+from . import (
+    account,
+    admin,
+    export_users,
+    foodai,
+    gate,
+    history,
+    menu,
+    onboarding,
+    recommendations,
+    settings,
+    start,
+    templates,
+    weight,
+)
 
 
 def get_handlers_router() -> Router:

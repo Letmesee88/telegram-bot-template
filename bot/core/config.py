@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if TYPE_CHECKING:
     from sqlalchemy.engine.url import URL
@@ -155,7 +155,7 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     FOODAI_IMAGE_DETAIL_HIGH_RETRY: bool = True  # retry photo analysis with detail=high if confidence below threshold
     FOODAI_VISION_MODEL: str = "gpt-5-mini"  # preferred model for image analysis (falls back to FOODAI_DEFAULT_MODEL)
     # Analysis text rewrite controls
-    # auto|always|off — auto: validate and rewrite only if needed; always: always rewrite; off: never rewrite
+    # auto|always|off вЂ” auto: validate and rewrite only if needed; always: always rewrite; off: never rewrite
     FOODAI_ANALYSIS_REWRITE: str = "auto"
     FOODAI_ANALYSIS_REWRITE_TIMEOUT: int = 8
 
@@ -184,7 +184,7 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     FOODAI_ALLOW_FALLBACK_TO_4O_MINI: bool = True
     FOODAI_TEXT_FALLBACK_TO_CHAT: bool = True
     FOODAI_SHOW_LOW_CONF_HINT: bool = False
-    # Show confidence category labels (низкая/средняя) in preview
+    # Show confidence category labels (РЅРёР·РєР°СЏ/СЃСЂРµРґРЅСЏСЏ) in preview
     FOODAI_SHOW_CONF_LABELS: bool = True
 
     # =====================
@@ -238,7 +238,7 @@ class Settings(BotSettings, DBSettings, CacheSettings):
 
     # Adjustment explanation rephrasing (hybrid UX)
     ADJUST_REPHRASE_ENABLED: bool = False
-    # neutral|friendly|clinical — controls tone only; numbers/units must remain EXACTLY the same
+    # neutral|friendly|clinical вЂ” controls tone only; numbers/units must remain EXACTLY the same
     ADJUST_REPHRASE_TONE: str = "neutral"
     # Small timeout, we fall back to deterministic text on timeout
     ADJUST_REPHRASE_TIMEOUT_SEC: float = 1.8
@@ -246,33 +246,33 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     ADJUST_REPHRASE_LENGTH_MIN: int = 220
 
     # Adjustment engine mode:
-    # - deterministic: LLM только классифицирует намерения, все числа считает код
-    # - hybrid: LLM может подсказывать числа, но мы валидируем и пересчитываем по правилам
-    # - llm_only: чистый LLM, локальные эвристики отключены; код применяет только безопасные клампы
+    # - deterministic: LLM С‚РѕР»СЊРєРѕ РєР»Р°СЃСЃРёС„РёС†РёСЂСѓРµС‚ РЅР°РјРµСЂРµРЅРёСЏ, РІСЃРµ С‡РёСЃР»Р° СЃС‡РёС‚Р°РµС‚ РєРѕРґ
+    # - hybrid: LLM РјРѕР¶РµС‚ РїРѕРґСЃРєР°Р·С‹РІР°С‚СЊ С‡РёСЃР»Р°, РЅРѕ РјС‹ РІР°Р»РёРґРёСЂСѓРµРј Рё РїРµСЂРµСЃС‡РёС‚С‹РІР°РµРј РїРѕ РїСЂР°РІРёР»Р°Рј
+    # - llm_only: С‡РёСЃС‚С‹Р№ LLM, Р»РѕРєР°Р»СЊРЅС‹Рµ СЌРІСЂРёСЃС‚РёРєРё РѕС‚РєР»СЋС‡РµРЅС‹; РєРѕРґ РїСЂРёРјРµРЅСЏРµС‚ С‚РѕР»СЊРєРѕ Р±РµР·РѕРїР°СЃРЅС‹Рµ РєР»Р°РјРїС‹
     ADJUST_ENGINE_MODE: str = "llm_only"  # deterministic|hybrid|llm_only
 
-    # Градуировка силы изменения (используется в hybrid-режиме)
-    # Калории: проценты уменьшения/увеличения
+    # Р“СЂР°РґСѓРёСЂРѕРІРєР° СЃРёР»С‹ РёР·РјРµРЅРµРЅРёСЏ (РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РІ hybrid-СЂРµР¶РёРјРµ)
+    # РљР°Р»РѕСЂРёРё: РїСЂРѕС†РµРЅС‚С‹ СѓРјРµРЅСЊС€РµРЅРёСЏ/СѓРІРµР»РёС‡РµРЅРёСЏ
     ADJUST_STRENGTH_CAL_PERCENT_SLIGHT: float = 5.0
     ADJUST_STRENGTH_CAL_PERCENT_MODERATE: float = 10.0
     ADJUST_STRENGTH_CAL_PERCENT_STRONG: float = 15.0
 
-    # Углеводы (целевые граммы для low_carb по степени)
+    # РЈРіР»РµРІРѕРґС‹ (С†РµР»РµРІС‹Рµ РіСЂР°РјРјС‹ РґР»СЏ low_carb РїРѕ СЃС‚РµРїРµРЅРё)
     ADJUST_STRENGTH_CARBS_G_SLIGHT: int = 120
     ADJUST_STRENGTH_CARBS_G_MODERATE: int = 80
     ADJUST_STRENGTH_CARBS_G_STRONG: int = 60
 
-    # Жиры (дельта в граммах по степени; минимум жиров всё равно соблюдается)
+    # Р–РёСЂС‹ (РґРµР»СЊС‚Р° РІ РіСЂР°РјРјР°С… РїРѕ СЃС‚РµРїРµРЅРё; РјРёРЅРёРјСѓРј Р¶РёСЂРѕРІ РІСЃС‘ СЂР°РІРЅРѕ СЃРѕР±Р»СЋРґР°РµС‚СЃСЏ)
     ADJUST_STRENGTH_FAT_DELTA_G_SLIGHT: int = 10
     ADJUST_STRENGTH_FAT_DELTA_G_MODERATE: int = 20
     ADJUST_STRENGTH_FAT_DELTA_G_STRONG: int = 30
 
-    # Белок (целевые г/кг по степени; будут зажаты в безопасный диапазон 1.2..2.4 г/кг)
+    # Р‘РµР»РѕРє (С†РµР»РµРІС‹Рµ Рі/РєРі РїРѕ СЃС‚РµРїРµРЅРё; Р±СѓРґСѓС‚ Р·Р°Р¶Р°С‚С‹ РІ Р±РµР·РѕРїР°СЃРЅС‹Р№ РґРёР°РїР°Р·РѕРЅ 1.2..2.4 Рі/РєРі)
     ADJUST_STRENGTH_PROTEIN_GKG_SLIGHT: float = 1.6
     ADJUST_STRENGTH_PROTEIN_GKG_MODERATE: float = 1.8
     ADJUST_STRENGTH_PROTEIN_GKG_STRONG: float = 2.0
 
-    # Принимать ли кастомные макросы без указания единиц ("г")
+    # РџСЂРёРЅРёРјР°С‚СЊ Р»Рё РєР°СЃС‚РѕРјРЅС‹Рµ РјР°РєСЂРѕСЃС‹ Р±РµР· СѓРєР°Р·Р°РЅРёСЏ РµРґРёРЅРёС† ("Рі")
     ADJUST_ACCEPT_CUSTOM_MACROS_WITHOUT_UNITS: bool = False
 
     # Activity LLM classification
@@ -326,6 +326,7 @@ class Settings(BotSettings, DBSettings, CacheSettings):
     # Subscription engine flags
     SUBSCRIPTION_AUTORENEW_ENABLED: bool = True
     SUBSCRIPTION_TRIAL_NEXT_PLAN: str = "year"  # after trial succeeds
+    FREE_TRIAL_DAYS: int = 3
     # Local time (MSK by business requirement) when renewal retries should run
     SUBSCRIPTION_RETRY_LOCAL_HOUR: int = 10
 
@@ -344,3 +345,4 @@ class Settings(BotSettings, DBSettings, CacheSettings):
 
 
 settings = Settings()
+

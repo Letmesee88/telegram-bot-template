@@ -17,9 +17,10 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import inspect
 from wtforms import PasswordField
 
-from admin.views.users import UserView as AppUserView
 from admin.views.onboarding import OnboardingAnswerView
-from bot.database.models import UserModel as AppUserModel, OnboardingAnswerModel
+from admin.views.users import UserView as AppUserView
+from bot.database.models import OnboardingAnswerModel
+from bot.database.models import UserModel as AppUserModel
 
 if TYPE_CHECKING:
     from werkzeug.wrappers.response import Response

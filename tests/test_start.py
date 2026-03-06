@@ -5,7 +5,7 @@ from aiogram.types import InlineKeyboardMarkup
 
 
 class DummyUser:
-    def __init__(self, user_id: int = 123):
+    def __init__(self, user_id: int = 123) -> None:
         self.id = user_id
         self.first_name = "Test"
         self.last_name = None
@@ -46,7 +46,7 @@ async def test_start_handler_sends_welcome_and_keyboard_completed(monkeypatch: p
 
     # Monkeypatch DB sessionmaker to simulate completed=True
     class _FakeSession:
-        async def scalar(self, _query):
+        async def scalar(self, _query) -> int:
             return 1  # any truthy value means completed
 
     class _FakeSM:

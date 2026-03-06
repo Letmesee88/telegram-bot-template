@@ -1,13 +1,13 @@
 from __future__ import annotations
-
-import pytest
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+
+import pytest
 from aiogram.types import InlineKeyboardMarkup
 
 
 class DummyUser:
-    def __init__(self, user_id: int = 123):
+    def __init__(self, user_id: int = 123) -> None:
         self.id = user_id
         self.first_name = "Test"
         self.last_name = None
@@ -49,7 +49,7 @@ class DummyCallback:
         self.from_user = DummyUser(user_id)
         self.message = DummyCBMessage()
 
-    async def answer(self, *args, **kwargs):
+    async def answer(self, *args, **kwargs) -> None:
         return None
 
 
@@ -62,11 +62,11 @@ class _DT(datetime):
 
 
 class _FakeResult:
-    def __init__(self, meals: list[object]):
+    def __init__(self, meals: list[object]) -> None:
         self._meals = meals
 
     class _Scalars:
-        def __init__(self, meals: list[object]):
+        def __init__(self, meals: list[object]) -> None:
             self._meals = meals
 
         def all(self):
@@ -77,7 +77,7 @@ class _FakeResult:
 
 
 class _FakeSession:
-    def __init__(self, meals: list[object], oa_obj: object | None):
+    def __init__(self, meals: list[object], oa_obj: object | None) -> None:
         self._meals = meals
         self._oa = oa_obj
 
@@ -89,7 +89,7 @@ class _FakeSession:
 
 
 class _FakeSM:
-    def __init__(self, meals: list[object], oa_obj: object | None):
+    def __init__(self, meals: list[object], oa_obj: object | None) -> None:
         self._meals = meals
         self._oa = oa_obj
 
@@ -101,7 +101,7 @@ class _FakeSM:
 
 
 class FakeMeal:
-    def __init__(self, title: str, dt: datetime, cal=0, p=0.0, f=0.0, c=0.0):
+    def __init__(self, title: str, dt: datetime, cal=0, p=0.0, f=0.0, c=0.0) -> None:
         self.title = title
         self.consumed_at = dt
         self.calories = cal
@@ -111,7 +111,7 @@ class FakeMeal:
 
 
 class FakeOA:
-    def __init__(self, plan: dict | None = None):
+    def __init__(self, plan: dict | None = None) -> None:
         self.daily_plan = plan or {"calories": 0, "protein_g": 0.0, "fat_g": 0.0, "carbs_g": 0.0}
 
 
@@ -348,7 +348,7 @@ async def test_cmd_day_timezone_dst_boundary_berlin(monkeypatch: pytest.MonkeyPa
 
     # Create one meal at 23:30 local previous day -> 22:30 UTC previous day (should be excluded by DB)
     prev_local = datetime(2025, 3, 29, 23, 30, tzinfo=berlin)
-    prev_utc = prev_local.astimezone(timezone.utc)
+    prev_local.astimezone(timezone.utc)
     # Create one meal at 00:05 local current day -> 23:05 UTC previous day (included)
     cur_local = datetime(2025, 3, 30, 0, 5, tzinfo=berlin)
     cur_utc = cur_local.astimezone(timezone.utc)

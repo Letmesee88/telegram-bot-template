@@ -1,12 +1,13 @@
 import json
+
 import pytest
 
-from bot.services.foodai import analyze_photo
 from bot.services import foodai as foodai_module
+from bot.services.foodai import analyze_photo
 
 
 @pytest.mark.asyncio
-async def test_analyze_photo_calls_visual_facts_and_passes_to_main(monkeypatch: pytest.MonkeyPatch):
+async def test_analyze_photo_calls_visual_facts_and_passes_to_main(monkeypatch: pytest.MonkeyPatch) -> None:
     # Arrange settings for OpenAI + Responses + Facts
     foodai_module.settings.OPENAI_API_KEY = "test"
     foodai_module.settings.FOODAI_PROVIDER = "openai"
@@ -89,7 +90,7 @@ async def test_analyze_photo_calls_visual_facts_and_passes_to_main(monkeypatch: 
                 },
             ],
             "references": {"sources": [
-                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                'ФГБУН "ФИЦ питания и биотехнологии"',
                 "USDA FoodData Central",
             ]},
             "analysis_text": "На фото салат с фалафелем. Вес посуды не учитывался. Использованы справочные данные ФИЦ питания и USDA.",
@@ -110,7 +111,7 @@ async def test_analyze_photo_calls_visual_facts_and_passes_to_main(monkeypatch: 
     assert res.get("error") is None
     assert float(res.get("weight_g") or 0) > 0
     assert (res.get("references") or {}).get("sources") == [
-        "ФГБУН \"ФИЦ питания и биотехнологии\"",
+        'ФГБУН "ФИЦ питания и биотехнологии"',
         "USDA FoodData Central",
     ]
     # Ensure Visual Facts + main analysis were called (rewrite may add an extra call)
@@ -118,7 +119,7 @@ async def test_analyze_photo_calls_visual_facts_and_passes_to_main(monkeypatch: 
 
 
 @pytest.mark.asyncio
-async def test_analyze_photo_high_detail_retry_without_escalation(monkeypatch: pytest.MonkeyPatch):
+async def test_analyze_photo_high_detail_retry_without_escalation(monkeypatch: pytest.MonkeyPatch) -> None:
     # Arrange B + D config: no escalation/chat, use Responses, enable Facts
     foodai_module.settings.OPENAI_API_KEY = "test"
     foodai_module.settings.FOODAI_PROVIDER = "openai"
@@ -167,7 +168,7 @@ async def test_analyze_photo_high_detail_retry_without_escalation(monkeypatch: p
                 "confidence": 0.5,  # low -> triggers high retry
                 "items": [],
                 "references": {"sources": [
-                    "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                    'ФГБУН "ФИЦ питания и биотехнологии"',
                     "USDA FoodData Central",
                 ]},
                 "analysis_text": None,
@@ -188,7 +189,7 @@ async def test_analyze_photo_high_detail_retry_without_escalation(monkeypatch: p
                 {"name": "рис", "calories": 220, "protein_g": 4.0, "fat_g": 1.0, "carbs_g": 48.0, "weight_g": 200.0, "is_liquid": False}
             ],
             "references": {"sources": [
-                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                'ФГБУН "ФИЦ питания и биотехнологии"',
                 "USDA FoodData Central",
             ]},
             "analysis_text": "На фото боул. Вес посуды не учитывался. Использованы справочные данные ФИЦ питания и USDA.",

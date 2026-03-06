@@ -1,17 +1,14 @@
-import asyncio
 import json
-import types
 
 import pytest
 
 from bot.services.foodai import _normalize_openai_json, _openai_request
 
-
 # -------------------------
 # Tests for _normalize_openai_json
 # -------------------------
 
-def test_normalize_plain_json():
+def test_normalize_plain_json() -> None:
     raw = json.dumps({
         "title": "борщ",
         "calories": 250,
@@ -23,7 +20,7 @@ def test_normalize_plain_json():
         "items": [
             {"name": "борщ", "calories": 200, "protein_g": 7, "fat_g": 9, "carbs_g": 20, "weight_g": 300, "is_liquid": True}
         ],
-        "references": {"sources": ["ФГБУН \"ФИЦ питания и биотехнологии\"", "USDA FoodData Central"]},
+        "references": {"sources": ['ФГБУН "ФИЦ питания и биотехнологии"', "USDA FoodData Central"]},
         "analysis_text": "Тестовый текст",
         "appearance": {"is_packaged": False, "plate_visible": True, "plate_diameter_cm": 24},
         "not_food": False,
@@ -35,7 +32,7 @@ def test_normalize_plain_json():
     assert isinstance(out["appearance"], dict)
 
 
-def test_normalize_code_fence_json():
+def test_normalize_code_fence_json() -> None:
     raw = """```json\n{\n  \"is_food\": true\n}\n```"""
     out = _normalize_openai_json(raw)
     # _normalize_openai_json expects the full food result schema, so for a minimal object
@@ -49,7 +46,7 @@ def test_normalize_code_fence_json():
 # -------------------------
 
 class DummyHTTPResponse:
-    def __init__(self, status: int, body: dict):
+    def __init__(self, status: int, body: dict) -> None:
         self.status = status
         self._body = body
 
@@ -67,7 +64,7 @@ class DummyHTTPResponse:
 
 
 class DummyPostCM:
-    def __init__(self, response: DummyHTTPResponse):
+    def __init__(self, response: DummyHTTPResponse) -> None:
         self._resp = response
 
     async def __aenter__(self):
@@ -78,7 +75,7 @@ class DummyPostCM:
 
 
 class DummyClientSession:
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         pass
 
     async def __aenter__(self):
@@ -95,7 +92,7 @@ class DummyClientSession:
                     "type": "message",
                     "role": "assistant",
                     "content": [
-                        {"type": "output_text", "text": "{\"is_food\": true}"}
+                        {"type": "output_text", "text": '{"is_food": true}'}
                     ],
                 }
             ],
@@ -104,7 +101,7 @@ class DummyClientSession:
 
 
 @pytest.mark.asyncio
-async def test_openai_request_uses_output_array(monkeypatch):
+async def test_openai_request_uses_output_array(monkeypatch) -> None:
     # Patch ClientSession used in _openai_request
     monkeypatch.setattr("bot.services.foodai.ClientSession", DummyClientSession)
 
@@ -124,7 +121,7 @@ async def test_openai_request_uses_output_array(monkeypatch):
 # Additional full-case tests for _normalize_openai_json
 # -------------------------
 
-def test_normalize_full_foodai_result_multiple_items_and_refs():
+def test_normalize_full_foodai_result_multiple_items_and_refs() -> None:
     raw = json.dumps({
         "title": "гречка с курицей",
         "calories": 520,
@@ -137,7 +134,7 @@ def test_normalize_full_foodai_result_multiple_items_and_refs():
             {"name": "гречка", "calories": 300, "protein_g": 12, "fat_g": 4, "carbs_g": 56, "weight_g": 300, "is_liquid": False},
             {"name": "курица", "calories": 220, "protein_g": 23, "fat_g": 12, "carbs_g": 4, "weight_g": 150, "is_liquid": False},
         ],
-        "references": {"sources": ["ФГБУН \"ФИЦ питания и биотехнологии\"", "USDA FoodData Central"]},
+        "references": {"sources": ['ФГБУН "ФИЦ питания и биотехнологии"', "USDA FoodData Central"]},
         "analysis_text": "На фото гречка и курица. Текст для проверки длины и безопасного парсинга.",
         "appearance": {"is_packaged": False, "plate_visible": True, "plate_diameter_cm": 24},
         "not_food": False,
@@ -146,17 +143,19 @@ def test_normalize_full_foodai_result_multiple_items_and_refs():
     assert out is not None
     assert out["title"].startswith("гречка")
     assert out["calories"] == 520
-    assert isinstance(out["items"], list) and len(out["items"]) == 2
+    assert isinstance(out["items"], list)
+    assert len(out["items"]) == 2
     # plate_diameter_cm must be int
     assert isinstance(out["appearance"].get("plate_diameter_cm"), int)
     # references.sources must be exactly 2 and exact strings
     refs = out["references"].get("sources")
-    assert isinstance(refs, list) and len(refs) == 2
-    assert refs[0] == "ФГБУН \"ФИЦ питания и биотехнологии\""
+    assert isinstance(refs, list)
+    assert len(refs) == 2
+    assert refs[0] == 'ФГБУН "ФИЦ питания и биотехнологии"'
     assert refs[1] == "USDA FoodData Central"
 
 
-def test_normalize_plate_diameter_non_numeric_sets_none():
+def test_normalize_plate_diameter_non_numeric_sets_none() -> None:
     raw = json.dumps({
         "title": "салат",
         "calories": 150,
@@ -166,7 +165,7 @@ def test_normalize_plate_diameter_non_numeric_sets_none():
         "weight_g": 200,
         "confidence": 0.7,
         "items": [],
-        "references": {"sources": ["ФГБУН \"ФИЦ питания и биотехнологии\"", "USDA FoodData Central"]},
+        "references": {"sources": ['ФГБУН "ФИЦ питания и биотехнологии"', "USDA FoodData Central"]},
         "analysis_text": "",
         "appearance": {"is_packaged": False, "plate_visible": False, "plate_diameter_cm": "NaN"},
         "not_food": False,

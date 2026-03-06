@@ -3,8 +3,8 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from asyncpg import Connection
-from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 import bot.core.config as cfg
 

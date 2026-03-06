@@ -1,5 +1,5 @@
-import asyncio
 import json
+
 import pytest
 
 from bot.services import reports as r
@@ -10,7 +10,7 @@ def _txt(n: int, ch: str = "А") -> str:
 
 
 @pytest.mark.asyncio
-async def test_llm_success(monkeypatch):
+async def test_llm_success(monkeypatch) -> None:
     mot_min, mot_max, adv_min, adv_max = r._len_limits()
     mot = _txt(max(mot_min, (mot_min + mot_max)//2), "М")
     adv = _txt(max(adv_min, (adv_min + adv_max)//2), "С")
@@ -31,14 +31,13 @@ async def test_llm_success(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_llm_json_extraction_with_prefix(monkeypatch):
+async def test_llm_json_extraction_with_prefix(monkeypatch) -> None:
     mot_min, mot_max, adv_min, adv_max = r._len_limits()
     mot = _txt(mot_min, "М")
     adv = _txt(adv_min, "С")
 
-    async def fake_openai(kind, payload):
-        raw = f"Answer: \n```json\n{json.dumps({'motivation_full': mot, 'advice': adv}, ensure_ascii=False)}\n```"
-        return raw
+    async def fake_openai(kind, payload) -> str:
+        return f"Answer: \n```json\n{json.dumps({'motivation_full': mot, 'advice': adv}, ensure_ascii=False)}\n```"
 
     monkeypatch.setattr(r, "_openai_request", fake_openai)
     out_mot, out_adv, err = await r._gen_llm_content(
@@ -52,7 +51,7 @@ async def test_llm_json_extraction_with_prefix(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_llm_refine_length(monkeypatch):
+async def test_llm_refine_length(monkeypatch) -> None:
     mot_min, mot_max, adv_min, adv_max = r._len_limits()
     too_long_mot = _txt(mot_max + 50, "М")
     good_adv = _txt((adv_min + adv_max)//2, "С")
@@ -77,7 +76,7 @@ async def test_llm_refine_length(monkeypatch):
     assert r._in_range(out_adv, adv_min, adv_max)
 
 
-def test_neutral_fallback_lengths():
+def test_neutral_fallback_lengths() -> None:
     mot_min, mot_max, adv_min, adv_max = r._len_limits()
     nm = r._neutral_motivation()
     na = r._neutral_advice()

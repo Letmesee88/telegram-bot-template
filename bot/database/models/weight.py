@@ -1,8 +1,5 @@
 from __future__ import annotations
-
-from datetime import datetime, date
-from typing import Optional
-
+from datetime import date, datetime
 from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,7 +18,7 @@ class WeightLogModel(Base):
     # Local calendar day for user at the moment of recording
     recorded_local_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
 
-    source: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, server_default=text("'manual'"))
+    source: Mapped[str | None] = mapped_column(String(32), nullable=True, server_default=text("'manual'"))
     created_at: Mapped[created_at]
 
     __table_args__ = (

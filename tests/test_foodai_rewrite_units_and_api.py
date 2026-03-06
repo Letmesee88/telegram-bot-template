@@ -1,4 +1,5 @@
-import json
+from typing import NoReturn
+
 import pytest
 
 from bot.services import foodai as foodai_module
@@ -7,7 +8,7 @@ from bot.services.foodai import analyze_photo, refine_meal
 
 # ===== Rewrite modes =====
 @pytest.mark.asyncio
-async def test_rewrite_always_triggers_and_enforces_rules(monkeypatch: pytest.MonkeyPatch):
+async def test_rewrite_always_triggers_and_enforces_rules(monkeypatch: pytest.MonkeyPatch) -> None:
     # Arrange
     foodai_module.settings.FOODAI_ANALYSIS_REWRITE = "always"
     foodai_module.settings.FOODAI_VISION_ESCALATION_ENABLED = False
@@ -19,13 +20,13 @@ async def test_rewrite_always_triggers_and_enforces_rules(monkeypatch: pytest.Mo
         return True
 
     # Source with banned opener and without MUST phrase
-    def make_payload_resp():
+    def make_payload_resp() -> str:
         return (
             '{"title":"ok","calories":350,"protein_g":18,"fat_g":10,"carbs_g":40,'
             '"weight_g":320,"confidence":0.9,'
             '"items":[{"name":"овсянка","calories":180,"protein_g":6,"fat_g":3,"carbs_g":30,"weight_g":150,"is_liquid":false},'
             '{"name":"банан","calories":90,"protein_g":1.1,"fat_g":0.3,"carbs_g":22,"weight_g":100,"is_liquid":false}],'
-            '"references":{"sources":["ФГБУН \\\"ФИЦ питания и биотехнологии\\\"","USDA FoodData Central"]},'
+            '"references":{"sources":["ФГБУН \\"ФИЦ питания и биотехнологии\\"","USDA FoodData Central"]},'
             '"analysis_text":"похоже, это миска овсянки и банана. Без обязательной фразы.",'
             '"appearance":{"is_packaged":false,"plate_visible":true,"plate_diameter_cm":24},'
             '"not_food":false}'
@@ -34,7 +35,7 @@ async def test_rewrite_always_triggers_and_enforces_rules(monkeypatch: pytest.Mo
     # Count compose calls
     called = {"cnt": 0}
 
-    async def fake_compose(items, appearance, confidence):
+    async def fake_compose(items, appearance, confidence) -> str:
         called["cnt"] += 1
         # Valid rewritten text that satisfies all constraints
         return (
@@ -54,7 +55,8 @@ async def test_rewrite_always_triggers_and_enforces_rules(monkeypatch: pytest.Mo
     res = await analyze_photo("fake_photo_id")
 
     # Assert
-    assert isinstance(res, dict) and not res.get("error")
+    assert isinstance(res, dict)
+    assert not res.get("error")
     txt = str(res.get("analysis_text") or "")
     assert called["cnt"] == 1
     assert txt.startswith("На фото")
@@ -64,7 +66,7 @@ async def test_rewrite_always_triggers_and_enforces_rules(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_rewrite_off_does_not_trigger_compose_but_sanitizes(monkeypatch: pytest.MonkeyPatch):
+async def test_rewrite_off_does_not_trigger_compose_but_sanitizes(monkeypatch: pytest.MonkeyPatch) -> None:
     foodai_module.settings.FOODAI_ANALYSIS_REWRITE = "off"
     foodai_module.settings.FOODAI_VISION_ESCALATION_ENABLED = False
 
@@ -80,14 +82,15 @@ async def test_rewrite_off_does_not_trigger_compose_but_sanitizes(monkeypatch: p
             '"weight_g":320,"confidence":0.9,'
             '"items":[{"name":"рис","calories":180,"protein_g":4,"fat_g":1,"carbs_g":38,"weight_g":150,"is_liquid":false},'
             '{"name":"овощи","calories":40,"protein_g":2,"fat_g":0.2,"carbs_g":6,"weight_g":50,"is_liquid":false}],'
-            '"references":{"sources":["ФГБУН \\\"ФИЦ питания и биотехнологии\\\"","USDA FoodData Central"]},'
+            '"references":{"sources":["ФГБУН \\"ФИЦ питания и биотехнологии\\"","USDA FoodData Central"]},'
             '"analysis_text":"выглядит как что-то с рисом. Без обязательной фразы.",'
             '"appearance":{"is_packaged":false,"plate_visible":true,"plate_diameter_cm":24},'
             '"not_food":false}'
         )
 
-    async def fake_compose(*args, **kwargs):  # must NOT be called
-        raise AssertionError("_compose_analysis_text must not be called when rewrite=off")
+    async def fake_compose(*args, **kwargs) -> NoReturn:  # must NOT be called
+        msg = "_compose_analysis_text must not be called when rewrite=off"
+        raise AssertionError(msg)
 
     monkeypatch.setattr(foodai_module, "_tg_file_url", fake_tg_file_url)
     monkeypatch.setattr(foodai_module, "_foodness_photo", fake_foodness)
@@ -95,7 +98,8 @@ async def test_rewrite_off_does_not_trigger_compose_but_sanitizes(monkeypatch: p
     monkeypatch.setattr(foodai_module, "_compose_analysis_text", fake_compose)
 
     res = await analyze_photo("fake_photo_id")
-    assert isinstance(res, dict) and not res.get("error")
+    assert isinstance(res, dict)
+    assert not res.get("error")
     txt = str(res.get("analysis_text") or "")
     assert txt.startswith("На фото")  # opener sanitized even without rewrite
     # MUST phrase may be absent in off mode
@@ -103,7 +107,7 @@ async def test_rewrite_off_does_not_trigger_compose_but_sanitizes(monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_rewrite_auto_uses_needs_rewrite(monkeypatch: pytest.MonkeyPatch):
+async def test_rewrite_auto_uses_needs_rewrite(monkeypatch: pytest.MonkeyPatch) -> None:
     foodai_module.settings.FOODAI_ANALYSIS_REWRITE = "auto"
     foodai_module.settings.FOODAI_VISION_ESCALATION_ENABLED = False
 
@@ -119,7 +123,7 @@ async def test_rewrite_auto_uses_needs_rewrite(monkeypatch: pytest.MonkeyPatch):
             '"weight_g":320,"confidence":0.9,'
             '"items":[{"name":"овсянка","calories":180,"protein_g":6,"fat_g":3,"carbs_g":30,"weight_g":150,"is_liquid":false},'
             '{"name":"банан","calories":90,"protein_g":1.1,"fat_g":0.3,"carbs_g":22,"weight_g":100,"is_liquid":false}],'
-            '"references":{"sources":["ФГБУН \\\"ФИЦ питания и биотехнологии\\\"","USDA FoodData Central"]},'
+            '"references":{"sources":["ФГБУН \\"ФИЦ питания и биотехнологии\\"","USDA FoodData Central"]},'
             '"analysis_text":"похоже, это миска овсянки и банана.",'
             '"appearance":{"is_packaged":false,"plate_visible":true,"plate_diameter_cm":24},'
             '"not_food":false}'
@@ -131,7 +135,7 @@ async def test_rewrite_auto_uses_needs_rewrite(monkeypatch: pytest.MonkeyPatch):
         called["needs"] += 1
         return True, "length"
 
-    async def fake_compose(items, appearance, confidence):
+    async def fake_compose(items, appearance, confidence) -> str:
         called["compose"] += 1
         return (
             "На фото домашнее блюдо с овсянкой и бананом; оценка по тарелке ~24 см и объёму. "
@@ -145,7 +149,8 @@ async def test_rewrite_auto_uses_needs_rewrite(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(foodai_module, "_compose_analysis_text", fake_compose)
 
     res = await analyze_photo("fake_photo_id")
-    assert isinstance(res, dict) and not res.get("error")
+    assert isinstance(res, dict)
+    assert not res.get("error")
     assert called["needs"] >= 1
     assert called["compose"] == 1
     txt = str(res.get("analysis_text") or "")
@@ -155,7 +160,7 @@ async def test_rewrite_auto_uses_needs_rewrite(monkeypatch: pytest.MonkeyPatch):
 
 # ===== refine_meal units and operations =====
 @pytest.mark.asyncio
-async def test_refine_meal_change_qty_ml_and_pcs(monkeypatch: pytest.MonkeyPatch):
+async def test_refine_meal_change_qty_ml_and_pcs(monkeypatch: pytest.MonkeyPatch) -> None:
     base = {
         "title": "Блюдо",
         "calories": 300,
@@ -177,7 +182,9 @@ async def test_refine_meal_change_qty_ml_and_pcs(monkeypatch: pytest.MonkeyPatch
     assert it1 is not None
     assert 4.0 <= float(it1.get("weight_g") or 0) <= 6.0
     app1 = it1.get("appearance")
-    assert app1 and app1.get("unit") == "ml" and app1.get("qty") == 5.0
+    assert app1
+    assert app1.get("unit") == "ml"
+    assert app1.get("qty") == 5.0
     assert it1.get("is_liquid") is True
 
     # 2) яйцо 2 шт -> ~100 g
@@ -187,11 +194,13 @@ async def test_refine_meal_change_qty_ml_and_pcs(monkeypatch: pytest.MonkeyPatch
     assert it2 is not None
     assert 95.0 <= float(it2.get("weight_g") or 0) <= 105.0
     app2 = it2.get("appearance")
-    assert app2 and app2.get("unit") == "шт" and app2.get("qty") == 2.0
+    assert app2
+    assert app2.get("unit") == "шт"
+    assert app2.get("qty") == 2.0
 
 
 @pytest.mark.asyncio
-async def test_refine_meal_change_qty_liters_via_nlu(monkeypatch: pytest.MonkeyPatch):
+async def test_refine_meal_change_qty_liters_via_nlu(monkeypatch: pytest.MonkeyPatch) -> None:
     # Enable NLU and inject interpreter to allow decimal liters
     foodai_module.settings.FOODAI_EDIT_NLU = True
     foodai_module.settings.OPENAI_API_KEY = "test"
@@ -222,11 +231,13 @@ async def test_refine_meal_change_qty_liters_via_nlu(monkeypatch: pytest.MonkeyP
     assert 195.0 <= float(it.get("weight_g") or 0) <= 215.0
     assert it.get("is_liquid") is True
     app = it.get("appearance")
-    assert app and app.get("unit") == "l" and app.get("qty") == 0.2
+    assert app
+    assert app.get("unit") == "l"
+    assert app.get("qty") == 0.2
 
 
 @pytest.mark.asyncio
-async def test_refine_meal_replace_with_qty_unit_and_remove(monkeypatch: pytest.MonkeyPatch):
+async def test_refine_meal_replace_with_qty_unit_and_remove(monkeypatch: pytest.MonkeyPatch) -> None:
     base = {
         "title": "Блюдо",
         "calories": 300,
@@ -247,7 +258,9 @@ async def test_refine_meal_replace_with_qty_unit_and_remove(monkeypatch: pytest.
     assert it1 is not None
     assert it1.get("is_liquid") is True
     app1 = it1.get("appearance")
-    assert app1 and app1.get("unit") in ("ml", "l") and app1.get("qty") == 200.0
+    assert app1
+    assert app1.get("unit") in ("ml", "l")
+    assert app1.get("qty") == 200.0
 
     # remove рис
     out2 = await refine_meal(base, "убрать рис")
@@ -258,7 +271,7 @@ async def test_refine_meal_replace_with_qty_unit_and_remove(monkeypatch: pytest.
 
 # ===== API path selection for gpt-5 =====
 @pytest.mark.asyncio
-async def test_api_path_selection_for_gpt5_responses_vs_chat(monkeypatch: pytest.MonkeyPatch):
+async def test_api_path_selection_for_gpt5_responses_vs_chat(monkeypatch: pytest.MonkeyPatch) -> None:
     # Force single-model path and disable escalation
     foodai_module.settings.FOODAI_VISION_ESCALATION_ENABLED = False
     foodai_module.settings.FOODAI_ANALYSIS_REWRITE = "off"
@@ -280,7 +293,7 @@ async def test_api_path_selection_for_gpt5_responses_vs_chat(monkeypatch: pytest
         return (
             '{"title":"ok","calories":350,"protein_g":18,"fat_g":10,"carbs_g":40,'
             '"weight_g":320,"confidence":0.9,'
-            '"items":[],"references":{"sources":["ФГБУН \\\"ФИЦ питания и биотехнологии\\\"","USDA FoodData Central"]},'
+            '"items":[],"references":{"sources":["ФГБУН \\"ФИЦ питания и биотехнологии\\"","USDA FoodData Central"]},'
             '"analysis_text":"ok","appearance":{"is_packaged":false,"plate_visible":true,"plate_diameter_cm":24},'
             '"not_food":false}'
         )
@@ -294,22 +307,28 @@ async def test_api_path_selection_for_gpt5_responses_vs_chat(monkeypatch: pytest
     foodai_module.settings.FOODAI_USE_RESPONSES_FOR_5 = True
     calls.clear()
     res1 = await analyze_photo("fake_photo_id")
-    assert isinstance(res1, dict) and not res1.get("error")
+    assert isinstance(res1, dict)
+    assert not res1.get("error")
     # With Visual Facts enabled, the first call is Facts (responses), the second is main (responses)
-    assert len(calls) >= 2 and calls[0] == "responses" and calls[1] == "responses"
+    assert len(calls) >= 2
+    assert calls[0] == "responses"
+    assert calls[1] == "responses"
 
     # Case 2: use Chat for gpt-5
     foodai_module.settings.FOODAI_VISION_MODEL = "gpt-5.1-mini"
     foodai_module.settings.FOODAI_USE_RESPONSES_FOR_5 = False
     calls.clear()
     res2 = await analyze_photo("fake_photo_id")
-    assert isinstance(res2, dict) and not res2.get("error")
+    assert isinstance(res2, dict)
+    assert not res2.get("error")
     # With Visual Facts enabled, the first call is Facts (responses), the second is main (chat)
-    assert len(calls) >= 2 and calls[0] == "responses" and calls[1] == "chat"
+    assert len(calls) >= 2
+    assert calls[0] == "responses"
+    assert calls[1] == "chat"
 
 
 @pytest.mark.asyncio
-async def test_refine_meal_change_qty_short_ml():
+async def test_refine_meal_change_qty_short_ml() -> None:
     base = {
         "title": "Блюдо",
         "calories": 300,
@@ -328,11 +347,13 @@ async def test_refine_meal_change_qty_short_ml():
     assert 195.0 <= float(it.get("weight_g") or 0) <= 215.0
     assert it.get("is_liquid") is True
     app = it.get("appearance")
-    assert app and app.get("unit") == "ml" and app.get("qty") == 200.0
+    assert app
+    assert app.get("unit") == "ml"
+    assert app.get("qty") == 200.0
 
 
 @pytest.mark.asyncio
-async def test_refine_meal_change_qty_pcs_unknown_fallback():
+async def test_refine_meal_change_qty_pcs_unknown_fallback() -> None:
     base = {
         "title": "Блюдо",
         "calories": 300,
@@ -350,11 +371,13 @@ async def test_refine_meal_change_qty_pcs_unknown_fallback():
     assert it is not None
     assert 290.0 <= float(it.get("weight_g") or 0) <= 310.0  # 3 * 100 г фоллбэк
     app = it.get("appearance")
-    assert app and app.get("unit") == "шт" and app.get("qty") == 3.0
+    assert app
+    assert app.get("unit") == "шт"
+    assert app.get("qty") == 3.0
 
 
 @pytest.mark.asyncio
-async def test_refine_meal_change_qty_ml_cap_upper():
+async def test_refine_meal_change_qty_ml_cap_upper() -> None:
     base = {
         "title": "Блюдо",
         "calories": 300,
@@ -373,11 +396,13 @@ async def test_refine_meal_change_qty_ml_cap_upper():
     assert float(it.get("weight_g") or 0) == 1000.0  # кап до 1000 г
     assert it.get("is_liquid") is True
     app = it.get("appearance")
-    assert app and app.get("unit") == "ml" and app.get("qty") == 2000.0
+    assert app
+    assert app.get("unit") == "ml"
+    assert app.get("qty") == 2000.0
 
 
 @pytest.mark.asyncio
-async def test_refine_meal_change_qty_short_grams():
+async def test_refine_meal_change_qty_short_grams() -> None:
     base = {
         "title": "Блюдо",
         "calories": 300,
@@ -398,7 +423,7 @@ async def test_refine_meal_change_qty_short_grams():
 
 
 @pytest.mark.asyncio
-async def test_refine_meal_estimate_from_name_rice_200g():
+async def test_refine_meal_estimate_from_name_rice_200g() -> None:
     base = {
         "title": "Блюдо",
         "calories": 0,

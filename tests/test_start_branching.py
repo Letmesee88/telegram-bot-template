@@ -5,7 +5,7 @@ from aiogram.types import InlineKeyboardMarkup
 
 
 class DummyUser:
-    def __init__(self, user_id: int = 123):
+    def __init__(self, user_id: int = 123) -> None:
         self.id = user_id
         self.first_name = "Test"
         self.last_name = None
@@ -52,7 +52,7 @@ async def test_start_handler_in_progress(monkeypatch: pytest.MonkeyPatch) -> Non
 
     # Not completed in DB
     class _FakeSession:
-        async def scalar(self, _query):
+        async def scalar(self, _query) -> None:
             return None
 
     class _FakeSM:
@@ -93,13 +93,13 @@ async def test_start_handler_fresh(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(analytics_module.analytics, "logger", None)
 
     from bot.handlers import start as start_module
-    
+
     # Avoid aiogram I18n context by replacing _ with identity
     monkeypatch.setattr(start_module, "_", lambda s: s)
 
     # Not completed in DB
     class _FakeSession:
-        async def scalar(self, _query):
+        async def scalar(self, _query) -> None:
             return None
 
     class _FakeSM:
@@ -145,10 +145,10 @@ async def test_start_no_callback_sends_explicit_message(monkeypatch: pytest.Monk
         pass
 
     class _DummyCallback:
-        def __init__(self):
+        def __init__(self) -> None:
             self.message = _DummyCallMessage()
 
-        async def answer(self):
+        async def answer(self) -> None:
             answered["ok"] = True
 
     call = _DummyCallback()
@@ -165,21 +165,21 @@ class _DummyLogger:
     def __init__(self) -> None:
         self.events = []
 
-    async def log_event(self, event):  # type: ignore[no-untyped-def]
+    async def log_event(self, event) -> None:  # type: ignore[no-untyped-def]
         self.events.append(event)
 
 
 @pytest.mark.asyncio
 async def test_start_analytics_completed_branch(monkeypatch: pytest.MonkeyPatch) -> None:
-    from bot.services import analytics as analytics_module
     from bot.handlers import start as start_module
+    from bot.services import analytics as analytics_module
 
     # I18n noop
     monkeypatch.setattr(start_module, "_", lambda s: s)
 
     # Force DB completed=True
     class _FakeSession:
-        async def scalar(self, _query):
+        async def scalar(self, _query) -> int:
             return 1
 
     class _FakeSM:
@@ -206,22 +206,25 @@ async def test_start_analytics_completed_branch(monkeypatch: pytest.MonkeyPatch)
     start_events = [e for e in dummy.events if getattr(e, "event_type", None) == "Start Session"]
     assert len(start_events) == 1
     e = start_events[0]
-    assert e.plan is not None and e.plan.branch == "Completed"
-    assert e.plan.source == "start" and e.plan.version == "v1"
-    assert e.event_properties and e.event_properties.command == "/start"
+    assert e.plan is not None
+    assert e.plan.branch == "Completed"
+    assert e.plan.source == "start"
+    assert e.plan.version == "v1"
+    assert e.event_properties
+    assert e.event_properties.command == "/start"
 
 
 @pytest.mark.asyncio
 async def test_start_analytics_in_progress_branch(monkeypatch: pytest.MonkeyPatch) -> None:
-    from bot.services import analytics as analytics_module
     from bot.handlers import start as start_module
+    from bot.services import analytics as analytics_module
 
     # I18n noop
     monkeypatch.setattr(start_module, "_", lambda s: s)
 
     # Not completed in DB
     class _FakeSession:
-        async def scalar(self, _query):
+        async def scalar(self, _query) -> None:
             return None
 
     class _FakeSM:
@@ -246,21 +249,23 @@ async def test_start_analytics_in_progress_branch(monkeypatch: pytest.MonkeyPatc
     start_events = [e for e in dummy.events if getattr(e, "event_type", None) == "Start Session"]
     assert len(start_events) == 1
     e = start_events[0]
-    assert e.plan is not None and e.plan.branch == "InProgress"
-    assert e.plan.source == "start" and e.plan.version == "v1"
+    assert e.plan is not None
+    assert e.plan.branch == "InProgress"
+    assert e.plan.source == "start"
+    assert e.plan.version == "v1"
 
 
 @pytest.mark.asyncio
 async def test_start_analytics_fresh_branch(monkeypatch: pytest.MonkeyPatch) -> None:
-    from bot.services import analytics as analytics_module
     from bot.handlers import start as start_module
+    from bot.services import analytics as analytics_module
 
     # I18n noop
     monkeypatch.setattr(start_module, "_", lambda s: s)
 
     # Not completed in DB
     class _FakeSession:
-        async def scalar(self, _query):
+        async def scalar(self, _query) -> None:
             return None
 
     class _FakeSM:
@@ -285,5 +290,7 @@ async def test_start_analytics_fresh_branch(monkeypatch: pytest.MonkeyPatch) -> 
     start_events = [e for e in dummy.events if getattr(e, "event_type", None) == "Start Session"]
     assert len(start_events) == 1
     e = start_events[0]
-    assert e.plan is not None and e.plan.branch == "Fresh"
-    assert e.plan.source == "start" and e.plan.version == "v1"
+    assert e.plan is not None
+    assert e.plan.branch == "Fresh"
+    assert e.plan.source == "start"
+    assert e.plan.version == "v1"

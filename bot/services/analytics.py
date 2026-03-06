@@ -1,15 +1,15 @@
 from __future__ import annotations
+import asyncio
 from functools import wraps
 from typing import TYPE_CHECKING, Any, TypeVar
-import asyncio
 
 from aiogram.types import CallbackQuery, Message
+from loguru import logger
 
 from bot.analytics.amplitude import AmplitudeTelegramLogger
 from bot.analytics.types import AbstractAnalyticsLogger, BaseEvent, EventProperties, EventType, UserProperties
 from bot.core.config import settings
 from bot.utils.singleton import SingletonMeta
-from loguru import logger
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

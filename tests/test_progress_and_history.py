@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import text, update
 
-from bot.services.weight import compute_progress, build_history_page, save_weight
-from sqlalchemy import update, text
-from bot.database.models import WeightLogModel
 from bot.database.database import sessionmaker
-from bot.database.models import OnboardingAnswerModel
+from bot.database.models import OnboardingAnswerModel, WeightLogModel
+from bot.services.weight import build_history_page, compute_progress, save_weight
 
 
 @pytest.mark.asyncio
-async def test_compute_progress_gain_and_lose_and_clipping():
+async def test_compute_progress_gain_and_lose_and_clipping() -> None:
     # Lose: start 100 -> goal 80
     assert compute_progress(100.0, 100.0, 80.0) == 0.0
     assert compute_progress(100.0, 90.0, 80.0) == 50.0
@@ -31,7 +30,7 @@ async def test_compute_progress_gain_and_lose_and_clipping():
 
 
 @pytest.mark.asyncio
-async def test_history_pagination_and_date_format(ensure_user):
+async def test_history_pagination_and_date_format(ensure_user) -> None:
     user_id = await ensure_user(user_id=23001)
 
     # Provide onboarding goal to avoid missing fields in UI elsewhere

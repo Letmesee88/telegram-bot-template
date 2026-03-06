@@ -1,10 +1,13 @@
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 import pytest
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.database.models.user import UserModel
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

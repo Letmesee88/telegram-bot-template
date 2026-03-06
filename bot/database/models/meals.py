@@ -1,8 +1,5 @@
 from __future__ import annotations
-
-from datetime import datetime
-from typing import Optional
-
+from datetime import date, datetime
 from sqlalchemy import (
     BigInteger,
     Date,
@@ -31,11 +28,11 @@ class MealModel(Base):
         DateTime(timezone=True), server_default=text("TIMEZONE('utc', now())"), index=True
     )
     created_at: Mapped[created_at]
-    updated_at: Mapped[Optional[datetime]] = mapped_column(
+    updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=text("TIMEZONE('utc', now())"), onupdate=text("TIMEZONE('utc', now())")
     )
 
-    title: Mapped[Optional[str]] = mapped_column(String(255))
+    title: Mapped[str | None] = mapped_column(String(255))
     # Added 'template' to track meals created from saved templates
     source: Mapped[str] = mapped_column(
         Enum("photo", "text", "edit", "template", name="meal_source"), nullable=False
@@ -44,15 +41,15 @@ class MealModel(Base):
         Enum("draft", "saved", "deleted", name="meal_status"), nullable=False, server_default="draft"
     )
 
-    calories: Mapped[Optional[int]]
-    protein_g: Mapped[Optional[float]] = mapped_column(Numeric(7, 1))
-    fat_g: Mapped[Optional[float]] = mapped_column(Numeric(7, 1))
-    carbs_g: Mapped[Optional[float]] = mapped_column(Numeric(7, 1))
-    weight_g: Mapped[Optional[float]] = mapped_column(Numeric(8, 1))
-    confidence: Mapped[Optional[float]] = mapped_column(Numeric(4, 2))
+    calories: Mapped[int | None]
+    protein_g: Mapped[float | None] = mapped_column(Numeric(7, 1))
+    fat_g: Mapped[float | None] = mapped_column(Numeric(7, 1))
+    carbs_g: Mapped[float | None] = mapped_column(Numeric(7, 1))
+    weight_g: Mapped[float | None] = mapped_column(Numeric(8, 1))
+    confidence: Mapped[float | None] = mapped_column(Numeric(4, 2))
 
-    analysis_json: Mapped[Optional[dict]] = mapped_column(JSONB)
-    references: Mapped[Optional[dict]] = mapped_column(JSONB)
+    analysis_json: Mapped[dict | None] = mapped_column(JSONB)
+    references: Mapped[dict | None] = mapped_column(JSONB)
 
     items: Mapped[list[MealItemModel]] = relationship(
         "MealItemModel", back_populates="meal", cascade="all, delete-orphan", lazy="selectin"
@@ -69,11 +66,11 @@ class MealItemModel(Base):
     meal_id: Mapped[int] = mapped_column(Integer, ForeignKey("meals.id", ondelete="CASCADE"), index=True, nullable=False)
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    weight_g: Mapped[Optional[float]] = mapped_column(Numeric(8, 1))
-    calories: Mapped[Optional[float]] = mapped_column(Numeric(8, 1))
-    protein_g: Mapped[Optional[float]] = mapped_column(Numeric(7, 1))
-    fat_g: Mapped[Optional[float]] = mapped_column(Numeric(7, 1))
-    carbs_g: Mapped[Optional[float]] = mapped_column(Numeric(7, 1))
+    weight_g: Mapped[float | None] = mapped_column(Numeric(8, 1))
+    calories: Mapped[float | None] = mapped_column(Numeric(8, 1))
+    protein_g: Mapped[float | None] = mapped_column(Numeric(7, 1))
+    fat_g: Mapped[float | None] = mapped_column(Numeric(7, 1))
+    carbs_g: Mapped[float | None] = mapped_column(Numeric(7, 1))
 
     meal: Mapped[MealModel] = relationship("MealModel", back_populates="items", lazy="selectin")
 
@@ -86,9 +83,9 @@ class MealPhotoModel(Base):
 
     tg_file_id: Mapped[str] = mapped_column(String(256), nullable=False)
     tg_file_unique_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    width: Mapped[Optional[int]] = mapped_column(Integer)
-    height: Mapped[Optional[int]] = mapped_column(Integer)
-    file_path: Mapped[Optional[str]] = mapped_column(String(512))
+    width: Mapped[int | None] = mapped_column(Integer)
+    height: Mapped[int | None] = mapped_column(Integer)
+    file_path: Mapped[str | None] = mapped_column(String(512))
 
     meal: Mapped[MealModel] = relationship("MealModel", back_populates="photos", lazy="selectin")
 
@@ -98,14 +95,14 @@ class DailyIntakeModel(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True, nullable=False)
-    date_utc: Mapped[datetime] = mapped_column(Date, nullable=False, index=True)
+    date_utc: Mapped[date] = mapped_column(Date, nullable=False, index=True)
 
     calories: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     protein_g: Mapped[float] = mapped_column(Numeric(9, 1), nullable=False, default=0)
     fat_g: Mapped[float] = mapped_column(Numeric(9, 1), nullable=False, default=0)
     carbs_g: Mapped[float] = mapped_column(Numeric(9, 1), nullable=False, default=0)
 
-    plan_calories: Mapped[Optional[int]] = mapped_column(Integer)
+    plan_calories: Mapped[int | None] = mapped_column(Integer)
 
     created_at: Mapped[created_at]
 

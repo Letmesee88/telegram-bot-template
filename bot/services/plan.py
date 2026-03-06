@@ -1,13 +1,10 @@
 from __future__ import annotations
-
-from math import floor
-from typing import Tuple, Optional
-from datetime import date, timedelta
 import re
+from datetime import date, timedelta
 
 from loguru import logger
-from bot.core.config import settings
 
+from bot.core.config import settings
 from bot.schemas.onboarding import (
     ACTIVITY_MULTIPLIERS,
     ActivityLevel,
@@ -110,7 +107,7 @@ def _infer_activity_level(text: str) -> ActivityLevel:
 def _decide_rate_and_target_cal(
     tdee: float,
     goal: Goal,
-    speed: Optional[Speed],
+    speed: Speed | None,
     weight_kg: float,
 ) -> tuple[float, float]:
     """
@@ -139,7 +136,7 @@ def _decide_rate_and_target_cal(
         target = max(100.0, tdee - deficit)
         return rate, target
 
-    elif goal == Goal.gain:
+    if goal == Goal.gain:
         rate = min(requested_rate, MAX_GAIN_RATE * weight_kg)
         surplus = rate * 7700.0 / 7.0
         # keep surplus within 200..500 kcal/day
@@ -155,7 +152,7 @@ def _decide_rate_and_target_cal(
     return 0.0, float(tdee)
 
 
-def _macro_split(goal: Goal) -> Tuple[float, float, float]:
+def _macro_split(goal: Goal) -> tuple[float, float, float]:
     """Return protein, fat, carb fractions for calories (sum to 1.0)."""
     if goal == Goal.lose:
         return 0.35, 0.25, 0.40
@@ -164,7 +161,7 @@ def _macro_split(goal: Goal) -> Tuple[float, float, float]:
     return 0.30, 0.30, 0.40  # maintain
 
 
-def _cal_to_grams(calories: float, p_frac: float, f_frac: float, c_frac: float) -> Tuple[int, int, int]:
+def _cal_to_grams(calories: float, p_frac: float, f_frac: float, c_frac: float) -> tuple[int, int, int]:
     p_cal = calories * p_frac
     f_cal = calories * f_frac
     c_cal = calories * c_frac
@@ -206,20 +203,20 @@ def calculate_daily_plan(data: OnboardingData) -> DailyPlan:
     p_g, f_g, c_g = _cal_to_grams(target_cal, p_frac, f_frac, c_frac)
 
     # ETA
-    eta: Optional[date] = None
+    eta: date | None = None
     if data.goal != Goal.maintain and data.goal_weight_kg is not None and weekly_rate_kg > 0:
         delta = abs(data.weight_kg - data.goal_weight_kg)
         if delta > 0:
             weeks = delta / weekly_rate_kg
-            eta = date.today() + timedelta(days=int(round(weeks * 7)))
+            eta = date.today() + timedelta(days=round(weeks * 7))
 
     result = DailyPlan(
-        calories=int(round(target_cal)),
+        calories=round(target_cal),
         protein_g=p_g,
         fat_g=f_g,
         carbs_g=c_g,
         sources=SOURCES,
-        tdee=int(round(tdee)),
+        tdee=round(tdee),
         weekly_rate_kg=round(weekly_rate_kg, 2),
         eta_date=eta,
     )

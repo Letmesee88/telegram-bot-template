@@ -1,7 +1,7 @@
 from __future__ import annotations
-
-from datetime import datetime, timedelta, timezone, time as dtime
-from typing import Optional
+import contextlib
+from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
 
 from sqlalchemy import select
 
@@ -9,8 +9,7 @@ from bot.core.loader import redis_client
 from bot.database.database import sessionmaker
 from bot.database.models import MealModel, OnboardingAnswerModel, UserModel
 from bot.services.users import get_user_tzinfo
-from bot.core.config import settings
-from bot.services.weight import get_current_weight, get_start_weight, get_goal_weight, compute_progress
+from bot.services.weight import compute_progress, get_current_weight, get_goal_weight, get_start_weight
 
 
 async def _aggregate_last30_days_cal(user_id: int) -> tuple[int, int]:
@@ -20,7 +19,7 @@ async def _aggregate_last30_days_cal(user_id: int) -> tuple[int, int]:
         tz = await get_user_tzinfo(session, user_id)
         now_local = datetime.now(tz)
         today_local = now_local.date()
-        for i in range(0, 30):
+        for i in range(30):
             d_local = today_local - timedelta(days=i)
             start_local = datetime.combine(d_local, dtime(0, 0), tz)
             end_local = start_local + timedelta(days=1)
@@ -52,7 +51,7 @@ def _format_signed_pct(v: float) -> str:
     return f"{sign}{abs(v):.1f}%"
 
 
-async def _load_onboarding(user_id: int) -> tuple[Optional[dict], Optional[dict]]:
+async def _load_onboarding(user_id: int) -> tuple[dict | None, dict | None]:
     async with sessionmaker() as session:
         oa = await session.scalar(select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id))
         data = (oa.data if oa and isinstance(getattr(oa, "data", None), dict) else {}) or {}
@@ -60,7 +59,7 @@ async def _load_onboarding(user_id: int) -> tuple[Optional[dict], Optional[dict]
         return data, plan
 
 
-async def _load_user(user_id: int) -> Optional[UserModel]:
+async def _load_user(user_id: int) -> UserModel | None:
     async with sessionmaker() as session:
         return await session.scalar(select(UserModel).where(UserModel.id == user_id))
 
@@ -78,7 +77,7 @@ async def get_account_summary_text(user_id: int) -> str:
         pass
 
     total_cal, days_with = await _aggregate_last30_days_cal(user_id)
-    avg_cal = int(round(total_cal / days_with)) if days_with > 0 else 0
+    avg_cal = round(total_cal / days_with) if days_with > 0 else 0
 
     data, plan = await _load_onboarding(user_id)
     plan_cal = int(plan.get("calories") or 0)
@@ -99,7 +98,7 @@ async def get_account_summary_text(user_id: int) -> str:
 
     weight_block_lines: list[str] = []
     if current_w is not None and goal_w is not None and start_w is not None and (goal_w != start_w):
-        progress = compute_progress(start_w, current_w, goal_w) or 0.0
+        compute_progress(start_w, current_w, goal_w) or 0.0
         left = max(0.0, (goal_w - current_w)) if goal_w >= current_w else max(0.0, (current_w - goal_w))
         left_disp = f"{left:.1f} кг"
         weight_block_lines.append(f"Текущий: {current_w:.1f} кг → Цель: {goal_w:.1f} кг")
@@ -162,15 +161,13 @@ async def get_account_summary_text(user_id: int) -> str:
     lines.append(f"Среднесуточно: {avg_cal} ккал | Норма: {norm_text}")
     lines.append(f"Отклонение: {deviation}")
     lines.append("")
-    lines += ["⚖️ Контроль веса"] + weight_block_lines
+    lines += ["⚖️ Контроль веса", *weight_block_lines]
     lines.append("")
     lines.append("🌟 Твои достижения")
     lines.append(f"✅ {progress_text}")
     lines.append(f"✅ {days_with_us_text}")
 
     text = "\n".join(lines)
-    try:
+    with contextlib.suppress(Exception):
         await redis_client.setex(key, 60, text)
-    except Exception:
-        pass
     return text

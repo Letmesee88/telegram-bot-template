@@ -1,16 +1,15 @@
 # tests/test_foodai_precheck.py
 from __future__ import annotations
-
 import asyncio
 from types import SimpleNamespace
 
 from bot.services import foodai as foodai_mod
 
 
-def test_photo_precheck_failure_returns_provider_error(monkeypatch):
+def test_photo_precheck_failure_returns_provider_error(monkeypatch) -> None:
     """If pre-check returns None twice (even after retry) -> provider_error, not not_food."""
 
-    async def _run():
+    async def _run() -> None:
         # Force provider path and stable URL
         monkeypatch.setattr(foodai_mod, "_use_openai", lambda: True)
 
@@ -22,9 +21,8 @@ def test_photo_precheck_failure_returns_provider_error(monkeypatch):
         # Pre-check returns None twice (simulate transient failure not recovered by retry)
         calls = SimpleNamespace(n=0)
 
-        async def fake_foodness_photo(url: str):
+        async def fake_foodness_photo(url: str) -> None:
             calls.n += 1
-            return None
 
         monkeypatch.setattr(foodai_mod, "_foodness_photo", fake_foodness_photo)
 
@@ -35,10 +33,10 @@ def test_photo_precheck_failure_returns_provider_error(monkeypatch):
     asyncio.run(_run())
 
 
-def test_photo_precheck_retry_none_then_false_returns_not_food(monkeypatch):
+def test_photo_precheck_retry_none_then_false_returns_not_food(monkeypatch) -> None:
     """If pre-check returns None, then False on retry -> not_food true structure, not provider_error."""
 
-    async def _run():
+    async def _run() -> None:
         monkeypatch.setattr(foodai_mod, "_use_openai", lambda: True)
 
         async def fake_tg_file_url(fid: str) -> str:

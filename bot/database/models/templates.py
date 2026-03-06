@@ -1,9 +1,6 @@
 from __future__ import annotations
-
 from datetime import datetime
-from typing import Optional
-
-from sqlalchemy import BigInteger, Enum, ForeignKey, Integer, Numeric, String, DateTime, text
+from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Integer, Numeric, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, created_at
@@ -23,14 +20,14 @@ class MealTemplateModel(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
 
     # Aggregated nutrition (optional)
-    calories: Mapped[Optional[int]]
-    protein_g: Mapped[Optional[float]] = mapped_column(Numeric(7, 1))
-    fat_g: Mapped[Optional[float]] = mapped_column(Numeric(7, 1))
-    carbs_g: Mapped[Optional[float]] = mapped_column(Numeric(7, 1))
-    weight_g: Mapped[Optional[float]] = mapped_column(Numeric(8, 1))
+    calories: Mapped[int | None]
+    protein_g: Mapped[float | None] = mapped_column(Numeric(7, 1))
+    fat_g: Mapped[float | None] = mapped_column(Numeric(7, 1))
+    carbs_g: Mapped[float | None] = mapped_column(Numeric(7, 1))
+    weight_g: Mapped[float | None] = mapped_column(Numeric(8, 1))
 
     created_at: Mapped[created_at]
-    updated_at: Mapped[Optional[datetime]] = mapped_column(
+    updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=text("TIMEZONE('utc', now())"), onupdate=text("TIMEZONE('utc', now())")
     )
 
@@ -48,10 +45,10 @@ class MealTemplateItemModel(Base):
     )
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    weight_g: Mapped[Optional[float]] = mapped_column(Numeric(8, 1))
-    calories: Mapped[Optional[float]] = mapped_column(Numeric(8, 1))
-    protein_g: Mapped[Optional[float]] = mapped_column(Numeric(7, 1))
-    fat_g: Mapped[Optional[float]] = mapped_column(Numeric(7, 1))
-    carbs_g: Mapped[Optional[float]] = mapped_column(Numeric(7, 1))
+    weight_g: Mapped[float | None] = mapped_column(Numeric(8, 1))
+    calories: Mapped[float | None] = mapped_column(Numeric(8, 1))
+    protein_g: Mapped[float | None] = mapped_column(Numeric(7, 1))
+    fat_g: Mapped[float | None] = mapped_column(Numeric(7, 1))
+    carbs_g: Mapped[float | None] = mapped_column(Numeric(7, 1))
 
     template: Mapped[MealTemplateModel] = relationship("MealTemplateModel", back_populates="items", lazy="selectin")

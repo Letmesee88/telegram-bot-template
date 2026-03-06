@@ -1,60 +1,63 @@
-from __future__ import annotations
-
+﻿from __future__ import annotations
 import asyncio
-from time import perf_counter
+import contextlib
+import hashlib
 import random
-from datetime import datetime, timedelta, timezone, time as dtime
+import re
+from datetime import date, datetime, timedelta, timezone
+from datetime import time as dtime
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
 from aiogram.enums import ChatAction
-
-import re
 from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
-    Message,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    FSInputFile,
     BufferedInputFile,
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
 )
 from aiogram.utils.i18n import gettext as _
 from loguru import logger
-from sqlalchemy import select, update, func
-from bot.analytics.types import BaseEvent, EventProperties, Plan
-from bot.services.analytics import analytics
+from sqlalchemy import select, update
 
+from bot.analytics.types import BaseEvent, EventProperties, Plan
+from bot.core.config import settings
+from bot.core.loader import redis_client
 from bot.database.database import sessionmaker
-from bot.database.models import OnboardingAnswerModel, UserModel, PaymentModel
-from bot.schemas.onboarding import ActivityLevel, Gender, Goal, OnboardingData, Speed, DailyPlan
-from bot.services.plan import (
-    calculate_daily_plan,
-    _infer_activity_level as infer_activity_level,
-    SPEED_PERCENT_BY_WEIGHT,
-)
-from bot.services.llm_activity import classify_activity_cached
+from bot.database.models import OnboardingAnswerModel, UserModel
+from bot.handlers import start as start_module
+from bot.schemas.onboarding import ActivityLevel, DailyPlan, Gender, Goal, OnboardingData, Speed
 from bot.services.adjust import (
-    parse_adjustment_cached,
     apply_adjustment,
+    parse_adjustment_cached,
     parse_adjustment_heuristic,
     rephrase_explanation_cached,
 )
-from bot.core.config import settings
-from bot.services.weight import save_weight
-from bot.core.loader import redis_client
-from bot.handlers import start as start_module
+from bot.services.analytics import analytics
 from bot.services.charts import get_plan_chart_png
-from datetime import date
-import hashlib
-from bot.services.yookassa import create_payment
+from bot.services.llm_activity import classify_activity_cached
+from bot.services.plan import (
+    SPEED_PERCENT_BY_WEIGHT,
+    calculate_daily_plan,
+)
+from bot.services.plan import (
+    _infer_activity_level as infer_activity_level,
+)
 from bot.services.users import get_user_tzinfo
+from bot.services.subscriptions import activate_free_trial, is_free_trial_available, trial_days
+from bot.services.yookassa import create_payment
+
+if TYPE_CHECKING:
+    from aiogram.fsm.context import FSMContext
 
 router = Router()
 
-EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}$')
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}$")
 
 
 def _onb_step_index(step_name: str) -> int | None:
@@ -92,18 +95,14 @@ async def _onb_update_last_step(user_id: int, step_name: str) -> None:
 
 
 async def _onb_clear_redis(user_id: int) -> None:
-    try:
+    with contextlib.suppress(Exception):
         await redis_client.zrem("onboarding:started", user_id)
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         await redis_client.delete(
             f"onboarding:start_ts:{user_id}",
             f"onboarding:last_step:{user_id}",
             f"onboarding:last_step_index:{user_id}",
         )
-    except Exception:
-        pass
 
 
 def _onb_fire_step(
@@ -168,13 +167,13 @@ def _ikb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
 
 def _format_rate(weight: float, percent: float) -> str:
     val = round(weight * percent, 2)
-    # Приведем к удобному виду: 0.5, 0.75 и т.п.
-    return ("{:.2f}".format(val)).rstrip('0').rstrip('.')
+    # РџСЂРёРІРµРґРµРј Рє СѓРґРѕР±РЅРѕРјСѓ РІРёРґСѓ: 0.5, 0.75 Рё С‚.Рї.
+    return (f"{val:.2f}").rstrip("0").rstrip(".")
 
 
 async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) -> None:
-    """Собирает payload, считает план, сохраняет в БД и показывает финальный экран с кнопками.
-    Убираем TDEE из пользовательского вывода согласно ТЗ.
+    """РЎРѕР±РёСЂР°РµС‚ payload, СЃС‡РёС‚Р°РµС‚ РїР»Р°РЅ, СЃРѕС…СЂР°РЅСЏРµС‚ РІ Р‘Р” Рё РїРѕРєР°Р·С‹РІР°РµС‚ С„РёРЅР°Р»СЊРЅС‹Р№ СЌРєСЂР°РЅ СЃ РєРЅРѕРїРєР°РјРё.
+    РЈР±РёСЂР°РµРј TDEE РёР· РїРѕР»СЊР·РѕРІР°С‚РµР»СЊСЃРєРѕРіРѕ РІС‹РІРѕРґР° СЃРѕРіР»Р°СЃРЅРѕ РўР—.
     """
     data = await state.get_data()
 
@@ -184,7 +183,7 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
     try:
         activity_text_val = data.get("activity_text")
         payload = OnboardingData(
-            user_id=user_id,  
+            user_id=user_id,
             gender=Gender(str(data["gender"])),
             age=int(data["age"]),
             weight_kg=float(data["weight_kg"]),
@@ -196,11 +195,11 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
         )
     except Exception as e:
         logger.warning(f"Onboarding validation failed: {e}")
-        await message.answer(_("Данные не прошли валидацию. Попробуй заново: /start"))
+        await message.answer(_("Р”Р°РЅРЅС‹Рµ РЅРµ РїСЂРѕС€Р»Рё РІР°Р»РёРґР°С†РёСЋ. РџРѕРїСЂРѕР±СѓР№ Р·Р°РЅРѕРІРѕ: /start"))
         await state.clear()
         return
 
-    # Определим уровень активности. Если ранее зафиксировали в FSM — используем его и не вызываем LLM повторно
+    # РћРїСЂРµРґРµР»РёРј СѓСЂРѕРІРµРЅСЊ Р°РєС‚РёРІРЅРѕСЃС‚Рё. Р•СЃР»Рё СЂР°РЅРµРµ Р·Р°С„РёРєСЃРёСЂРѕРІР°Р»Рё РІ FSM вЂ” РёСЃРїРѕР»СЊР·СѓРµРј РµРіРѕ Рё РЅРµ РІС‹Р·С‹РІР°РµРј LLM РїРѕРІС‚РѕСЂРЅРѕ
     level: ActivityLevel
     llm_obj = None
     llm_used = False
@@ -209,22 +208,22 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
         level = ActivityLevel(pre_level_raw)
     else:
         try:
-            llm_obj = await classify_activity_cached(user_id, (payload.activity_text or ""), lang_hint=getattr(message.from_user, 'language_code', None))
-            if llm_obj and isinstance(getattr(llm_obj, 'level', None), str):
-                lvl = (llm_obj.level or '').strip().lower()
-                conf = float(getattr(llm_obj, 'confidence', 0.0) or 0.0)
+            llm_obj = await classify_activity_cached(user_id, (payload.activity_text or ""), lang_hint=getattr(message.from_user, "language_code", None))
+            if llm_obj and isinstance(getattr(llm_obj, "level", None), str):
+                lvl = (llm_obj.level or "").strip().lower()
+                conf = float(getattr(llm_obj, "confidence", 0.0) or 0.0)
                 if lvl in {"sedentary", "light", "moderate", "active", "athlete"} and conf >= 0.6:
                     level = ActivityLevel(lvl)
                     if level == ActivityLevel.athlete:
-                        features = (getattr(llm_obj, 'features', {}) or {})
-                        wpw_raw = features.get('workouts_per_week')
+                        features = (getattr(llm_obj, "features", {}) or {})
+                        wpw_raw = features.get("workouts_per_week")
                         wpw_num = None
                         try:
                             if isinstance(wpw_raw, (int, float)):
                                 wpw_num = int(wpw_raw)
                             elif isinstance(wpw_raw, str):
                                 s = wpw_raw.strip()
-                                # extract first integer (supports "5–6", "5-6", "6+", "6 раз")
+                                # extract first integer (supports "5вЂ“6", "5-6", "6+", "6 СЂР°Р·")
                                 m = re.search(r"(\d+)", s)
                                 if m:
                                     wpw_num = int(m.group(1))
@@ -241,7 +240,7 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
             logger.warning("onboarding.activity.llm_failed | user_id={} | err={}", user_id, e)
             level = infer_activity_level(payload.activity_text or "")
 
-    # гарантируем, что расчёт плана использует определённый уровень
+    # РіР°СЂР°РЅС‚РёСЂСѓРµРј, С‡С‚Рѕ СЂР°СЃС‡С‘С‚ РїР»Р°РЅР° РёСЃРїРѕР»СЊР·СѓРµС‚ РѕРїСЂРµРґРµР»С‘РЅРЅС‹Р№ СѓСЂРѕРІРµРЅСЊ
     try:
         payload = payload.model_copy(update={"activity_level": level})
     except Exception:
@@ -252,7 +251,7 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
 
     plan = calculate_daily_plan(payload)
 
-    # Сохранение в БД (upsert)
+    # РЎРѕС…СЂР°РЅРµРЅРёРµ РІ Р‘Р” (upsert)
     try:
         async with sessionmaker() as session:
             existing = await session.scalar(
@@ -273,16 +272,14 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
             except Exception:
                 pass
             if llm_used and llm_obj is not None:
-                try:
+                with contextlib.suppress(Exception):
                     data_json["activity_llm"] = {
-                        "level": getattr(llm_obj, 'level', None),
-                        "confidence": getattr(llm_obj, 'confidence', None),
-                        "features": getattr(llm_obj, 'features', {}) or {},
-                        "rationale": getattr(llm_obj, 'rationale', None),
-                        "version": getattr(llm_obj, 'version', 'v1'),
+                        "level": getattr(llm_obj, "level", None),
+                        "confidence": getattr(llm_obj, "confidence", None),
+                        "features": getattr(llm_obj, "features", {}) or {},
+                        "rationale": getattr(llm_obj, "rationale", None),
+                        "version": getattr(llm_obj, "version", "v1"),
                     }
-                except Exception:
-                    pass
 
             if existing:
                 existing.data = data_json
@@ -316,22 +313,22 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
                                 user_id=user_id,
                                 event_type="onboarding_completed",
                                 event_properties=EventProperties(
-                                    chat_id=getattr(message.chat, 'id', None),
-                                    chat_type=getattr(message.chat, 'type', None),
+                                    chat_id=getattr(message.chat, "id", None),
+                                    chat_type=getattr(message.chat, "type", None),
                                     text=None,
                                     command=None,
                                     total_duration_sec=total_sec,
                                 ),
-                                language=getattr(message.from_user, 'language_code', None),
+                                language=getattr(message.from_user, "language_code", None),
                                 plan=Plan(branch="Onboarding", source="onboarding", version="v1"),
                             )
                         )
                         _onb_fire_step(
                             user_id=user_id,
                             step_name="review",
-                            chat_id=getattr(message.chat, 'id', None),
-                            chat_type=getattr(message.chat, 'type', None),
-                            language=getattr(message.from_user, 'language_code', None),
+                            chat_id=getattr(message.chat, "id", None),
+                            chat_type=getattr(message.chat, "type", None),
+                            language=getattr(message.from_user, "language_code", None),
                             retry=False,
                         )
                         await _onb_clear_redis(user_id)
@@ -344,13 +341,11 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
                             from bot.services.users import is_subscription_active
                             active = await is_subscription_active(s2, user_id)
                             if not active:
-                                raise Exception("skip")
+                                msg = "skip"
+                                raise Exception(msg)
                         tz_name = await s2.scalar(select(UserModel.timezone).where(UserModel.id == user_id)) or settings.DEFAULT_TZ
                     try:
-                        if (tz_name or "").upper() in ("UTC", "Z"):
-                            tzinfo = timezone.utc
-                        else:
-                            tzinfo = ZoneInfo(tz_name)
+                        tzinfo = timezone.utc if (tz_name or "").upper() in ("UTC", "Z") else ZoneInfo(tz_name)
                     except Exception:
                         tzinfo = timezone.utc
                     now_local = datetime.now(tzinfo)
@@ -371,12 +366,12 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
                             user_id=user_id,
                             event_type="Adjust:Applied",
                             event_properties=EventProperties(
-                                chat_id=getattr(message.chat, 'id', None),
-                                chat_type=getattr(message.chat, 'type', None),
+                                chat_id=getattr(message.chat, "id", None),
+                                chat_type=getattr(message.chat, "type", None),
                                 text=None,
                                 command=None,
                             ),
-                            language=getattr(message.from_user, 'language_code', None),
+                            language=getattr(message.from_user, "language_code", None),
                             plan=Plan(branch="Adjust", source="onboarding", version="v1"),
                         )
                     )
@@ -385,58 +380,58 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
             logger.info("adjust.saved | user_id={} | adjustments_count={}", user_id, len(data_json.get("adjustments") or []))
     except Exception as e:
         logger.exception("onboarding.finalize.db_error | user_id={} | error={}", payload.user_id, e)
-        await message.answer(_("Не удалось сохранить данные. Попробуй ещё раз или позже: /start"))
+        await message.answer(_("РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕС…СЂР°РЅРёС‚СЊ РґР°РЅРЅС‹Рµ. РџРѕРїСЂРѕР±СѓР№ РµС‰С‘ СЂР°Р· РёР»Рё РїРѕР·Р¶Рµ: /start"))
         return
 
-    # Сформировать финальный текст согласно ТЗ
+    # РЎС„РѕСЂРјРёСЂРѕРІР°С‚СЊ С„РёРЅР°Р»СЊРЅС‹Р№ С‚РµРєСЃС‚ СЃРѕРіР»Р°СЃРЅРѕ РўР—
     lines: list[str] = []
-    lines.append("<b>" + _("Твой индивидуальный план готов!") + "</b>")
+    lines.append("<b>" + _("РўРІРѕР№ РёРЅРґРёРІРёРґСѓР°Р»СЊРЅС‹Р№ РїР»Р°РЅ РіРѕС‚РѕРІ!") + "</b>")
     lines.append("")
 
     if payload.goal != Goal.maintain:
-        # ETA и скорость
+        # ETA Рё СЃРєРѕСЂРѕСЃС‚СЊ
         if plan.eta_date is not None and payload.goal_weight_kg is not None:
             delta = abs(payload.weight_kg - payload.goal_weight_kg)
-            formatted_date = plan.eta_date.strftime('%d.%m.%Y')
+            formatted_date = plan.eta_date.strftime("%d.%m.%Y")
             if payload.goal == Goal.lose:
-                lines.append(f"Ты сбросишь {round(delta, 1)} кг к {formatted_date}")
+                lines.append(f"РўС‹ СЃР±СЂРѕСЃРёС€СЊ {round(delta, 1)} РєРі Рє {formatted_date}")
             elif payload.goal == Goal.gain:
-                lines.append(f"Ты наберешь {round(delta, 1)} кг к {formatted_date}")
-        lines.append(f"{_('Скорость')}: {plan.weekly_rate_kg} {_('кг в неделю')}")
+                lines.append(f"РўС‹ РЅР°Р±РµСЂРµС€СЊ {round(delta, 1)} РєРі Рє {formatted_date}")
+        lines.append(f"{_('РЎРєРѕСЂРѕСЃС‚СЊ')}: {plan.weekly_rate_kg} {_('РєРі РІ РЅРµРґРµР»СЋ')}")
 
     lines.append("")
-    lines.append("<b>" + _("Дневная норма:") + "</b>")
-    lines.append(f"🔥 {_('Калории')}: {plan.calories} {_('ккал')}")
-    lines.append(f"🥩 {_('Белки')}: {plan.protein_g} {_('г')}")
-    lines.append(f"🥑 {_('Жиры')}: {plan.fat_g} {_('г')}")
-    lines.append(f"🍞 {_('Углеводы')}: {plan.carbs_g} {_('г')}")
+    lines.append("<b>" + _("Р”РЅРµРІРЅР°СЏ РЅРѕСЂРјР°:") + "</b>")
+    lines.append(f"рџ”Ґ {_('РљР°Р»РѕСЂРёРё')}: {plan.calories} {_('РєРєР°Р»')}")
+    lines.append(f"рџҐ© {_('Р‘РµР»РєРё')}: {plan.protein_g} {_('Рі')}")
+    lines.append(f"рџҐ‘ {_('Р–РёСЂС‹')}: {plan.fat_g} {_('Рі')}")
+    lines.append(f"рџЌћ {_('РЈРіР»РµРІРѕРґС‹')}: {plan.carbs_g} {_('Рі')}")
 
     lines.append("")
-    lines.append("📚 <b>" + _("Научные основы расчетов:") + "</b>")
-    lines.append("• <a href=\"https://pubmed.ncbi.nlm.nih.gov/2305711/\">Формула Миффлина-Сан Жеора</a>")
-    lines.append("• <a href=\"https://journals.physiology.org/doi/full/10.1152/ajpendo.00156.2017\">Метаболические расчеты</a>")
-    lines.append("• <a href=\"https://ceur-ws.org/Vol-3806/S_42_Pleskach.pdf\">Системы подсчета калорий</a>")
+    lines.append("рџ“љ <b>" + _("РќР°СѓС‡РЅС‹Рµ РѕСЃРЅРѕРІС‹ СЂР°СЃС‡РµС‚РѕРІ:") + "</b>")
+    lines.append('вЂў <a href="https://pubmed.ncbi.nlm.nih.gov/2305711/">Р¤РѕСЂРјСѓР»Р° РњРёС„С„Р»РёРЅР°-РЎР°РЅ Р–РµРѕСЂР°</a>')
+    lines.append('вЂў <a href="https://journals.physiology.org/doi/full/10.1152/ajpendo.00156.2017">РњРµС‚Р°Р±РѕР»РёС‡РµСЃРєРёРµ СЂР°СЃС‡РµС‚С‹</a>')
+    lines.append('вЂў <a href="https://ceur-ws.org/Vol-3806/S_42_Pleskach.pdf">РЎРёСЃС‚РµРјС‹ РїРѕРґСЃС‡РµС‚Р° РєР°Р»РѕСЂРёР№</a>')
 
     lines.append("")
-    lines.append(_("Оставим так или что-то скорректируем?"))
+    lines.append(_("РћСЃС‚Р°РІРёРј С‚Р°Рє РёР»Рё С‡С‚Рѕ-С‚Рѕ СЃРєРѕСЂСЂРµРєС‚РёСЂСѓРµРј?"))
 
     kb = _ikb([
-        [("Отлично", "final:ok")],
-        [("Хочу скорректировать", "final:adjust")],
+        [("РћС‚Р»РёС‡РЅРѕ", "final:ok")],
+        [("РҐРѕС‡Сѓ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°С‚СЊ", "final:adjust")],
     ])
 
-    # Попробуем отправить график с подписью (в идеале — весь текст как caption)
+    # РџРѕРїСЂРѕР±СѓРµРј РѕС‚РїСЂР°РІРёС‚СЊ РіСЂР°С„РёРє СЃ РїРѕРґРїРёСЃСЊСЋ (РІ РёРґРµР°Р»Рµ вЂ” РІРµСЃСЊ С‚РµРєСЃС‚ РєР°Рє caption)
     try:
         if settings.CHARTS_ENABLED:
             start_w = float(payload.weight_kg)
             goal_w = float(payload.goal_weight_kg) if payload.goal_weight_kg is not None else None
-            weekly = float(getattr(plan, 'weekly_rate_kg', 0.0) or 0.0)
-            start_dt = getattr(message, 'date', None)
+            weekly = float(getattr(plan, "weekly_rate_kg", 0.0) or 0.0)
+            start_dt = getattr(message, "date", None)
             start_d = start_dt.date() if start_dt else date.today()
-            eta = getattr(plan, 'eta_date', None)
+            eta = getattr(plan, "eta_date", None)
             logger.info("charts.try_send | phase=finalize | user_id={} | weekly={} | eta={}", payload.user_id, weekly, eta)
             key_str = f"{start_w}:{goal_w}:{weekly}:{start_d.isoformat()}:{eta.isoformat() if eta else ''}:{settings.CHARTS_PRIVACY_MODE}:{settings.CHARTS_BAND_FRAC}"
-            ph = hashlib.sha256(key_str.encode('utf-8')).hexdigest()[:16]
+            ph = hashlib.sha256(key_str.encode("utf-8")).hexdigest()[:16]
             png = await get_plan_chart_png(payload.user_id, ph,
                                            start_weight=start_w,
                                            goal_weight=goal_w,
@@ -445,89 +440,94 @@ async def _finalize_and_show(message: Message, state: FSMContext, user_id: int) 
                                            eta_date=eta)
             if png:
                 caption = "\n".join(lines)
-                # Telegram ограничивает caption у фото (~1024 символа). Если не помещается — отправим короткую подпись.
+                # Telegram РѕРіСЂР°РЅРёС‡РёРІР°РµС‚ caption Сѓ С„РѕС‚Рѕ (~1024 СЃРёРјРІРѕР»Р°). Р•СЃР»Рё РЅРµ РїРѕРјРµС‰Р°РµС‚СЃСЏ вЂ” РѕС‚РїСЂР°РІРёРј РєРѕСЂРѕС‚РєСѓСЋ РїРѕРґРїРёСЃСЊ.
                 if len(caption) <= 1024:
                     await message.answer_photo(BufferedInputFile(png, filename="goal_plan.png"), caption=caption, reply_markup=kb)
                     await state.set_state(OnboardingStates.review)
                     return
-                else:
-                    await message.answer_photo(BufferedInputFile(png, filename="goal_plan.png"), caption=lines[0])
-                    await message.answer(caption, reply_markup=kb, disable_web_page_preview=True)
-                    await state.set_state(OnboardingStates.review)
-                    return
+                await message.answer_photo(BufferedInputFile(png, filename="goal_plan.png"), caption=lines[0])
+                await message.answer(caption, reply_markup=kb, disable_web_page_preview=True)
+                await state.set_state(OnboardingStates.review)
+                return
     except Exception as e:
         logger.warning("charts.send_failed_caption | user_id={} | err={}", payload.user_id, e)
 
-    # Фолбэк: если график отключен или не загрузился — шлём текстом
+    # Р¤РѕР»Р±СЌРє: РµСЃР»Рё РіСЂР°С„РёРє РѕС‚РєР»СЋС‡РµРЅ РёР»Рё РЅРµ Р·Р°РіСЂСѓР·РёР»СЃСЏ вЂ” С€Р»С‘Рј С‚РµРєСЃС‚РѕРј
     await message.answer("\n".join(lines), reply_markup=kb, disable_web_page_preview=True)
     await state.set_state(OnboardingStates.review)
 @router.callback_query(F.data == "sale:back:final")
 async def sale_back_final(call: CallbackQuery, state: FSMContext) -> None:
-    try:
+    with contextlib.suppress(Exception):
         await _finalize_and_show(call.message, state, call.from_user.id)
-    except Exception:
-        pass
     await call.answer()
 
 
 @router.message(EmailStates.waiting)
 async def email_capture(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip()
-    # Строгая валидация формата email
     is_valid = bool(EMAIL_RE.fullmatch(raw))
     if not is_valid:
-        await message.answer("Кажется, это не e-mail. Отправьте, пожалуйста, в формате: yourmail@example.ru")
+        await message.answer("РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РѕС‚РїСЂР°РІСЊС‚Рµ РєРѕСЂСЂРµРєС‚РЅС‹Р№ e-mail РІ С„РѕСЂРјР°С‚Рµ: yourmail@example.ru")
         return
+
     try:
         async with sessionmaker() as session:
             await session.execute(update(UserModel).where(UserModel.id == message.from_user.id).values(email=raw))
             await session.commit()
     except Exception:
-        await message.answer("Не удалось сохранить e-mail. Попробуйте позже.")
+        await message.answer("РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕС…СЂР°РЅРёС‚СЊ e-mail. РџРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕР·Р¶Рµ.")
         await state.clear()
         return
 
     data = await state.get_data()
     plan = str(data.get("pay_plan") or "").strip().lower()
-    if plan not in {"trial", "month", "year"}:
-        await message.answer("E-mail сохранён. Теперь можно перейти к оплате.")
+    if plan == "trial":
+        await message.answer("Р‘РµСЃРїР»Р°С‚РЅС‹Р№ РїСЂРѕР±РЅС‹Р№ РїРµСЂРёРѕРґ Р°РєС‚РёРІРёСЂСѓРµС‚СЃСЏ Р±РµР· РѕРїР»Р°С‚С‹. Р’С‹Р±РµСЂРёС‚Рµ В«3 РґРЅСЏ Р±РµСЃРїР»Р°С‚РЅРѕВ» РІ С‚Р°СЂРёС„Р°С….")
         await state.clear()
         return
 
-    # Продолжаем оплату автоматически
+    if plan not in {"month", "year"}:
+        await message.answer("E-mail СЃРѕС…СЂР°РЅРµРЅ. РњРѕР¶РЅРѕ РїРµСЂРµС…РѕРґРёС‚СЊ Рє РѕРїР»Р°С‚Рµ.")
+        await state.clear()
+        return
+
     try:
         cp = await create_payment(user_id=message.from_user.id, plan=plan)
     except Exception:
-        await message.answer("Ошибка при создании платежа. Попробуйте позже.")
+        await message.answer("РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕР·РґР°С‚СЊ РїР»Р°С‚РµР¶. РџРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕР·Р¶Рµ.")
         await state.clear()
         return
 
+    pay_btn = "РћРїР»Р°С‚РёС‚СЊ 750 СЂСѓР±" if plan == "month" else "РћРїР»Р°С‚РёС‚СЊ 2500 СЂСѓР±"
+    back_cb = "sale:buy:month" if plan == "month" else "sale:buy:year"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=("Оплатить 10 рублей" if plan == "trial" else ("Оплатить 750 руб" if plan == "month" else "Оплатить 2500 руб")), url=cp.confirmation_url)],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data=("sale:trial" if plan == "trial" else ("sale:buy:month" if plan == "month" else "sale:buy:year")))],
+        [InlineKeyboardButton(text=pay_btn, url=cp.confirmation_url)],
+        [InlineKeyboardButton(text="РќР°Р·Р°Рґ", callback_data=back_cb)],
     ])
-    await message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    await message.answer("Перейди по ссылке для оплаты:", reply_markup=kb, disable_web_page_preview=True)
     await state.clear()
+
+
 
 
 @router.callback_query(F.data == "sale:cont1")
 async def sale_cont1(call: CallbackQuery, state: FSMContext) -> None:
     text = (
-        "🥗 БЖУ —  это основа для красивой фигуры\n\n"
-        "Считать только калории = рыхлое тело без рельефа.\n\n"
-        "🎯 Для качественного преображения придерживайся:\n"
-        "• Белки: 25-30% — защищают мышцы от сжигания, надолго утоляют голод\n"
-        "• Жиры: 20-25% — регулируют гормональный фон, отвечают за здоровье кожи и волос\n"
-        "• Углеводы: 45-55% — обеспечивают силой для спорта и ясностью ума\n\n"
-        "Пропорции можно адаптировать под свои потребности\n\n"
-        "✨ Твои бонусы:\n"
-        "• Упругая подтянутая фигура\n"
-        "• Стабильный уровень энергии и позитивный настрой\n"
-        "• Здоровая кожа и сияющие волосы\n"
-        "• Никаких срывов — белок держит сытость под контролем\n\n"
-        "💡 Суть: грамотный баланс БЖУ формирует не просто цифру на весах, а красоту твоего тела!"
+        "рџҐ— Р‘Р–РЈ вЂ”  СЌС‚Рѕ РѕСЃРЅРѕРІР° РґР»СЏ РєСЂР°СЃРёРІРѕР№ С„РёРіСѓСЂС‹\n\n"
+        "РЎС‡РёС‚Р°С‚СЊ С‚РѕР»СЊРєРѕ РєР°Р»РѕСЂРёРё = СЂС‹С…Р»РѕРµ С‚РµР»Рѕ Р±РµР· СЂРµР»СЊРµС„Р°.\n\n"
+        "рџЋЇ Р”Р»СЏ РєР°С‡РµСЃС‚РІРµРЅРЅРѕРіРѕ РїСЂРµРѕР±СЂР°Р¶РµРЅРёСЏ РїСЂРёРґРµСЂР¶РёРІР°Р№СЃСЏ:\n"
+        "вЂў Р‘РµР»РєРё: 25-30% вЂ” Р·Р°С‰РёС‰Р°СЋС‚ РјС‹С€С†С‹ РѕС‚ СЃР¶РёРіР°РЅРёСЏ, РЅР°РґРѕР»РіРѕ СѓС‚РѕР»СЏСЋС‚ РіРѕР»РѕРґ\n"
+        "вЂў Р–РёСЂС‹: 20-25% вЂ” СЂРµРіСѓР»РёСЂСѓСЋС‚ РіРѕСЂРјРѕРЅР°Р»СЊРЅС‹Р№ С„РѕРЅ, РѕС‚РІРµС‡Р°СЋС‚ Р·Р° Р·РґРѕСЂРѕРІСЊРµ РєРѕР¶Рё Рё РІРѕР»РѕСЃ\n"
+        "вЂў РЈРіР»РµРІРѕРґС‹: 45-55% вЂ” РѕР±РµСЃРїРµС‡РёРІР°СЋС‚ СЃРёР»РѕР№ РґР»СЏ СЃРїРѕСЂС‚Р° Рё СЏСЃРЅРѕСЃС‚СЊСЋ СѓРјР°\n\n"
+        "РџСЂРѕРїРѕСЂС†РёРё РјРѕР¶РЅРѕ Р°РґР°РїС‚РёСЂРѕРІР°С‚СЊ РїРѕРґ СЃРІРѕРё РїРѕС‚СЂРµР±РЅРѕСЃС‚Рё\n\n"
+        "вњЁ РўРІРѕРё Р±РѕРЅСѓСЃС‹:\n"
+        "вЂў РЈРїСЂСѓРіР°СЏ РїРѕРґС‚СЏРЅСѓС‚Р°СЏ С„РёРіСѓСЂР°\n"
+        "вЂў РЎС‚Р°Р±РёР»СЊРЅС‹Р№ СѓСЂРѕРІРµРЅСЊ СЌРЅРµСЂРіРёРё Рё РїРѕР·РёС‚РёРІРЅС‹Р№ РЅР°СЃС‚СЂРѕР№\n"
+        "вЂў Р—РґРѕСЂРѕРІР°СЏ РєРѕР¶Р° Рё СЃРёСЏСЋС‰РёРµ РІРѕР»РѕСЃС‹\n"
+        "вЂў РќРёРєР°РєРёС… СЃСЂС‹РІРѕРІ вЂ” Р±РµР»РѕРє РґРµСЂР¶РёС‚ СЃС‹С‚РѕСЃС‚СЊ РїРѕРґ РєРѕРЅС‚СЂРѕР»РµРј\n\n"
+        "рџ’Ў РЎСѓС‚СЊ: РіСЂР°РјРѕС‚РЅС‹Р№ Р±Р°Р»Р°РЅСЃ Р‘Р–РЈ С„РѕСЂРјРёСЂСѓРµС‚ РЅРµ РїСЂРѕСЃС‚Рѕ С†РёС„СЂСѓ РЅР° РІРµСЃР°С…, Р° РєСЂР°СЃРѕС‚Сѓ С‚РІРѕРµРіРѕ С‚РµР»Р°!"
     )
-    kb = _ikb([[ ("Супер", "sale:example_food") ]])
+    kb = _ikb([[ ("РЎСѓРїРµСЂ", "sale:example_food") ]])
     try:
         await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
     except Exception:
@@ -539,26 +539,26 @@ async def sale_cont1(call: CallbackQuery, state: FSMContext) -> None:
 async def sale_example_food(call: CallbackQuery, state: FSMContext) -> None:
     """Sales flow: show a concrete example of food photo analysis before plan selection."""
     text = (
-        "Пример анализа блюда по фото\n"
-        "Завтрак-ассорти с круассаном, тостами и авокадо\n\n"
-        "🍜 Состав:\n"
-        "• круассан (70 г, 260 ккал)\n"
-        "• тост треугольники с песто (80 г, 230 ккал)\n"
-        "• яичница болтунья (100 г, 180 ккал)\n"
-        "• креветки жареные (60 г, 60 ккал)\n"
-        "• авокадо (75 г, 120 ккал)\n"
-        "• свежие овощи (огурец, листовые салаты, томаты) (60 г, 20 ккал)\n"
-        "• соусы и джемы (сметана, томатный, ягодный джем) (35 г, 80 ккал)\n\n"
-        "🔥 Калории: 950 ккал | 🥩 Белки: 31.5 г | 🥑 Жиры: 55.6 г | 🍞 Углеводы: 84.8 г\n\n"
-        "⚖️ Вес: 430.0 г\n\n"
+        "РџСЂРёРјРµСЂ Р°РЅР°Р»РёР·Р° Р±Р»СЋРґР° РїРѕ С„РѕС‚Рѕ\n"
+        "Р—Р°РІС‚СЂР°Рє-Р°СЃСЃРѕСЂС‚Рё СЃ РєСЂСѓР°СЃСЃР°РЅРѕРј, С‚РѕСЃС‚Р°РјРё Рё Р°РІРѕРєР°РґРѕ\n\n"
+        "рџЌњ РЎРѕСЃС‚Р°РІ:\n"
+        "вЂў РєСЂСѓР°СЃСЃР°РЅ (70 Рі, 260 РєРєР°Р»)\n"
+        "вЂў С‚РѕСЃС‚ С‚СЂРµСѓРіРѕР»СЊРЅРёРєРё СЃ РїРµСЃС‚Рѕ (80 Рі, 230 РєРєР°Р»)\n"
+        "вЂў СЏРёС‡РЅРёС†Р° Р±РѕР»С‚СѓРЅСЊСЏ (100 Рі, 180 РєРєР°Р»)\n"
+        "вЂў РєСЂРµРІРµС‚РєРё Р¶Р°СЂРµРЅС‹Рµ (60 Рі, 60 РєРєР°Р»)\n"
+        "вЂў Р°РІРѕРєР°РґРѕ (75 Рі, 120 РєРєР°Р»)\n"
+        "вЂў СЃРІРµР¶РёРµ РѕРІРѕС‰Рё (РѕРіСѓСЂРµС†, Р»РёСЃС‚РѕРІС‹Рµ СЃР°Р»Р°С‚С‹, С‚РѕРјР°С‚С‹) (60 Рі, 20 РєРєР°Р»)\n"
+        "вЂў СЃРѕСѓСЃС‹ Рё РґР¶РµРјС‹ (СЃРјРµС‚Р°РЅР°, С‚РѕРјР°С‚РЅС‹Р№, СЏРіРѕРґРЅС‹Р№ РґР¶РµРј) (35 Рі, 80 РєРєР°Р»)\n\n"
+        "рџ”Ґ РљР°Р»РѕСЂРёРё: 950 РєРєР°Р» | рџҐ© Р‘РµР»РєРё: 31.5 Рі | рџҐ‘ Р–РёСЂС‹: 55.6 Рі | рџЌћ РЈРіР»РµРІРѕРґС‹: 84.8 Рі\n\n"
+        "вљ–пёЏ Р’РµСЃ: 430.0 Рі\n\n"
         "------------------------------\n\n"
-        "📊 Итого за день:\n"
-        "🔥 Калории: 1650 ккал (86.4% от нормы)\n"
-        "🥩 Белки: 42.5 г (95.4% от нормы)\n"
-        "🥑 Жиры: 55.6 г (93.9% от нормы)\n"
-        "🍞 Углеводы: 99.8 г (82.5% от нормы)"
+        "рџ“Љ РС‚РѕРіРѕ Р·Р° РґРµРЅСЊ:\n"
+        "рџ”Ґ РљР°Р»РѕСЂРёРё: 1650 РєРєР°Р» (86.4% РѕС‚ РЅРѕСЂРјС‹)\n"
+        "рџҐ© Р‘РµР»РєРё: 42.5 Рі (95.4% РѕС‚ РЅРѕСЂРјС‹)\n"
+        "рџҐ‘ Р–РёСЂС‹: 55.6 Рі (93.9% РѕС‚ РЅРѕСЂРјС‹)\n"
+        "рџЌћ РЈРіР»РµРІРѕРґС‹: 99.8 Рі (82.5% РѕС‚ РЅРѕСЂРјС‹)"
     )
-    kb = _ikb([[("Отлично", "sale:cont2")]])
+    kb = _ikb([[("РћС‚Р»РёС‡РЅРѕ", "sale:cont2")]])
     try:
         # Remove previous text-only sales screen (sale_cont1) so we keep a single "active" screen.
         try:
@@ -576,49 +576,30 @@ async def sale_example_food(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "sale:cont2")
 async def sale_cont2(call: CallbackQuery, state: FSMContext) -> None:
     text = (
-        "✨ Я помогу тебе достичь идеальной фигуры через:\n\n"
-        "Простой учёт калорий:\n"
-        "• Просто фотографируешь еду и присылаешь\n"
-        "• Или пишешь текстом\n\n"
-        "Личный ИИ-диетолог:\n"
-        "• Ежедневно оценивает твой рацион и даёт советы\n"
-        "• Подбирает аппетитные рецепты с правильным БЖУ"
+        "Полный доступ к боту и всем функциям.\n\n"
+        "- 3 дня бесплатного пробного периода\n"
+        "- Точный AI-анализ еды по фото и БЖУ\n"
+        "- Ежедневный контроль калорий и прогресса"
     )
-    # Hide trial button if user has already used trial
-    used_trial = False
+    trial_available = False
     try:
         async with sessionmaker() as session:
-            rows = (await session.execute(
-                select(PaymentModel.meta)
-                .where(PaymentModel.user_id == call.from_user.id, PaymentModel.status == "succeeded")
-                .order_by(PaymentModel.id.desc())
-                .limit(50)
-            )).scalars().all()
-        for md in rows:
-            try:
-                if str((md or {}).get("plan", "")).lower() == "trial":
-                    used_trial = True
-                    break
-            except Exception:
-                continue
-    except Exception:
-        used_trial = False
+            trial_available = await is_free_trial_available(session, call.from_user.id)
+    except Exception as e:
+        logger.warning("sale.cont2.trial_check_failed | user_id={} | err={}", call.from_user.id, e)
+
     rows = []
-    if not used_trial:
-        rows.append([InlineKeyboardButton(text="💥 10 руб. за 3 дня", callback_data="sale:trial")])
-    rows.append([InlineKeyboardButton(text="💎 Выбрать тариф", callback_data="sale:choose")])
-    rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:back:final")])
+    if trial_available:
+        rows.append([InlineKeyboardButton(text="3 дня бесплатно", callback_data="sale:trial")])
+    rows.append([InlineKeyboardButton(text="Выбрать тариф", callback_data="sale:choose")])
+    rows.append([InlineKeyboardButton(text="РќР°Р·Р°Рґ", callback_data="sale:back:final")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
-    # If we came here from a media message (e.g. example_food photo), delete it first so we don't
-    # leave the user with stacked screens in the chat.
     try:
         msg = call.message
         if msg and (getattr(msg, "photo", None) or getattr(msg, "video", None) or getattr(msg, "animation", None) or getattr(msg, "document", None)):
-            try:
+            with contextlib.suppress(Exception):
                 await msg.delete()
-            except Exception:
-                pass
             await msg.answer(text, reply_markup=kb, disable_web_page_preview=True)
             await call.answer()
             return
@@ -634,46 +615,36 @@ async def sale_cont2(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "sale:trial")
 async def sale_trial(call: CallbackQuery, state: FSMContext) -> None:
-    # If trial already used, redirect to choose plan
+    trial_available = False
     try:
         async with sessionmaker() as session:
-            rows = (await session.execute(
-                select(PaymentModel.meta)
-                .where(PaymentModel.user_id == call.from_user.id, PaymentModel.status == "succeeded")
-                .order_by(PaymentModel.id.desc())
-                .limit(50)
-            )).scalars().all()
-        for md in rows:
-            try:
-                if str((md or {}).get("plan", "")).lower() == "trial":
-                    await sale_choose(call, state)
-                    await call.answer()
-                    return
-            except Exception:
-                pass
-    except Exception:
-        pass
-    # Compute trial end in user's TZ
+            trial_available = await is_free_trial_available(session, call.from_user.id)
+    except Exception as e:
+        logger.warning("sale.trial.check_failed | user_id={} | err={}", call.from_user.id, e)
+
+    if not trial_available:
+        await call.message.answer("Бесплатный пробный период уже использован. Можно перейти на платный тариф.")
+        await sale_choose(call, state)
+        await call.answer()
+        return
+
     try:
         async with sessionmaker() as session:
             tz = await get_user_tzinfo(session, call.from_user.id)
     except Exception:
         tz = timezone.utc
-    end_dt = (datetime.now(tz) + timedelta(days=3)).strftime("%d.%m.%Y %H:%M")
+
+    days = trial_days()
+    end_dt = (datetime.now(tz) + timedelta(days=days)).strftime("%d.%m.%Y %H:%M")
     text = (
-        "💥 Пробный доступ всего за 10 рублей\n\n"
-        "✨ 3 дня полного доступа ко всем функциям Calorissimo AI\n\n"
-        "🤖 Персональный ИИ-нутрициолог\n\n"
-        "📊 Анализ питания и рекомендации\n\n"
-        f"• Пробный период до: {end_dt}\n\n"
-        "• После пробного периода годовая подписка продлится за 2500 рублей\n\n"
-        "Оплачивая, ты соглашаешься с <a href=\"https://telegra.ph/Polzovatelskoe-soglashenie-12-05-32\">Пользовательским соглашением</a>, "
-        "<a href=\"https://telegra.ph/Politika-konfidencialnosti-12-05-33\">Политикой конфиденциальности</a> и на сохранение способа оплаты для автопродления.\n"
-        "Автосписание можно отключить в разделе «Настройки → Подписка»."
+        "Бесплатный пробный период\n\n"
+        f"{days} дня доступа без оплаты.\n\n"
+        f"Действует до: {end_dt}\n\n"
+        "После окончания пробного периода можно выбрать платный тариф."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Оплатить 10 рублей", callback_data="sale:pay:trial")],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:cont2")],
+        [InlineKeyboardButton(text="Активировать бесплатно", callback_data="sale:start:trial")],
+        [InlineKeyboardButton(text="РќР°Р·Р°Рґ", callback_data="sale:cont2")],
     ])
     try:
         await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
@@ -684,40 +655,23 @@ async def sale_trial(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "sale:choose")
 async def sale_choose(call: CallbackQuery, state: FSMContext) -> None:
-    # Check if user already used trial
-    used_trial = False
+    trial_available = False
     try:
         async with sessionmaker() as session:
-            rows = (await session.execute(
-                select(PaymentModel.meta)
-                .where(PaymentModel.user_id == call.from_user.id, PaymentModel.status == "succeeded")
-                .order_by(PaymentModel.id.desc())
-                .limit(50)
-            )).scalars().all()
-        for md in rows:
-            try:
-                if str((md or {}).get("plan", "")).lower() == "trial":
-                    used_trial = True
-                    break
-            except Exception:
-                continue
-    except Exception:
-        used_trial = False
+            trial_available = await is_free_trial_available(session, call.from_user.id)
+    except Exception as e:
+        logger.warning("sale.choose.trial_check_failed | user_id={} | err={}", call.from_user.id, e)
 
     text = (
         "Выбери тариф:\n\n"
-        "Месячная подписка — 750 руб/месяц\n"
-        "• Ежемесячная оплата\n\n"
-        "Годовая подписка — 2500 руб/в год ( или всего 210 руб/мес.)\n"
-        "• Экономия 6 500 руб/ в год\n"
-        "• Оплата раз в год\n\n"
-        "Подписку можно отменить в любой удобный момент в Личном кабинете бота"
+        "Месяц: 750 руб / 30 дней\n"
+        "Год: 2500 руб / 365 дней"
     )
     rows_kb = []
-    if not used_trial:
-        rows_kb.append([InlineKeyboardButton(text="💥 10 руб. за 3 дня", callback_data="sale:trial")])
-    rows_kb.append([InlineKeyboardButton(text="750 руб/мес", callback_data="sale:buy:month")])
-    rows_kb.append([InlineKeyboardButton(text="2500 руб/в год", callback_data="sale:buy:year")])
+    if trial_available:
+        rows_kb.append([InlineKeyboardButton(text="3 дня бесплатно", callback_data="sale:trial")])
+    rows_kb.append([InlineKeyboardButton(text="750 руб / месяц", callback_data="sale:buy:month")])
+    rows_kb.append([InlineKeyboardButton(text="2500 СЂСѓР± / РіРѕРґ", callback_data="sale:buy:year")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows_kb)
     try:
         await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
@@ -729,18 +683,15 @@ async def sale_choose(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "sale:buy:month")
 async def sale_buy_month(call: CallbackQuery, state: FSMContext) -> None:
     text = (
-        "💎 Оплата подписки\n\n"
-        "План: Месячная подписка\n"
-        "Стоимость: 750 руб/месяц\n"
-        "Период: 30 дней\n\n"
-        "После оплаты подписка будет автоматически продлеваться.\n\n"
-        "Оплачивая, ты соглашаешься с <a href=\"https://telegra.ph/Polzovatelskoe-soglashenie-12-05-32\">Пользовательским соглашением</a>, "
-        "<a href=\"https://telegra.ph/Politika-konfidencialnosti-12-05-33\">Политикой конфиденциальности</a> и на сохранение способа оплаты для автопродления.\n"
-        "Автосписание можно отключить в разделе «Настройки → Подписка»."
+        "Тариф Месяц\n\n"
+        "План: месячный\n"
+        "Стоимость: 750 руб / месяц\n"
+        "Срок: 30 дней\n\n"
+        "После оплаты подписка продлевается автоматически."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Оплатить 750 руб", callback_data="sale:pay:month")],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:choose")],
+        [InlineKeyboardButton(text="РћРїР»Р°С‚РёС‚СЊ 750 СЂСѓР±", callback_data="sale:pay:month")],
+        [InlineKeyboardButton(text="РќР°Р·Р°Рґ", callback_data="sale:choose")],
     ])
     try:
         await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
@@ -752,18 +703,15 @@ async def sale_buy_month(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "sale:buy:year")
 async def sale_buy_year(call: CallbackQuery, state: FSMContext) -> None:
     text = (
-        "💎 Оплата подписки\n\n"
-        "План: Годовая подписка\n"
-        "Стоимость:  2500 руб/в год\n"
-        "Период: 365 дней\n\n"
-        "После оплаты подписка будет автоматически продлеваться.\n\n"
-        "Оплачивая, ты соглашаешься с <a href=\"https://telegra.ph/Polzovatelskoe-soglashenie-12-05-32\">Пользовательским соглашением</a>, "
-        "<a href=\"https://telegra.ph/Politika-konfidencialnosti-12-05-33\">Политикой конфиденциальности</a> и на сохранение способа оплаты для автопродления.\n"
-        "Автосписание можно отключить в разделе «Настройки → Подписка»."
+        "Тариф Год\n\n"
+        "План: годовой\n"
+        "Стоимость: 2500 руб / год\n"
+        "Срок: 365 дней\n\n"
+        "После оплаты подписка продлевается автоматически."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Оплатить 2500 руб", callback_data="sale:pay:year")],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:choose")],
+        [InlineKeyboardButton(text="РћРїР»Р°С‚РёС‚СЊ 2500 СЂСѓР±", callback_data="sale:pay:year")],
+        [InlineKeyboardButton(text="РќР°Р·Р°Рґ", callback_data="sale:choose")],
     ])
     try:
         await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
@@ -772,39 +720,42 @@ async def sale_buy_year(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
 
 
+@router.callback_query(F.data == "sale:start:trial")
 @router.callback_query(F.data == "sale:pay:trial")
-async def sale_pay_trial(call: CallbackQuery, state: FSMContext) -> None:
+async def sale_start_trial(call: CallbackQuery, state: FSMContext) -> None:
     user_id = call.from_user.id
     try:
-        cp = await create_payment(user_id=user_id, plan="trial")
+        async with sessionmaker() as session:
+            expires_at_utc = await activate_free_trial(session, user_id)
+            tz = await get_user_tzinfo(session, user_id)
     except Exception as e:
-        if str(e) == "email_required":
-            await state.set_state(EmailStates.waiting)
-            try:
-                await state.update_data(pay_plan="trial")
-            except Exception:
-                pass
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="sale:email:back")],
-            ])
-            await call.message.answer("🧾🙏🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru", reply_markup=kb)
-        elif str(e) == "trial_already_used":
-            # Redirect to plan selection
-            await call.message.answer("Пробный доступ доступен один раз. Выберите тариф:")
-            await sale_choose(call, state)
-        else:
-            await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
+        logger.warning("sale.start_trial.failed | user_id={} | err={}", user_id, e)
+        await call.message.answer("Пока не удалось активировать пробный период. Попробуй позже.")
         await call.answer()
         return
+
+    if expires_at_utc is None:
+        await call.message.answer("Бесплатный пробный период уже использован. Можно перейти на платный тариф.")
+        await sale_choose(call, state)
+        await call.answer()
+        return
+
+    end_dt = expires_at_utc.astimezone(tz).strftime("%d.%m.%Y %H:%M")
+    text = (
+        "Пробный период активирован.\n\n"
+        f"Действует до: {end_dt}\n\n"
+        "После окончания периода выбери месяц или год."
+    )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Оплатить 10 рублей", url=cp.confirmation_url)],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:trial")],
+        [InlineKeyboardButton(text="Выбрать тариф", callback_data="sale:choose")],
     ])
     try:
-        await call.message.edit_text("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+        await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
     except Exception:
-        await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+        await call.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
     await call.answer()
+
+
 
 
 @router.callback_query(F.data == "sale:pay:month")
@@ -815,26 +766,24 @@ async def sale_pay_month(call: CallbackQuery, state: FSMContext) -> None:
     except Exception as e:
         if str(e) == "email_required":
             await state.set_state(EmailStates.waiting)
-            try:
+            with contextlib.suppress(Exception):
                 await state.update_data(pay_plan="month")
-            except Exception:
-                pass
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="sale:email:back")],
+                [InlineKeyboardButton(text="в—ЂпёЏ РќР°Р·Р°Рґ", callback_data="sale:email:back")],
             ])
-            await call.message.answer("🧾🙏🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru", reply_markup=kb)
+            await call.message.answer("рџ§ѕрџ™ЏрџЏј РњС‹ РїРѕС‡С‚Рё Р·Р°РєРѕРЅС‡РёР»Рё! РќСѓР¶РµРЅ Р»РёС€СЊ РІР°С€ e-mail РґР»СЏ С‡РµРєР°. РџРѕРґРµР»РёС‚РµСЃСЊ, РїРѕР¶Р°Р»СѓР№СЃС‚Р°, РІ С„РѕСЂРјР°С‚Рµ: yourmail@example.ru", reply_markup=kb)
         else:
-            await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
+            await call.message.answer("РћС€РёР±РєР° РїСЂРё СЃРѕР·РґР°РЅРёРё РїР»Р°С‚РµР¶Р°. РџРѕРїСЂРѕР±СѓР№ РїРѕР·Р¶Рµ.")
         await call.answer()
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Оплатить 750 руб", url=cp.confirmation_url)],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:buy:month")],
+        [InlineKeyboardButton(text="РћРїР»Р°С‚РёС‚СЊ 750 СЂСѓР±", url=cp.confirmation_url)],
+        [InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="sale:buy:month")],
     ])
     try:
-        await call.message.edit_text("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+        await call.message.edit_text("РџРµСЂРµР№РґРё Рє РѕРїР»Р°С‚Рµ РїРѕ РєРЅРѕРїРєРµ РЅРёР¶Рµ:", reply_markup=kb, disable_web_page_preview=True)
     except Exception:
-        await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+        await call.message.answer("РџРµСЂРµР№РґРё Рє РѕРїР»Р°С‚Рµ РїРѕ РєРЅРѕРїРєРµ РЅРёР¶Рµ:", reply_markup=kb, disable_web_page_preview=True)
     await call.answer()
 
 
@@ -846,36 +795,34 @@ async def sale_pay_year(call: CallbackQuery, state: FSMContext) -> None:
     except Exception as e:
         if str(e) == "email_required":
             await state.set_state(EmailStates.waiting)
-            try:
+            with contextlib.suppress(Exception):
                 await state.update_data(pay_plan="year")
-            except Exception:
-                pass
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="sale:email:back")],
+                [InlineKeyboardButton(text="в—ЂпёЏ РќР°Р·Р°Рґ", callback_data="sale:email:back")],
             ])
-            await call.message.answer("🧾🙏🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru", reply_markup=kb)
+            await call.message.answer("рџ§ѕрџ™ЏрџЏј РњС‹ РїРѕС‡С‚Рё Р·Р°РєРѕРЅС‡РёР»Рё! РќСѓР¶РµРЅ Р»РёС€СЊ РІР°С€ e-mail РґР»СЏ С‡РµРєР°. РџРѕРґРµР»РёС‚РµСЃСЊ, РїРѕР¶Р°Р»СѓР№СЃС‚Р°, РІ С„РѕСЂРјР°С‚Рµ: yourmail@example.ru", reply_markup=kb)
         else:
-            await call.message.answer("Ошибка при создании платежа. Попробуй позже.")
+            await call.message.answer("РћС€РёР±РєР° РїСЂРё СЃРѕР·РґР°РЅРёРё РїР»Р°С‚РµР¶Р°. РџРѕРїСЂРѕР±СѓР№ РїРѕР·Р¶Рµ.")
         await call.answer()
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Оплатить 2500 руб", url=cp.confirmation_url)],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:buy:year")],
+        [InlineKeyboardButton(text="РћРїР»Р°С‚РёС‚СЊ 2500 СЂСѓР±", url=cp.confirmation_url)],
+        [InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="sale:buy:year")],
     ])
     try:
-        await call.message.edit_text("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+        await call.message.edit_text("РџРµСЂРµР№РґРё Рє РѕРїР»Р°С‚Рµ РїРѕ РєРЅРѕРїРєРµ РЅРёР¶Рµ:", reply_markup=kb, disable_web_page_preview=True)
     except Exception:
-        await call.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+        await call.message.answer("РџРµСЂРµР№РґРё Рє РѕРїР»Р°С‚Рµ РїРѕ РєРЅРѕРїРєРµ РЅРёР¶Рµ:", reply_markup=kb, disable_web_page_preview=True)
     await call.answer()
 
 
 @router.callback_query(F.data == "sale:email:back")
 async def sale_email_back(call: CallbackQuery, state: FSMContext) -> None:
-    """Handle back button from email request screen — return to tariff description."""
+    """Handle back button from email request screen вЂ” return to tariff description."""
     data = await state.get_data()
     plan = str(data.get("pay_plan") or "").strip().lower()
     await state.clear()
-    
+
     # Redirect to the appropriate tariff screen
     if plan == "trial":
         await sale_trial(call, state)
@@ -889,21 +836,21 @@ async def sale_email_back(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # =====================
-# Стартовый экран
+# РЎС‚Р°СЂС‚РѕРІС‹Р№ СЌРєСЂР°РЅ
 # =====================
 
 @router.message(Command("onboarding"))
 @router.message(Command("onbording"))  # alias for common typo
 async def cmd_onboarding(message: Message, state: FSMContext) -> None:
-    logger.info("/onboarding command received -> redirect to /start | from_user={} | chat_id={}", getattr(message.from_user, 'id', None), getattr(message.chat, 'id', None))
-    # Soft-redirect: показываем единый стартовый экран с корректным ветвлением
+    logger.info("/onboarding command received -> redirect to /start | from_user={} | chat_id={}", getattr(message.from_user, "id", None), getattr(message.chat, "id", None))
+    # Soft-redirect: РїРѕРєР°Р·С‹РІР°РµРј РµРґРёРЅС‹Р№ СЃС‚Р°СЂС‚РѕРІС‹Р№ СЌРєСЂР°РЅ СЃ РєРѕСЂСЂРµРєС‚РЅС‹Рј РІРµС‚РІР»РµРЅРёРµРј
     await start_module.start_handler(message, state)
 
 
 # Allow launching from inline menu button (backward compat)
 @router.callback_query(F.data == "onboarding")
 async def cb_onboarding(call: CallbackQuery, state: FSMContext) -> None:
-    logger.info("cb_onboarding | user_id={} | chat_id={}", getattr(call.from_user, 'id', None), getattr(call.message.chat, 'id', None))
+    logger.info("cb_onboarding | user_id={} | chat_id={}", getattr(call.from_user, "id", None), getattr(call.message.chat, "id", None))
     await cmd_onboarding(call.message, state)  # type: ignore[arg-type]
     await call.answer()
 
@@ -927,29 +874,29 @@ async def cb_onboarding_start(call: CallbackQuery, state: FSMContext) -> None:
                             user_id=user_id,
                             event_type="onboarding_started",
                             event_properties=EventProperties(
-                                chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
-                                chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                                chat_id=getattr(call.message.chat, "id", None) if call.message else None,
+                                chat_type=getattr(call.message.chat, "type", None) if call.message else None,
                                 text=None,
                                 command=None,
                                 source="onboarding_start",
                             ),
-                            language=getattr(call.from_user, 'language_code', None),
+                            language=getattr(call.from_user, "language_code", None),
                             plan=Plan(branch="Onboarding", source="onboarding", version="v1"),
                         )
                     )
             _onb_fire_step(
                 user_id=user_id,
                 step_name="gender",
-                chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
-                chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
-                language=getattr(call.from_user, 'language_code', None),
+                chat_id=getattr(call.message.chat, "id", None) if call.message else None,
+                chat_type=getattr(call.message.chat, "type", None) if call.message else None,
+                language=getattr(call.from_user, "language_code", None),
                 retry=False,
             )
         except Exception:
             pass
-    caption = _("Отлично! Теперь настроим всё под тебя 🎯\nПервый шаг — выбери свой пол, чтобы я точно рассчитал твою норму калорий.")
+    caption = _("РћС‚Р»РёС‡РЅРѕ! РўРµРїРµСЂСЊ РЅР°СЃС‚СЂРѕРёРј РІСЃС‘ РїРѕРґ С‚РµР±СЏ рџЋЇ\nРџРµСЂРІС‹Р№ С€Р°Рі вЂ” РІС‹Р±РµСЂРё СЃРІРѕР№ РїРѕР», С‡С‚РѕР±С‹ СЏ С‚РѕС‡РЅРѕ СЂР°СЃСЃС‡РёС‚Р°Р» С‚РІРѕСЋ РЅРѕСЂРјСѓ РєР°Р»РѕСЂРёР№.")
     kb = _ikb([
-        [("Я мужчина", "gender:male"), ("Я девушка", "gender:female")],
+        [("РЇ РјСѓР¶С‡РёРЅР°", "gender:male"), ("РЇ РґРµРІСѓС€РєР°", "gender:female")],
     ])
     try:
         photo = FSInputFile("bot/static/gender.jpg")
@@ -960,12 +907,12 @@ async def cb_onboarding_start(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # =====================
-# Возобновление/перезапуск онбординга
+# Р’РѕР·РѕР±РЅРѕРІР»РµРЅРёРµ/РїРµСЂРµР·Р°РїСѓСЃРє РѕРЅР±РѕСЂРґРёРЅРіР°
 # =====================
 
 async def _ask_gender(message: Message) -> None:
-    caption = _("Отлично! Теперь настроим всё под тебя 🎯\nПервый шаг — выбери свой пол, чтобы я точно рассчитал твою норму калорий.")
-    kb = _ikb([[ ("Я мужчина", "gender:male"), ("Я девушка", "gender:female") ]])
+    caption = _("РћС‚Р»РёС‡РЅРѕ! РўРµРїРµСЂСЊ РЅР°СЃС‚СЂРѕРёРј РІСЃС‘ РїРѕРґ С‚РµР±СЏ рџЋЇ\nРџРµСЂРІС‹Р№ С€Р°Рі вЂ” РІС‹Р±РµСЂРё СЃРІРѕР№ РїРѕР», С‡С‚РѕР±С‹ СЏ С‚РѕС‡РЅРѕ СЂР°СЃСЃС‡РёС‚Р°Р» С‚РІРѕСЋ РЅРѕСЂРјСѓ РєР°Р»РѕСЂРёР№.")
+    kb = _ikb([[ ("РЇ РјСѓР¶С‡РёРЅР°", "gender:male"), ("РЇ РґРµРІСѓС€РєР°", "gender:female") ]])
     try:
         photo = FSInputFile("bot/static/gender.jpg")
         await message.answer_photo(photo, caption=caption, reply_markup=kb)
@@ -974,25 +921,25 @@ async def _ask_gender(message: Message) -> None:
 
 
 async def _ask_age(message: Message) -> None:
-    await message.answer(_("Сколько тебе лет?"))
+    await message.answer(_("РЎРєРѕР»СЊРєРѕ С‚РµР±Рµ Р»РµС‚?"))
 
 
 async def _ask_weight(message: Message) -> None:
-    await message.answer(_("Какой у тебя текущий вес в килограммах?"))
+    await message.answer(_("РљР°РєРѕР№ Сѓ С‚РµР±СЏ С‚РµРєСѓС‰РёР№ РІРµСЃ РІ РєРёР»РѕРіСЂР°РјРјР°С…?"))
 
 
 async def _ask_height(message: Message) -> None:
-    await message.answer(_("Какой у тебя рост в сантиметрах?"))
+    await message.answer(_("РљР°РєРѕР№ Сѓ С‚РµР±СЏ СЂРѕСЃС‚ РІ СЃР°РЅС‚РёРјРµС‚СЂР°С…?"))
 
 
 async def _ask_activity(message: Message) -> None:
-    text = _("Выберите свой уровень активности. Это поможет составить максимально точный план питания. 💪🏼")
+    text = _("Р’С‹Р±РµСЂРёС‚Рµ СЃРІРѕР№ СѓСЂРѕРІРµРЅСЊ Р°РєС‚РёРІРЅРѕСЃС‚Рё. Р­С‚Рѕ РїРѕРјРѕР¶РµС‚ СЃРѕСЃС‚Р°РІРёС‚СЊ РјР°РєСЃРёРјР°Р»СЊРЅРѕ С‚РѕС‡РЅС‹Р№ РїР»Р°РЅ РїРёС‚Р°РЅРёСЏ. рџ’ЄрџЏј")
     kb = _ikb([
-        [("Сидячий образ жизни", "activity:sedentary")],
-        [("Активность пару раз в неделю", "activity:light")],
-        [("Активность 3-4 раза в неделю", "activity:moderate")],
-        [("Активность 5-6 раз в неделю", "activity:active")],
-        [("Активность каждый день (7/7)", "activity:athlete")],
+        [("РЎРёРґСЏС‡РёР№ РѕР±СЂР°Р· Р¶РёР·РЅРё", "activity:sedentary")],
+        [("РђРєС‚РёРІРЅРѕСЃС‚СЊ РїР°СЂСѓ СЂР°Р· РІ РЅРµРґРµР»СЋ", "activity:light")],
+        [("РђРєС‚РёРІРЅРѕСЃС‚СЊ 3-4 СЂР°Р·Р° РІ РЅРµРґРµР»СЋ", "activity:moderate")],
+        [("РђРєС‚РёРІРЅРѕСЃС‚СЊ 5-6 СЂР°Р· РІ РЅРµРґРµР»СЋ", "activity:active")],
+        [("РђРєС‚РёРІРЅРѕСЃС‚СЊ РєР°Р¶РґС‹Р№ РґРµРЅСЊ (7/7)", "activity:athlete")],
     ])
     await message.answer(text, reply_markup=kb)
 
@@ -1009,15 +956,11 @@ async def cb_activity_select(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer()
         return
     # Persist selection
-    try:
+    with contextlib.suppress(Exception):
         await state.update_data(activity_level=code)
-    except Exception:
-        pass
     # Remove keyboard to prevent double-clicks
-    try:
+    with contextlib.suppress(Exception):
         await call.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
     # Analytics: Activity Selected
     try:
         if analytics.logger and call.from_user:
@@ -1026,12 +969,12 @@ async def cb_activity_select(call: CallbackQuery, state: FSMContext) -> None:
                     user_id=call.from_user.id,
                     event_type="Onboarding:ActivitySelected",
                     event_properties=EventProperties(
-                        chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
-                        chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                        chat_id=getattr(call.message.chat, "id", None) if call.message else None,
+                        chat_type=getattr(call.message.chat, "type", None) if call.message else None,
                         text=None,
                         command=None,
                     ),
-                    language=getattr(call.from_user, 'language_code', None),
+                    language=getattr(call.from_user, "language_code", None),
                     plan=Plan(branch="Activity", source="onboarding", version="v1"),
                 )
             )
@@ -1045,29 +988,27 @@ async def cb_activity_select(call: CallbackQuery, state: FSMContext) -> None:
             _onb_fire_step(
                 user_id=call.from_user.id,
                 step_name="goal",
-                chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
-                chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
-                language=getattr(call.from_user, 'language_code', None),
+                chat_id=getattr(call.message.chat, "id", None) if call.message else None,
+                chat_type=getattr(call.message.chat, "type", None) if call.message else None,
+                language=getattr(call.from_user, "language_code", None),
                 retry=False,
             )
         except Exception:
             pass
     await _ask_goal(call.message)
-    try:
+    with contextlib.suppress(Exception):
         await call.answer()
-    except Exception:
-        pass
 
 
 async def _ask_goal(message: Message) -> None:
     text = _(
-        "Отлично! А теперь ключевой момент — выбираем цель ⭐️\n"
-        "Calorissimo помогает достигать долгосрочных результатов благодаря точному контролю калорий"
+        "РћС‚Р»РёС‡РЅРѕ! Рђ С‚РµРїРµСЂСЊ РєР»СЋС‡РµРІРѕР№ РјРѕРјРµРЅС‚ вЂ” РІС‹Р±РёСЂР°РµРј С†РµР»СЊ в­ђпёЏ\n"
+        "Calorissimo РїРѕРјРѕРіР°РµС‚ РґРѕСЃС‚РёРіР°С‚СЊ РґРѕР»РіРѕСЃСЂРѕС‡РЅС‹С… СЂРµР·СѓР»СЊС‚Р°С‚РѕРІ Р±Р»Р°РіРѕРґР°СЂСЏ С‚РѕС‡РЅРѕРјСѓ РєРѕРЅС‚СЂРѕР»СЋ РєР°Р»РѕСЂРёР№"
     )
     kb = _ikb([
-        [("Хочу похудеть", "goal:lose")],
-        [("Хочу набрать мышечную массу", "goal:gain")],
-        [("Хочу поддерживать текущий вес", "goal:maintain")],
+        [("РҐРѕС‡Сѓ РїРѕС…СѓРґРµС‚СЊ", "goal:lose")],
+        [("РҐРѕС‡Сѓ РЅР°Р±СЂР°С‚СЊ РјС‹С€РµС‡РЅСѓСЋ РјР°СЃСЃСѓ", "goal:gain")],
+        [("РҐРѕС‡Сѓ РїРѕРґРґРµСЂР¶РёРІР°С‚СЊ С‚РµРєСѓС‰РёР№ РІРµСЃ", "goal:maintain")],
     ])
     try:
         photo = FSInputFile("bot/static/charts.jpg")
@@ -1077,7 +1018,7 @@ async def _ask_goal(message: Message) -> None:
 
 
 async def _ask_goal_weight(message: Message) -> None:
-    await message.answer(_("К какому весу ты стремишься?"))
+    await message.answer(_("Рљ РєР°РєРѕРјСѓ РІРµСЃСѓ С‚С‹ СЃС‚СЂРµРјРёС€СЊСЃСЏ?"))
 
 
 async def _ask_speed(message: Message, state: FSMContext) -> None:
@@ -1085,21 +1026,21 @@ async def _ask_speed(message: Message, state: FSMContext) -> None:
     current_w = float(data.get("weight_kg")) if data.get("weight_kg") is not None else None
     if current_w is None:
         kb_simple = _ikb([
-            [("С комфортом", "speed:COMFORT")],
-            [("С усилием", "speed:EFFORT")],
-            [("Ускоренно", "speed:FAST")],
+            [("РЎ РєРѕРјС„РѕСЂС‚РѕРј", "speed:COMFORT")],
+            [("РЎ СѓСЃРёР»РёРµРј", "speed:EFFORT")],
+            [("РЈСЃРєРѕСЂРµРЅРЅРѕ", "speed:FAST")],
         ])
-        await message.answer(_("Как быстро хочешь достичь цели?"), reply_markup=kb_simple)
+        await message.answer(_("РљР°Рє Р±С‹СЃС‚СЂРѕ С…РѕС‡РµС€СЊ РґРѕСЃС‚РёС‡СЊ С†РµР»Рё?"), reply_markup=kb_simple)
         return
     comfort = _format_rate(current_w, SPEED_PERCENT_BY_WEIGHT[Speed.comfort])
     effort = _format_rate(current_w, SPEED_PERCENT_BY_WEIGHT[Speed.effort])
     fast = _format_rate(current_w, SPEED_PERCENT_BY_WEIGHT[Speed.fast])
     kb = _ikb([
-        [(f"С комфортом {comfort} кг в неделю", "speed:COMFORT")],
-        [(f"С усилием {effort} кг в неделю", "speed:EFFORT")],
-        [(f"Ускоренно {fast} кг в неделю", "speed:FAST")],
+        [(f"РЎ РєРѕРјС„РѕСЂС‚РѕРј {comfort} РєРі РІ РЅРµРґРµР»СЋ", "speed:COMFORT")],
+        [(f"РЎ СѓСЃРёР»РёРµРј {effort} РєРі РІ РЅРµРґРµР»СЋ", "speed:EFFORT")],
+        [(f"РЈСЃРєРѕСЂРµРЅРЅРѕ {fast} РєРі РІ РЅРµРґРµР»СЋ", "speed:FAST")],
     ])
-    await message.answer(_("Как быстро хочешь достичь цели?"), reply_markup=kb)
+    await message.answer(_("РљР°Рє Р±С‹СЃС‚СЂРѕ С…РѕС‡РµС€СЊ РґРѕСЃС‚РёС‡СЊ С†РµР»Рё?"), reply_markup=kb)
 
 
 @router.callback_query(F.data == "onboarding_resume")
@@ -1111,12 +1052,12 @@ async def cb_onboarding_resume(call: CallbackQuery, state: FSMContext) -> None:
                 user_id=call.from_user.id,
                 event_type="Onboarding:Resume",
                 event_properties=EventProperties(
-                    chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
-                    chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                    chat_id=getattr(call.message.chat, "id", None) if call.message else None,
+                    chat_type=getattr(call.message.chat, "type", None) if call.message else None,
                     text=None,
                     command="/start",
                 ),
-                language=getattr(call.from_user, 'language_code', None),
+                language=getattr(call.from_user, "language_code", None),
                 plan=Plan(branch="InProgress", source="start", version="v1"),
             )
         )
@@ -1137,10 +1078,8 @@ async def cb_onboarding_resume(call: CallbackQuery, state: FSMContext) -> None:
     elif cur == OnboardingStates.activity.state:
         await _ask_activity(call.message)
     elif cur == OnboardingStates.goal.state:
-        try:
+        with contextlib.suppress(Exception):
             await state.update_data(goal_locked=False)
-        except Exception:
-            pass
         await _ask_goal(call.message)
     elif cur == OnboardingStates.goal_weight.state:
         await _ask_goal_weight(call.message)
@@ -1149,10 +1088,10 @@ async def cb_onboarding_resume(call: CallbackQuery, state: FSMContext) -> None:
     elif cur == OnboardingStates.review.state:
         await _finalize_and_show(call.message, state, call.from_user.id)
     elif cur == OnboardingStates.adjust.state:
-        kb = _ikb([[ ("Вернуться", "final:back") ]])
-        await call.message.answer(_("Напиши, в свободном формате, что нужно скорректировать в твоём индивидуальном плане"), reply_markup=kb)
+        kb = _ikb([[ ("Р’РµСЂРЅСѓС‚СЊСЃСЏ", "final:back") ]])
+        await call.message.answer(_("РќР°РїРёС€Рё, РІ СЃРІРѕР±РѕРґРЅРѕРј С„РѕСЂРјР°С‚Рµ, С‡С‚Рѕ РЅСѓР¶РЅРѕ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°С‚СЊ РІ С‚РІРѕС‘Рј РёРЅРґРёРІРёРґСѓР°Р»СЊРЅРѕРј РїР»Р°РЅРµ"), reply_markup=kb)
     else:
-        # Fallback — начнем сначала
+        # Fallback вЂ” РЅР°С‡РЅРµРј СЃРЅР°С‡Р°Р»Р°
         await cb_onboarding_start(call, state)
         return
 
@@ -1168,12 +1107,12 @@ async def cb_onboarding_restart(call: CallbackQuery, state: FSMContext) -> None:
                 user_id=call.from_user.id,
                 event_type="Onboarding:Restart",
                 event_properties=EventProperties(
-                    chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
-                    chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                    chat_id=getattr(call.message.chat, "id", None) if call.message else None,
+                    chat_type=getattr(call.message.chat, "type", None) if call.message else None,
                     text=None,
                     command="/start",
                 ),
-                language=getattr(call.from_user, 'language_code', None),
+                language=getattr(call.from_user, "language_code", None),
                 plan=Plan(branch="Restart", source="start", version="v1"),
             )
         )
@@ -1183,7 +1122,7 @@ async def cb_onboarding_restart(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # =====================
-# Пол
+# РџРѕР»
 # =====================
 
 @router.callback_query(OnboardingStates.gender, F.data.startswith("gender:"))
@@ -1197,23 +1136,23 @@ async def cb_gender(call: CallbackQuery, state: FSMContext) -> None:
             _onb_fire_step(
                 user_id=call.from_user.id,
                 step_name="age",
-                chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
-                chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
-                language=getattr(call.from_user, 'language_code', None),
+                chat_id=getattr(call.message.chat, "id", None) if call.message else None,
+                chat_type=getattr(call.message.chat, "type", None) if call.message else None,
+                language=getattr(call.from_user, "language_code", None),
                 retry=False,
             )
         except Exception:
             pass
-    await call.message.answer(_("Сколько тебе лет?"))
+    await call.message.answer(_("РЎРєРѕР»СЊРєРѕ С‚РµР±Рµ Р»РµС‚?"))
     await call.answer()
 
 
-# Текстовый fallback (male/female) — запрещаем свободный ввод, повторяем шаг с кнопками
+# РўРµРєСЃС‚РѕРІС‹Р№ fallback (male/female) вЂ” Р·Р°РїСЂРµС‰Р°РµРј СЃРІРѕР±РѕРґРЅС‹Р№ РІРІРѕРґ, РїРѕРІС‚РѕСЂСЏРµРј С€Р°Рі СЃ РєРЅРѕРїРєР°РјРё
 @router.message(OnboardingStates.gender, F.text.casefold().in_(["male", "female"]))
 async def gender_set(message: Message, state: FSMContext) -> None:
-    caption = _("Отлично! Теперь настроим всё под тебя 🎯\nПервый шаг — выбери свой пол, чтобы я точно рассчитал твою норму калорий.")
+    caption = _("РћС‚Р»РёС‡РЅРѕ! РўРµРїРµСЂСЊ РЅР°СЃС‚СЂРѕРёРј РІСЃС‘ РїРѕРґ С‚РµР±СЏ рџЋЇ\nРџРµСЂРІС‹Р№ С€Р°Рі вЂ” РІС‹Р±РµСЂРё СЃРІРѕР№ РїРѕР», С‡С‚РѕР±С‹ СЏ С‚РѕС‡РЅРѕ СЂР°СЃСЃС‡РёС‚Р°Р» С‚РІРѕСЋ РЅРѕСЂРјСѓ РєР°Р»РѕСЂРёР№.")
     kb = _ikb([
-        [("Я мужчина", "gender:male"), ("Я девушка", "gender:female")],
+        [("РЇ РјСѓР¶С‡РёРЅР°", "gender:male"), ("РЇ РґРµРІСѓС€РєР°", "gender:female")],
     ])
     try:
         photo = FSInputFile("bot/static/gender.jpg")
@@ -1222,12 +1161,12 @@ async def gender_set(message: Message, state: FSMContext) -> None:
         await message.answer(caption, reply_markup=kb)
 
 
-# На шаге выбора пола любые сообщения — только кнопки
+# РќР° С€Р°РіРµ РІС‹Р±РѕСЂР° РїРѕР»Р° Р»СЋР±С‹Рµ СЃРѕРѕР±С‰РµРЅРёСЏ вЂ” С‚РѕР»СЊРєРѕ РєРЅРѕРїРєРё
 @router.message(OnboardingStates.gender, F.text & (~F.text.startswith("/")))
 async def gender_retry(message: Message) -> None:
-    caption = _("Отлично! Теперь настроим всё под тебя 🎯\nПервый шаг — выбери свой пол, чтобы я точно рассчитал твою норму калорий.")
+    caption = _("РћС‚Р»РёС‡РЅРѕ! РўРµРїРµСЂСЊ РЅР°СЃС‚СЂРѕРёРј РІСЃС‘ РїРѕРґ С‚РµР±СЏ рџЋЇ\nРџРµСЂРІС‹Р№ С€Р°Рі вЂ” РІС‹Р±РµСЂРё СЃРІРѕР№ РїРѕР», С‡С‚РѕР±С‹ СЏ С‚РѕС‡РЅРѕ СЂР°СЃСЃС‡РёС‚Р°Р» С‚РІРѕСЋ РЅРѕСЂРјСѓ РєР°Р»РѕСЂРёР№.")
     kb = _ikb([
-        [("Я мужчина", "gender:male"), ("Я девушка", "gender:female")],
+        [("РЇ РјСѓР¶С‡РёРЅР°", "gender:male"), ("РЇ РґРµРІСѓС€РєР°", "gender:female")],
     ])
     try:
         photo = FSInputFile("bot/static/gender.jpg")
@@ -1237,14 +1176,14 @@ async def gender_retry(message: Message) -> None:
 
 
 # =====================
-# Возраст / Вес / Рост / Активность
+# Р’РѕР·СЂР°СЃС‚ / Р’РµСЃ / Р РѕСЃС‚ / РђРєС‚РёРІРЅРѕСЃС‚СЊ
 # =====================
 
 @router.message(OnboardingStates.age, F.text.regexp(r"^\d{1,3}$"))
 async def age_set(message: Message, state: FSMContext) -> None:
     age = int(message.text)
     if not (1 <= age <= 120):
-        await message.answer(_("Пожалуйста, введите корректный возраст (от 1 до 120 лет)"))
+        await message.answer(_("РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РІРІРµРґРёС‚Рµ РєРѕСЂСЂРµРєС‚РЅС‹Р№ РІРѕР·СЂР°СЃС‚ (РѕС‚ 1 РґРѕ 120 Р»РµС‚)"))
         return
     await state.update_data(age=age)
     await state.set_state(OnboardingStates.weight)
@@ -1254,38 +1193,36 @@ async def age_set(message: Message, state: FSMContext) -> None:
             _onb_fire_step(
                 user_id=message.from_user.id,
                 step_name="weight",
-                chat_id=getattr(message.chat, 'id', None),
-                chat_type=getattr(message.chat, 'type', None),
-                language=getattr(message.from_user, 'language_code', None),
+                chat_id=getattr(message.chat, "id", None),
+                chat_type=getattr(message.chat, "type", None),
+                language=getattr(message.from_user, "language_code", None),
                 retry=False,
             )
         except Exception:
             pass
-    await message.answer(_("Какой у тебя текущий вес в килограммах?"))
+    await message.answer(_("РљР°РєРѕР№ Сѓ С‚РµР±СЏ С‚РµРєСѓС‰РёР№ РІРµСЃ РІ РєРёР»РѕРіСЂР°РјРјР°С…?"))
 
 
 @router.message(OnboardingStates.age, F.text & (~F.text.startswith("/")))
 async def age_retry(message: Message) -> None:
     if message.from_user:
-        try:
+        with contextlib.suppress(Exception):
             _onb_fire_step(
                 user_id=message.from_user.id,
                 step_name="age",
-                chat_id=getattr(message.chat, 'id', None),
-                chat_type=getattr(message.chat, 'type', None),
-                language=getattr(message.from_user, 'language_code', None),
+                chat_id=getattr(message.chat, "id", None),
+                chat_type=getattr(message.chat, "type", None),
+                language=getattr(message.from_user, "language_code", None),
                 retry=True,
             )
-        except Exception:
-            pass
-    await message.answer(_("Пожалуйста, введите корректный возраст (от 1 до 120 лет)"))
+    await message.answer(_("РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РІРІРµРґРёС‚Рµ РєРѕСЂСЂРµРєС‚РЅС‹Р№ РІРѕР·СЂР°СЃС‚ (РѕС‚ 1 РґРѕ 120 Р»РµС‚)"))
 
 
 @router.message(OnboardingStates.weight, F.text.regexp(r"^\d{2,3}([.,]\d{1,2})?$"))
 async def weight_set(message: Message, state: FSMContext) -> None:
     w = float(message.text.replace(",", "."))
     if not (30 <= w <= 300):
-        await message.answer(_("Пожалуйста, введите корректный вес (от 30 до 300 килограммов)"))
+        await message.answer(_("РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РІРІРµРґРёС‚Рµ РєРѕСЂСЂРµРєС‚РЅС‹Р№ РІРµСЃ (РѕС‚ 30 РґРѕ 300 РєРёР»РѕРіСЂР°РјРјРѕРІ)"))
         return
     await state.update_data(weight_kg=w)
     await state.set_state(OnboardingStates.height)
@@ -1295,38 +1232,36 @@ async def weight_set(message: Message, state: FSMContext) -> None:
             _onb_fire_step(
                 user_id=message.from_user.id,
                 step_name="height",
-                chat_id=getattr(message.chat, 'id', None),
-                chat_type=getattr(message.chat, 'type', None),
-                language=getattr(message.from_user, 'language_code', None),
+                chat_id=getattr(message.chat, "id", None),
+                chat_type=getattr(message.chat, "type", None),
+                language=getattr(message.from_user, "language_code", None),
                 retry=False,
             )
         except Exception:
             pass
-    await message.answer(_("Какой у тебя рост в сантиметрах?"))
+    await message.answer(_("РљР°РєРѕР№ Сѓ С‚РµР±СЏ СЂРѕСЃС‚ РІ СЃР°РЅС‚РёРјРµС‚СЂР°С…?"))
 
 
 @router.message(OnboardingStates.weight, F.text & (~F.text.startswith("/")))
 async def weight_retry(message: Message) -> None:
     if message.from_user:
-        try:
+        with contextlib.suppress(Exception):
             _onb_fire_step(
                 user_id=message.from_user.id,
                 step_name="weight",
-                chat_id=getattr(message.chat, 'id', None),
-                chat_type=getattr(message.chat, 'type', None),
-                language=getattr(message.from_user, 'language_code', None),
+                chat_id=getattr(message.chat, "id", None),
+                chat_type=getattr(message.chat, "type", None),
+                language=getattr(message.from_user, "language_code", None),
                 retry=True,
             )
-        except Exception:
-            pass
-    await message.answer(_("Пожалуйста, введите корректный вес (от 30 до 300 килограммов)"))
+    await message.answer(_("РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РІРІРµРґРёС‚Рµ РєРѕСЂСЂРµРєС‚РЅС‹Р№ РІРµСЃ (РѕС‚ 30 РґРѕ 300 РєРёР»РѕРіСЂР°РјРјРѕРІ)"))
 
 
 @router.message(OnboardingStates.height, F.text.regexp(r"^\d{3}$"))
 async def height_set(message: Message, state: FSMContext) -> None:
     h = float(message.text)
     if not (120 <= h <= 250):
-        await message.answer(_("Пожалуйста, введите корректный рост (от 120 до 250 см)"))
+        await message.answer(_("РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РІРІРµРґРёС‚Рµ РєРѕСЂСЂРµРєС‚РЅС‹Р№ СЂРѕСЃС‚ (РѕС‚ 120 РґРѕ 250 СЃРј)"))
         return
     await state.update_data(height_cm=h)
     await state.set_state(OnboardingStates.activity)
@@ -1336,9 +1271,9 @@ async def height_set(message: Message, state: FSMContext) -> None:
             _onb_fire_step(
                 user_id=message.from_user.id,
                 step_name="activity",
-                chat_id=getattr(message.chat, 'id', None),
-                chat_type=getattr(message.chat, 'type', None),
-                language=getattr(message.from_user, 'language_code', None),
+                chat_id=getattr(message.chat, "id", None),
+                chat_type=getattr(message.chat, "type", None),
+                language=getattr(message.from_user, "language_code", None),
                 retry=False,
             )
         except Exception:
@@ -1349,106 +1284,96 @@ async def height_set(message: Message, state: FSMContext) -> None:
 @router.message(OnboardingStates.height, F.text & (~F.text.startswith("/")))
 async def height_retry(message: Message) -> None:
     if message.from_user:
-        try:
+        with contextlib.suppress(Exception):
             _onb_fire_step(
                 user_id=message.from_user.id,
                 step_name="height",
-                chat_id=getattr(message.chat, 'id', None),
-                chat_type=getattr(message.chat, 'type', None),
-                language=getattr(message.from_user, 'language_code', None),
+                chat_id=getattr(message.chat, "id", None),
+                chat_type=getattr(message.chat, "type", None),
+                language=getattr(message.from_user, "language_code", None),
                 retry=True,
             )
-        except Exception:
-            pass
-    await message.answer(_("Пожалуйста, введите корректный рост (от 120 до 250 см)"))
+    await message.answer(_("РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РІРІРµРґРёС‚Рµ РєРѕСЂСЂРµРєС‚РЅС‹Р№ СЂРѕСЃС‚ (РѕС‚ 120 РґРѕ 250 СЃРј)"))
 
 
 @router.message(OnboardingStates.activity, F.text.len() >= 1)
 async def activity_set(message: Message, state: FSMContext) -> None:
-    # В новом флоу на шаге активности используем только кнопки
-    await message.answer(_("Пожалуйста, используй кнопки ниже"))
+    # Р’ РЅРѕРІРѕРј С„Р»РѕСѓ РЅР° С€Р°РіРµ Р°РєС‚РёРІРЅРѕСЃС‚Рё РёСЃРїРѕР»СЊР·СѓРµРј С‚РѕР»СЊРєРѕ РєРЅРѕРїРєРё
+    await message.answer(_("РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РёСЃРїРѕР»СЊР·СѓР№ РєРЅРѕРїРєРё РЅРёР¶Рµ"))
     await _ask_activity(message)
 
 
 @router.message(OnboardingStates.activity, F.text & (~F.text.startswith("/")))
 async def activity_retry(message: Message) -> None:
-    await message.answer(_("Пожалуйста, используй кнопки ниже"))
+    await message.answer(_("РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РёСЃРїРѕР»СЊР·СѓР№ РєРЅРѕРїРєРё РЅРёР¶Рµ"))
     await _ask_activity(message)
 
 
 # =====================
-# Цель
+# Р¦РµР»СЊ
 # =====================
 
 @router.callback_query(OnboardingStates.goal, F.data.startswith("goal:"))
 async def cb_goal(call: CallbackQuery, state: FSMContext) -> None:
-    # Гасим спиннер сразу (даже при повторном клике)
-    try:
+    # Р“Р°СЃРёРј СЃРїРёРЅРЅРµСЂ СЃСЂР°Р·Сѓ (РґР°Р¶Рµ РїСЂРё РїРѕРІС‚РѕСЂРЅРѕРј РєР»РёРєРµ)
+    with contextlib.suppress(Exception):
         await call.answer()
-    except Exception:
-        pass
 
-    # Идемпотентный guard: состояние и лок
+    # РРґРµРјРїРѕС‚РµРЅС‚РЅС‹Р№ guard: СЃРѕСЃС‚РѕСЏРЅРёРµ Рё Р»РѕРє
     cur_state = await state.get_state()
-    logger.info("cb_goal | user_id={} | cur_state={}", getattr(call.from_user, 'id', None), cur_state)
+    logger.info("cb_goal | user_id={} | cur_state={}", getattr(call.from_user, "id", None), cur_state)
     if cur_state != OnboardingStates.goal.state:
-        # Восстановление шага выбора цели: иногда состояние смещается до клика
+        # Р’РѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёРµ С€Р°РіР° РІС‹Р±РѕСЂР° С†РµР»Рё: РёРЅРѕРіРґР° СЃРѕСЃС‚РѕСЏРЅРёРµ СЃРјРµС‰Р°РµС‚СЃСЏ РґРѕ РєР»РёРєР°
         try:
             await state.set_state(OnboardingStates.goal)
             await _ask_goal(call.message)
-            await call.answer(_("Продублировал выбор цели — нажми кнопку ещё раз"), cache_time=3)
+            await call.answer(_("РџСЂРѕРґСѓР±Р»РёСЂРѕРІР°Р» РІС‹Р±РѕСЂ С†РµР»Рё вЂ” РЅР°Р¶РјРё РєРЅРѕРїРєСѓ РµС‰С‘ СЂР°Р·"), cache_time=3)
         except Exception:
-            try:
-                await call.answer(_("Уже обработано"), cache_time=3)
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                await call.answer(_("РЈР¶Рµ РѕР±СЂР°Р±РѕС‚Р°РЅРѕ"), cache_time=3)
         return
     data = await state.get_data()
     if data.get("goal_locked") is True:
-        try:
-            await call.answer(_("Уже обработано"), cache_time=3)
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            await call.answer(_("РЈР¶Рµ РѕР±СЂР°Р±РѕС‚Р°РЅРѕ"), cache_time=3)
         return
-    # goal_locked выставим после успешного перехода на следующий шаг
+    # goal_locked РІС‹СЃС‚Р°РІРёРј РїРѕСЃР»Рµ СѓСЃРїРµС€РЅРѕРіРѕ РїРµСЂРµС…РѕРґР° РЅР° СЃР»РµРґСѓСЋС‰РёР№ С€Р°Рі
 
     goal_raw = call.data.split(":", 1)[1]
     await state.update_data(goal=goal_raw)
 
-    # Снять клавиатуру немедленно, затем попытаться удалить сообщение
+    # РЎРЅСЏС‚СЊ РєР»Р°РІРёР°С‚СѓСЂСѓ РЅРµРјРµРґР»РµРЅРЅРѕ, Р·Р°С‚РµРј РїРѕРїС‹С‚Р°С‚СЊСЃСЏ СѓРґР°Р»РёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ
     try:
         await call.message.edit_reply_markup(reply_markup=None)
-        logger.info("cb_goal.edit_reply_markup.ok | msg_id={}", getattr(call.message, 'message_id', None))
+        logger.info("cb_goal.edit_reply_markup.ok | msg_id={}", getattr(call.message, "message_id", None))
     except Exception as e:
-        logger.warning("cb_goal.edit_reply_markup.err | user_id={} | err={}", getattr(call.from_user, 'id', None), e)
+        logger.warning("cb_goal.edit_reply_markup.err | user_id={} | err={}", getattr(call.from_user, "id", None), e)
     try:
         await call.message.delete()
-        logger.info("cb_goal.delete.ok | msg_id={}", getattr(call.message, 'message_id', None))
+        logger.info("cb_goal.delete.ok | msg_id={}", getattr(call.message, "message_id", None))
     except Exception as e:
-        logger.warning("cb_goal.delete.err | user_id={} | err={}", getattr(call.from_user, 'id', None), e)
+        logger.warning("cb_goal.delete.err | user_id={} | err={}", getattr(call.from_user, "id", None), e)
 
-    # Analytics: выбор цели
+    # Analytics: РІС‹Р±РѕСЂ С†РµР»Рё
     if analytics.logger and call.from_user:
-        try:
+        with contextlib.suppress(Exception):
             analytics.fire_event(
                 BaseEvent(
                     user_id=call.from_user.id,
                     event_type="Onboarding:GoalSelected",
                     event_properties=EventProperties(
-                        chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
-                        chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                        chat_id=getattr(call.message.chat, "id", None) if call.message else None,
+                        chat_type=getattr(call.message.chat, "type", None) if call.message else None,
                         text=None,
                         command=None,
                     ),
-                    language=getattr(call.from_user, 'language_code', None),
+                    language=getattr(call.from_user, "language_code", None),
                     plan=Plan(branch="SetGoal", source="onboarding", version="v1"),
                 )
             )
-        except Exception:
-            pass
 
     if goal_raw == Goal.maintain.value:
-        # Для maintain: оставляем сообщение как есть, сразу финализация
+        # Р”Р»СЏ maintain: РѕСЃС‚Р°РІР»СЏРµРј СЃРѕРѕР±С‰РµРЅРёРµ РєР°Рє РµСЃС‚СЊ, СЃСЂР°Р·Сѓ С„РёРЅР°Р»РёР·Р°С†РёСЏ
         await state.set_state(OnboardingStates.speed)
         if call.from_user:
             try:
@@ -1456,9 +1381,9 @@ async def cb_goal(call: CallbackQuery, state: FSMContext) -> None:
                 _onb_fire_step(
                     user_id=call.from_user.id,
                     step_name="speed",
-                    chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
-                    chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
-                    language=getattr(call.from_user, 'language_code', None),
+                    chat_id=getattr(call.message.chat, "id", None) if call.message else None,
+                    chat_type=getattr(call.message.chat, "type", None) if call.message else None,
+                    language=getattr(call.from_user, "language_code", None),
                     retry=False,
                 )
             except Exception:
@@ -1467,58 +1392,56 @@ async def cb_goal(call: CallbackQuery, state: FSMContext) -> None:
         await _finalize_and_show(call.message, state, call.from_user.id)
         return
 
-    # Сразу задаём следующий вопрос отдельным фото-сообщением
+    # РЎСЂР°Р·Сѓ Р·Р°РґР°С‘Рј СЃР»РµРґСѓСЋС‰РёР№ РІРѕРїСЂРѕСЃ РѕС‚РґРµР»СЊРЅС‹Рј С„РѕС‚Рѕ-СЃРѕРѕР±С‰РµРЅРёРµРј
     try:
         await state.set_state(OnboardingStates.goal_weight)
-        logger.info("cb_goal.next_state | user_id={} | state=goal_weight", getattr(call.from_user, 'id', None))
+        logger.info("cb_goal.next_state | user_id={} | state=goal_weight", getattr(call.from_user, "id", None))
         if call.from_user:
             try:
                 await _onb_update_last_step(call.from_user.id, "goal_weight")
                 _onb_fire_step(
                     user_id=call.from_user.id,
                     step_name="goal_weight",
-                    chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
-                    chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
-                    language=getattr(call.from_user, 'language_code', None),
+                    chat_id=getattr(call.message.chat, "id", None) if call.message else None,
+                    chat_type=getattr(call.message.chat, "type", None) if call.message else None,
+                    language=getattr(call.from_user, "language_code", None),
                     retry=False,
                 )
             except Exception:
                 pass
         try:
             photo = FSInputFile("bot/static/charts.jpg")
-            await call.message.answer_photo(photo, caption=_("К какому весу ты стремишься?"))
+            await call.message.answer_photo(photo, caption=_("Рљ РєР°РєРѕРјСѓ РІРµСЃСѓ С‚С‹ СЃС‚СЂРµРјРёС€СЊСЃСЏ?"))
         except Exception:
-            await call.message.answer(_("К какому весу ты стремишься?"))
+            await call.message.answer(_("Рљ РєР°РєРѕРјСѓ РІРµСЃСѓ С‚С‹ СЃС‚СЂРµРјРёС€СЊСЃСЏ?"))
         await state.update_data(goal_locked=True)
-        logger.info("cb_goal.ask_goal_weight.sent | user_id={}", getattr(call.from_user, 'id', None))
+        logger.info("cb_goal.ask_goal_weight.sent | user_id={}", getattr(call.from_user, "id", None))
     except Exception as e:
-        logger.exception("cb_goal.ask_goal_weight.err | user_id={} | err={}", getattr(call.from_user, 'id', None), e)
-        # Снимаем лок и восстанавливаем экран цели
+        logger.exception("cb_goal.ask_goal_weight.err | user_id={} | err={}", getattr(call.from_user, "id", None), e)
+        # РЎРЅРёРјР°РµРј Р»РѕРє Рё РІРѕСЃСЃС‚Р°РЅР°РІР»РёРІР°РµРј СЌРєСЂР°РЅ С†РµР»Рё
         try:
             await state.update_data(goal_locked=False)
             await state.set_state(OnboardingStates.goal)
             await _ask_goal(call.message)
-            try:
-                await call.answer(_("Повторил выбор цели"), cache_time=3)
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                await call.answer(_("РџРѕРІС‚РѕСЂРёР» РІС‹Р±РѕСЂ С†РµР»Рё"), cache_time=3)
         except Exception:
             pass
         return
 
 
 
-# Текстовый fallback цели — запрещаем свободный ввод, повторяем шаг с кнопками
+# РўРµРєСЃС‚РѕРІС‹Р№ fallback С†РµР»Рё вЂ” Р·Р°РїСЂРµС‰Р°РµРј СЃРІРѕР±РѕРґРЅС‹Р№ РІРІРѕРґ, РїРѕРІС‚РѕСЂСЏРµРј С€Р°Рі СЃ РєРЅРѕРїРєР°РјРё
 @router.message(OnboardingStates.goal, F.text.casefold().in_(["lose", "gain", "maintain"]))
 async def goal_set(message: Message, state: FSMContext) -> None:
     text = _(
-        "Зафиксировал! Теперь самое главное — поставим цель\n"
-        "Calorissimo ai помогает достигать долгосрочных результатов благодаря развитию полезных привычек"
+        "Р—Р°С„РёРєСЃРёСЂРѕРІР°Р»! РўРµРїРµСЂСЊ СЃР°РјРѕРµ РіР»Р°РІРЅРѕРµ вЂ” РїРѕСЃС‚Р°РІРёРј С†РµР»СЊ\n"
+        "Calorissimo ai РїРѕРјРѕРіР°РµС‚ РґРѕСЃС‚РёРіР°С‚СЊ РґРѕР»РіРѕСЃСЂРѕС‡РЅС‹С… СЂРµР·СѓР»СЊС‚Р°С‚РѕРІ Р±Р»Р°РіРѕРґР°СЂСЏ СЂР°Р·РІРёС‚РёСЋ РїРѕР»РµР·РЅС‹С… РїСЂРёРІС‹С‡РµРє"
     )
     kb = _ikb([
-        [("Хочу похудеть", "goal:lose")],
-        [("Хочу набрать мышечную массу", "goal:gain")],
-        [("Хочу поддерживать текущий вес", "goal:maintain")],
+        [("РҐРѕС‡Сѓ РїРѕС…СѓРґРµС‚СЊ", "goal:lose")],
+        [("РҐРѕС‡Сѓ РЅР°Р±СЂР°С‚СЊ РјС‹С€РµС‡РЅСѓСЋ РјР°СЃСЃСѓ", "goal:gain")],
+        [("РҐРѕС‡Сѓ РїРѕРґРґРµСЂР¶РёРІР°С‚СЊ С‚РµРєСѓС‰РёР№ РІРµСЃ", "goal:maintain")],
     ])
     await message.answer(text, reply_markup=kb)
 
@@ -1526,19 +1449,19 @@ async def goal_set(message: Message, state: FSMContext) -> None:
 @router.message(OnboardingStates.goal, F.text & (~F.text.startswith("/")))
 async def goal_retry(message: Message) -> None:
     text = _(
-        "Зафиксировал! Теперь самое главное — поставим цель\n"
-        "Calorissimo ai помогает достигать долгосрочных результатов благодаря развитию полезных привычек"
+        "Р—Р°С„РёРєСЃРёСЂРѕРІР°Р»! РўРµРїРµСЂСЊ СЃР°РјРѕРµ РіР»Р°РІРЅРѕРµ вЂ” РїРѕСЃС‚Р°РІРёРј С†РµР»СЊ\n"
+        "Calorissimo ai РїРѕРјРѕРіР°РµС‚ РґРѕСЃС‚РёРіР°С‚СЊ РґРѕР»РіРѕСЃСЂРѕС‡РЅС‹С… СЂРµР·СѓР»СЊС‚Р°С‚РѕРІ Р±Р»Р°РіРѕРґР°СЂСЏ СЂР°Р·РІРёС‚РёСЋ РїРѕР»РµР·РЅС‹С… РїСЂРёРІС‹С‡РµРє"
     )
     kb = _ikb([
-        [("Хочу похудеть", "goal:lose")],
-        [("Хочу набрать мышечную массу", "goal:gain")],
-        [("Хочу поддерживать текущий вес", "goal:maintain")],
+        [("РҐРѕС‡Сѓ РїРѕС…СѓРґРµС‚СЊ", "goal:lose")],
+        [("РҐРѕС‡Сѓ РЅР°Р±СЂР°С‚СЊ РјС‹С€РµС‡РЅСѓСЋ РјР°СЃСЃСѓ", "goal:gain")],
+        [("РҐРѕС‡Сѓ РїРѕРґРґРµСЂР¶РёРІР°С‚СЊ С‚РµРєСѓС‰РёР№ РІРµСЃ", "goal:maintain")],
     ])
     await message.answer(text, reply_markup=kb)
 
 
 # =====================
-# Целевой вес -> кнопки скорости
+# Р¦РµР»РµРІРѕР№ РІРµСЃ -> РєРЅРѕРїРєРё СЃРєРѕСЂРѕСЃС‚Рё
 # =====================
 
 @router.message(OnboardingStates.goal_weight, F.text.regexp(r"^\d{2,3}([.,]\d{1,2})?$"))
@@ -1548,12 +1471,12 @@ async def goal_weight_set(message: Message, state: FSMContext) -> None:
     goal_w = float(message.text.replace(",", "."))
     goal_raw = str(data.get("goal"))
 
-    # Бизнес-валидация
+    # Р‘РёР·РЅРµСЃ-РІР°Р»РёРґР°С†РёСЏ
     if goal_raw == "lose" and goal_w >= current_w:
-        await message.answer(_("Для похудения целевой вес должен быть меньше текущего. Попробуй ещё раз."))
+        await message.answer(_("Р”Р»СЏ РїРѕС…СѓРґРµРЅРёСЏ С†РµР»РµРІРѕР№ РІРµСЃ РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ РјРµРЅСЊС€Рµ С‚РµРєСѓС‰РµРіРѕ. РџРѕРїСЂРѕР±СѓР№ РµС‰С‘ СЂР°Р·."))
         return
     if goal_raw == "gain" and goal_w <= current_w:
-        await message.answer(_("Для набора массы целевой вес должен быть больше текущего. Попробуй ещё раз."))
+        await message.answer(_("Р”Р»СЏ РЅР°Р±РѕСЂР° РјР°СЃСЃС‹ С†РµР»РµРІРѕР№ РІРµСЃ РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ Р±РѕР»СЊС€Рµ С‚РµРєСѓС‰РµРіРѕ. РџРѕРїСЂРѕР±СѓР№ РµС‰С‘ СЂР°Р·."))
         return
 
     await state.update_data(goal_weight_kg=goal_w)
@@ -1564,34 +1487,34 @@ async def goal_weight_set(message: Message, state: FSMContext) -> None:
             _onb_fire_step(
                 user_id=message.from_user.id,
                 step_name="speed",
-                chat_id=getattr(message.chat, 'id', None),
-                chat_type=getattr(message.chat, 'type', None),
-                language=getattr(message.from_user, 'language_code', None),
+                chat_id=getattr(message.chat, "id", None),
+                chat_type=getattr(message.chat, "type", None),
+                language=getattr(message.from_user, "language_code", None),
                 retry=False,
             )
         except Exception:
             pass
 
-    # Динамические N кг/нед
+    # Р”РёРЅР°РјРёС‡РµСЃРєРёРµ N РєРі/РЅРµРґ
     comfort = _format_rate(current_w, SPEED_PERCENT_BY_WEIGHT[Speed.comfort])
     effort = _format_rate(current_w, SPEED_PERCENT_BY_WEIGHT[Speed.effort])
     fast = _format_rate(current_w, SPEED_PERCENT_BY_WEIGHT[Speed.fast])
 
     kb = _ikb([
-        [(f"С комфортом {comfort} кг в неделю", "speed:COMFORT")],
-        [(f"С усилием {effort} кг в неделю", "speed:EFFORT")],
-        [(f"Ускоренно {fast} кг в неделю", "speed:FAST")],
+        [(f"РЎ РєРѕРјС„РѕСЂС‚РѕРј {comfort} РєРі РІ РЅРµРґРµР»СЋ", "speed:COMFORT")],
+        [(f"РЎ СѓСЃРёР»РёРµРј {effort} РєРі РІ РЅРµРґРµР»СЋ", "speed:EFFORT")],
+        [(f"РЈСЃРєРѕСЂРµРЅРЅРѕ {fast} РєРі РІ РЅРµРґРµР»СЋ", "speed:FAST")],
     ])
-    await message.answer(_("Как быстро хочешь достичь цели?"), reply_markup=kb)
+    await message.answer(_("РљР°Рє Р±С‹СЃС‚СЂРѕ С…РѕС‡РµС€СЊ РґРѕСЃС‚РёС‡СЊ С†РµР»Рё?"), reply_markup=kb)
 
 
 @router.message(OnboardingStates.goal_weight, F.text & (~F.text.startswith("/")))
 async def goal_weight_retry(message: Message) -> None:
-    await message.answer(_("Некорректный формат. Пример: 75.0"))
+    await message.answer(_("РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ С„РѕСЂРјР°С‚. РџСЂРёРјРµСЂ: 75.0"))
 
 
 # =====================
-# Выбор скорости (кнопки) -> финализация
+# Р’С‹Р±РѕСЂ СЃРєРѕСЂРѕСЃС‚Рё (РєРЅРѕРїРєРё) -> С„РёРЅР°Р»РёР·Р°С†РёСЏ
 # =====================
 
 @router.callback_query(OnboardingStates.speed, F.data.startswith("speed:"))
@@ -1606,12 +1529,12 @@ async def cb_speed(call: CallbackQuery, state: FSMContext) -> None:
                     user_id=call.from_user.id,
                     event_type="Onboarding:SpeedSelected",
                     event_properties=EventProperties(
-                        chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
-                        chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                        chat_id=getattr(call.message.chat, "id", None) if call.message else None,
+                        chat_type=getattr(call.message.chat, "type", None) if call.message else None,
                         text=None,
                         command=None,
                     ),
-                    language=getattr(call.from_user, 'language_code', None),
+                    language=getattr(call.from_user, "language_code", None),
                     plan=Plan(branch="Speed", source="onboarding", version="v1"),
                 )
             )
@@ -1621,20 +1544,20 @@ async def cb_speed(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
 
 
-# Fallback: ввод скорости текстом — запрещаем свободный ввод, повторяем шаг с кнопками
+# Fallback: РІРІРѕРґ СЃРєРѕСЂРѕСЃС‚Рё С‚РµРєСЃС‚РѕРј вЂ” Р·Р°РїСЂРµС‰Р°РµРј СЃРІРѕР±РѕРґРЅС‹Р№ РІРІРѕРґ, РїРѕРІС‚РѕСЂСЏРµРј С€Р°Рі СЃ РєРЅРѕРїРєР°РјРё
 @router.message(OnboardingStates.speed, F.text & (~F.text.startswith("/")))
 async def speed_and_finish(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     current_w = float(data.get("weight_kg")) if data.get("weight_kg") is not None else None
 
-    # Если нет веса в состоянии, просто просим выбрать кнопку ещё раз
+    # Р•СЃР»Рё РЅРµС‚ РІРµСЃР° РІ СЃРѕСЃС‚РѕСЏРЅРёРё, РїСЂРѕСЃС‚Рѕ РїСЂРѕСЃРёРј РІС‹Р±СЂР°С‚СЊ РєРЅРѕРїРєСѓ РµС‰С‘ СЂР°Р·
     if current_w is None:
         kb = _ikb([
-            [("С комфортом", "speed:COMFORT")],
-            [("С усилием", "speed:EFFORT")],
-            [("Ускоренно", "speed:FAST")],
+            [("РЎ РєРѕРјС„РѕСЂС‚РѕРј", "speed:COMFORT")],
+            [("РЎ СѓСЃРёР»РёРµРј", "speed:EFFORT")],
+            [("РЈСЃРєРѕСЂРµРЅРЅРѕ", "speed:FAST")],
         ])
-        await message.answer(_("Как быстро хочешь достичь цели?"), reply_markup=kb)
+        await message.answer(_("РљР°Рє Р±С‹СЃС‚СЂРѕ С…РѕС‡РµС€СЊ РґРѕСЃС‚РёС‡СЊ С†РµР»Рё?"), reply_markup=kb)
         return
 
     comfort = _format_rate(current_w, SPEED_PERCENT_BY_WEIGHT[Speed.comfort])
@@ -1642,19 +1565,19 @@ async def speed_and_finish(message: Message, state: FSMContext) -> None:
     fast = _format_rate(current_w, SPEED_PERCENT_BY_WEIGHT[Speed.fast])
 
     kb = _ikb([
-        [(f"С комфортом {comfort} кг в неделю", "speed:COMFORT")],
-        [(f"С усилием {effort} кг в неделю", "speed:EFFORT")],
-        [(f"Ускоренно {fast} кг в неделю", "speed:FAST")],
+        [(f"РЎ РєРѕРјС„РѕСЂС‚РѕРј {comfort} РєРі РІ РЅРµРґРµР»СЋ", "speed:COMFORT")],
+        [(f"РЎ СѓСЃРёР»РёРµРј {effort} РєРі РІ РЅРµРґРµР»СЋ", "speed:EFFORT")],
+        [(f"РЈСЃРєРѕСЂРµРЅРЅРѕ {fast} РєРі РІ РЅРµРґРµР»СЋ", "speed:FAST")],
     ])
-    await message.answer(_("Как быстро хочешь достичь цели?"), reply_markup=kb)
+    await message.answer(_("РљР°Рє Р±С‹СЃС‚СЂРѕ С…РѕС‡РµС€СЊ РґРѕСЃС‚РёС‡СЊ С†РµР»Рё?"), reply_markup=kb)
 
 # =====================
-# Финальный экран: OK / Adjust
+# Р¤РёРЅР°Р»СЊРЅС‹Р№ СЌРєСЂР°РЅ: OK / Adjust
 # =====================
 
 @router.callback_query(OnboardingStates.review, F.data == "final:ok")
 async def cb_final_ok(call: CallbackQuery, state: FSMContext) -> None:
-    # Если у пользователя активная платная подписка (или он админ) — вместо продаж открываем Личный кабинет
+    # Р•СЃР»Рё Сѓ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ Р°РєС‚РёРІРЅР°СЏ РїР»Р°С‚РЅР°СЏ РїРѕРґРїРёСЃРєР° (РёР»Рё РѕРЅ Р°РґРјРёРЅ) вЂ” РІРјРµСЃС‚Рѕ РїСЂРѕРґР°Р¶ РѕС‚РєСЂС‹РІР°РµРј Р›РёС‡РЅС‹Р№ РєР°Р±РёРЅРµС‚
     try:
         async with sessionmaker() as session:
             from bot.database.models import UserModel  # local import to avoid circulars at module load
@@ -1664,43 +1587,41 @@ async def cb_final_ok(call: CallbackQuery, state: FSMContext) -> None:
             is_admin = bool(getattr(db_user, "is_admin", False)) if db_user is not None else False
             active = await is_subscription_active(session, uid, include_grace=True)
         if is_admin or active:
-            # Показать личный кабинет
+            # РџРѕРєР°Р·Р°С‚СЊ Р»РёС‡РЅС‹Р№ РєР°Р±РёРЅРµС‚
             try:
-                from bot.services.account import get_account_summary_text
                 from bot.handlers.account import _kb_account  # local import to avoid cycles at module load
+                from bot.services.account import get_account_summary_text
                 text_acc = await get_account_summary_text(call.from_user.id)
                 await call.message.answer(text_acc, reply_markup=_kb_account())
             except Exception:
-                # Fallback: без клавиатуры
+                # Fallback: Р±РµР· РєР»Р°РІРёР°С‚СѓСЂС‹
                 try:
                     from bot.services.account import get_account_summary_text
                     text_acc = await get_account_summary_text(call.from_user.id)
                     await call.message.answer(text_acc)
                 except Exception:
                     pass
-            try:
+            with contextlib.suppress(Exception):
                 await state.clear()
-            except Exception:
-                pass
             await call.answer()
             return
     except Exception:
-        # В случае ошибки — продолжаем обычный сценарий продаж
+        # Р’ СЃР»СѓС‡Р°Рµ РѕС€РёР±РєРё вЂ” РїСЂРѕРґРѕР»Р¶Р°РµРј РѕР±С‹С‡РЅС‹Р№ СЃС†РµРЅР°СЂРёР№ РїСЂРѕРґР°Р¶
         pass
 
-    # Гейтинг: запускаем продажи согласно ТЗ (для непремиум)
+    # Р“РµР№С‚РёРЅРі: Р·Р°РїСѓСЃРєР°РµРј РїСЂРѕРґР°Р¶Рё СЃРѕРіР»Р°СЃРЅРѕ РўР— (РґР»СЏ РЅРµРїСЂРµРјРёСѓРј)
     text = (
-        "💜 Секрет идеальной фигуры: считай калории\n\n"
-        "Хочешь увидеть результат? Ешь меньше, чем тратишь — для похудения. Ешь больше — для набора массы. Ешь столько же — для поддержания формы. Организм сам отреагирует на твой выбор.\n\n"
-        "🧮 Легкая математика: всего -200 калорий в день = -7-10 кг через год. +200 калорий = +7-10 кг набора. 0 калорий = стабильный вес\n\n"
-        "✅ Почему калории — это работает:\n"
-        "• Правильное питание дает 80% успеха, физ нагрузки — только 20%\n"
-        "• Никаких запретов на вкусности — просто соблюдай меру\n"
-        "• Безопасный метод, который не наносит урон здоровью\n"
-        "• Ты сам потянешься к полезной еде — она насыщает качественнее\n\n"
-        "🎯 Контроль калорий — универсальный инструмент для любой цели: похудеть, набрать массу или сохранить результат"
+        "рџ’њ РЎРµРєСЂРµС‚ РёРґРµР°Р»СЊРЅРѕР№ С„РёРіСѓСЂС‹: СЃС‡РёС‚Р°Р№ РєР°Р»РѕСЂРёРё\n\n"
+        "РҐРѕС‡РµС€СЊ СѓРІРёРґРµС‚СЊ СЂРµР·СѓР»СЊС‚Р°С‚? Р•С€СЊ РјРµРЅСЊС€Рµ, С‡РµРј С‚СЂР°С‚РёС€СЊ вЂ” РґР»СЏ РїРѕС…СѓРґРµРЅРёСЏ. Р•С€СЊ Р±РѕР»СЊС€Рµ вЂ” РґР»СЏ РЅР°Р±РѕСЂР° РјР°СЃСЃС‹. Р•С€СЊ СЃС‚РѕР»СЊРєРѕ Р¶Рµ вЂ” РґР»СЏ РїРѕРґРґРµСЂР¶Р°РЅРёСЏ С„РѕСЂРјС‹. РћСЂРіР°РЅРёР·Рј СЃР°Рј РѕС‚СЂРµР°РіРёСЂСѓРµС‚ РЅР° С‚РІРѕР№ РІС‹Р±РѕСЂ.\n\n"
+        "рџ§® Р›РµРіРєР°СЏ РјР°С‚РµРјР°С‚РёРєР°: РІСЃРµРіРѕ -200 РєР°Р»РѕСЂРёР№ РІ РґРµРЅСЊ = -7-10 РєРі С‡РµСЂРµР· РіРѕРґ. +200 РєР°Р»РѕСЂРёР№ = +7-10 РєРі РЅР°Р±РѕСЂР°. 0 РєР°Р»РѕСЂРёР№ = СЃС‚Р°Р±РёР»СЊРЅС‹Р№ РІРµСЃ\n\n"
+        "вњ… РџРѕС‡РµРјСѓ РєР°Р»РѕСЂРёРё вЂ” СЌС‚Рѕ СЂР°Р±РѕС‚Р°РµС‚:\n"
+        "вЂў РџСЂР°РІРёР»СЊРЅРѕРµ РїРёС‚Р°РЅРёРµ РґР°РµС‚ 80% СѓСЃРїРµС…Р°, С„РёР· РЅР°РіСЂСѓР·РєРё вЂ” С‚РѕР»СЊРєРѕ 20%\n"
+        "вЂў РќРёРєР°РєРёС… Р·Р°РїСЂРµС‚РѕРІ РЅР° РІРєСѓСЃРЅРѕСЃС‚Рё вЂ” РїСЂРѕСЃС‚Рѕ СЃРѕР±Р»СЋРґР°Р№ РјРµСЂСѓ\n"
+        "вЂў Р‘РµР·РѕРїР°СЃРЅС‹Р№ РјРµС‚РѕРґ, РєРѕС‚РѕСЂС‹Р№ РЅРµ РЅР°РЅРѕСЃРёС‚ СѓСЂРѕРЅ Р·РґРѕСЂРѕРІСЊСЋ\n"
+        "вЂў РўС‹ СЃР°Рј РїРѕС‚СЏРЅРµС€СЊСЃСЏ Рє РїРѕР»РµР·РЅРѕР№ РµРґРµ вЂ” РѕРЅР° РЅР°СЃС‹С‰Р°РµС‚ РєР°С‡РµСЃС‚РІРµРЅРЅРµРµ\n\n"
+        "рџЋЇ РљРѕРЅС‚СЂРѕР»СЊ РєР°Р»РѕСЂРёР№ вЂ” СѓРЅРёРІРµСЂСЃР°Р»СЊРЅС‹Р№ РёРЅСЃС‚СЂСѓРјРµРЅС‚ РґР»СЏ Р»СЋР±РѕР№ С†РµР»Рё: РїРѕС…СѓРґРµС‚СЊ, РЅР°Р±СЂР°С‚СЊ РјР°СЃСЃСѓ РёР»Рё СЃРѕС…СЂР°РЅРёС‚СЊ СЂРµР·СѓР»СЊС‚Р°С‚"
     )
-    kb = _ikb([[ ("Продолжим", "sale:cont1") ]])
+    kb = _ikb([[ ("РџСЂРѕРґРѕР»Р¶РёРј", "sale:cont1") ]])
     try:
         await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
     except Exception:
@@ -1711,8 +1632,8 @@ async def cb_final_ok(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(OnboardingStates.review, F.data == "final:adjust")
 async def cb_final_adjust(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(OnboardingStates.adjust)
-    kb = _ikb([[("Вернуться", "final:back")]])
-    await call.message.answer(_("Напиши, в свободном формате, что нужно скорректировать в твоём индивидуальном плане"), reply_markup=kb)
+    kb = _ikb([[("Р’РµСЂРЅСѓС‚СЊСЃСЏ", "final:back")]])
+    await call.message.answer(_("РќР°РїРёС€Рё, РІ СЃРІРѕР±РѕРґРЅРѕРј С„РѕСЂРјР°С‚Рµ, С‡С‚Рѕ РЅСѓР¶РЅРѕ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°С‚СЊ РІ С‚РІРѕС‘Рј РёРЅРґРёРІРёРґСѓР°Р»СЊРЅРѕРј РїР»Р°РЅРµ"), reply_markup=kb)
     # Analytics: Adjust Open
     try:
         if analytics.logger and call.from_user:
@@ -1721,12 +1642,12 @@ async def cb_final_adjust(call: CallbackQuery, state: FSMContext) -> None:
                     user_id=call.from_user.id,
                     event_type="Adjust:Open",
                     event_properties=EventProperties(
-                        chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
-                        chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                        chat_id=getattr(call.message.chat, "id", None) if call.message else None,
+                        chat_type=getattr(call.message.chat, "type", None) if call.message else None,
                         text=None,
                         command=None,
                     ),
-                    language=getattr(call.from_user, 'language_code', None),
+                    language=getattr(call.from_user, "language_code", None),
                     plan=Plan(branch="Adjust", source="onboarding", version="v1"),
                 )
             )
@@ -1737,7 +1658,7 @@ async def cb_final_adjust(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(OnboardingStates.adjust, F.data == "final:back")
 async def cb_final_back(call: CallbackQuery, state: FSMContext) -> None:
-    # Показать финальный экран снова
+    # РџРѕРєР°Р·Р°С‚СЊ С„РёРЅР°Р»СЊРЅС‹Р№ СЌРєСЂР°РЅ СЃРЅРѕРІР°
     await _finalize_and_show(call.message, state, call.from_user.id)
     # Analytics: Adjust Back
     try:
@@ -1747,12 +1668,12 @@ async def cb_final_back(call: CallbackQuery, state: FSMContext) -> None:
                     user_id=call.from_user.id,
                     event_type="Adjust:Back",
                     event_properties=EventProperties(
-                        chat_id=getattr(call.message.chat, 'id', None) if call.message else None,
-                        chat_type=getattr(call.message.chat, 'type', None) if call.message else None,
+                        chat_id=getattr(call.message.chat, "id", None) if call.message else None,
+                        chat_type=getattr(call.message.chat, "type", None) if call.message else None,
                         text=None,
                         command=None,
                     ),
-                    language=getattr(call.from_user, 'language_code', None),
+                    language=getattr(call.from_user, "language_code", None),
                     plan=Plan(branch="Adjust", source="onboarding", version="v1"),
                 )
             )
@@ -1767,10 +1688,8 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     # If user typed /start or /onboarding while in adjust, hard-redirect to start
     if text in {"/start", "/onboarding"}:
-        try:
+        with contextlib.suppress(Exception):
             await state.clear()
-        except Exception:
-            pass
         await start_module.start_handler(message, state)
         return
     # Analytics: Adjust Enter
@@ -1781,30 +1700,28 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
                     user_id=user_id,
                     event_type="Adjust:Enter",
                     event_properties=EventProperties(
-                        chat_id=getattr(message.chat, 'id', None),
-                        chat_type=getattr(message.chat, 'type', None),
+                        chat_id=getattr(message.chat, "id", None),
+                        chat_type=getattr(message.chat, "type", None),
                         text=None,
                         command=None,
                     ),
-                    language=getattr(message.from_user, 'language_code', None),
+                    language=getattr(message.from_user, "language_code", None),
                     plan=Plan(branch="Adjust", source="onboarding", version="v1"),
                 )
             )
     except Exception:
         pass
     # Immediate UX feedback while we process
-    try:
+    with contextlib.suppress(Exception):
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-    except Exception:
-        pass
-    await message.answer(_("✨ Изучаю ваши пожелания и обновляю план..."))
+    await message.answer(_("вњЁ РР·СѓС‡Р°СЋ РІР°С€Рё РїРѕР¶РµР»Р°РЅРёСЏ Рё РѕР±РЅРѕРІР»СЏСЋ РїР»Р°РЅ..."))
     logger.info(
         "adjust.enter | user_id={} | text_len={} | state=OnboardingStates.adjust",
         user_id,
         len(text),
     )
 
-    # 1) Получаем последнюю запись онбординга
+    # 1) РџРѕР»СѓС‡Р°РµРј РїРѕСЃР»РµРґРЅСЋСЋ Р·Р°РїРёСЃСЊ РѕРЅР±РѕСЂРґРёРЅРіР°
     try:
         async with sessionmaker() as session:
             existing = await session.scalar(
@@ -1819,22 +1736,20 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
                                 user_id=user_id,
                                 event_type="Adjust:Fail",
                                 event_properties=EventProperties(
-                                    chat_id=getattr(message.chat, 'id', None),
-                                    chat_type=getattr(message.chat, 'type', None),
+                                    chat_id=getattr(message.chat, "id", None),
+                                    chat_type=getattr(message.chat, "type", None),
                                     text=None,
                                     command=None,
                                 ),
-                                language=getattr(message.from_user, 'language_code', None),
+                                language=getattr(message.from_user, "language_code", None),
                                 plan=Plan(branch="Adjust", source="onboarding", version="v1"),
                             )
                         )
                 except Exception:
                     pass
                 # Redirect to fresh onboarding instead of dead-end message
-                try:
+                with contextlib.suppress(Exception):
                     await state.clear()
-                except Exception:
-                    pass
                 await start_module.start_handler(message, state)
                 return
 
@@ -1847,12 +1762,12 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
                 bool(dp_json),
             )
 
-            # 2) Восстановим объекты для вычислений
+            # 2) Р’РѕСЃСЃС‚Р°РЅРѕРІРёРј РѕР±СЉРµРєС‚С‹ РґР»СЏ РІС‹С‡РёСЃР»РµРЅРёР№
             try:
                 base_plan_dict = data_json.get("base_plan") or dp_json
                 base_plan = DailyPlan.model_validate(base_plan_dict)
             except Exception:
-                # Фолбэк: соберём base_plan из current
+                # Р¤РѕР»Р±СЌРє: СЃРѕР±РµСЂС‘Рј base_plan РёР· current
                 base_plan = DailyPlan.model_validate(dp_json)
                 data_json["base_plan"] = base_plan.model_dump(mode="json")
 
@@ -1860,16 +1775,16 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
                 payload = OnboardingData.model_validate(data_json)
             except Exception as e:
                 logger.warning("adjust.payload_invalid | user_id={} | err={}", user_id, e)
-                await message.answer(_("Данные онбординга повреждены. Попробуй заново: /start"))
+                await message.answer(_("Р”Р°РЅРЅС‹Рµ РѕРЅР±РѕСЂРґРёРЅРіР° РїРѕРІСЂРµР¶РґРµРЅС‹. РџРѕРїСЂРѕР±СѓР№ Р·Р°РЅРѕРІРѕ: /start"))
                 return
 
-            # 3) Парсинг корректировки через LLM (с кешем). Ключ завязан на текущем плане, чтобы одинаковая фраза при изменившемся плане парсилась заново
+            # 3) РџР°СЂСЃРёРЅРі РєРѕСЂСЂРµРєС‚РёСЂРѕРІРєРё С‡РµСЂРµР· LLM (СЃ РєРµС€РµРј). РљР»СЋС‡ Р·Р°РІСЏР·Р°РЅ РЅР° С‚РµРєСѓС‰РµРј РїР»Р°РЅРµ, С‡С‚РѕР±С‹ РѕРґРёРЅР°РєРѕРІР°СЏ С„СЂР°Р·Р° РїСЂРё РёР·РјРµРЅРёРІС€РµРјСЃСЏ РїР»Р°РЅРµ РїР°СЂСЃРёР»Р°СЃСЊ Р·Р°РЅРѕРІРѕ
             try:
                 plan_key_str = f"{int(base_plan.calories)}:{int(base_plan.protein_g)}:{int(base_plan.fat_g)}:{int(base_plan.carbs_g)}"
             except Exception:
                 plan_key_str = "0:0:0:0"
             try:
-                plan_key = hashlib.sha256(plan_key_str.encode('utf-8')).hexdigest()[:16]
+                plan_key = hashlib.sha256(plan_key_str.encode("utf-8")).hexdigest()[:16]
             except Exception:
                 plan_key = None
             # Build base context for LLM (LLM-only mode)
@@ -1881,17 +1796,17 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
                         "fat_g": int(base_plan.fat_g),
                         "carbs_g": int(base_plan.carbs_g),
                     },
-                    "goal": payload.goal.value if hasattr(payload.goal, 'value') else str(payload.goal),
+                    "goal": payload.goal.value if hasattr(payload.goal, "value") else str(payload.goal),
                     "weight_kg": float(payload.weight_kg),
                     "goal_weight_kg": float(payload.goal_weight_kg) if payload.goal_weight_kg is not None else None,
-                    "activity_level": payload.activity_level.value if hasattr(payload.activity_level, 'value') else str(payload.activity_level),
+                    "activity_level": payload.activity_level.value if hasattr(payload.activity_level, "value") else str(payload.activity_level),
                 }
             except Exception:
                 base_ctx = None
             parsed = await parse_adjustment_cached(
                 user_id,
                 text,
-                lang_hint=getattr(message.from_user, 'language_code', None),
+                lang_hint=getattr(message.from_user, "language_code", None),
                 plan_key=plan_key,
                 base_ctx=base_ctx,
             )
@@ -1899,7 +1814,7 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
                 # In llm_only mode, do not use local heuristics; ask user to rephrase
                 if str(getattr(settings, "ADJUST_ENGINE_MODE", "")).lower() == "llm_only":
                     await message.answer(
-                        _("Не до конца понял запрос. Сформулируй одной фразой, например: \n• 'уменьши углеводы на 10%' \n• 'хочу быстрее похудеть' \n• 'к 01.03.2026' \n• 'мало двигаюсь — поставь низкую активность'"))
+                        _("РќРµ РґРѕ РєРѕРЅС†Р° РїРѕРЅСЏР» Р·Р°РїСЂРѕСЃ. РЎС„РѕСЂРјСѓР»РёСЂСѓР№ РѕРґРЅРѕР№ С„СЂР°Р·РѕР№, РЅР°РїСЂРёРјРµСЂ: \nвЂў 'СѓРјРµРЅСЊС€Рё СѓРіР»РµРІРѕРґС‹ РЅР° 10%' \nвЂў 'С…РѕС‡Сѓ Р±С‹СЃС‚СЂРµРµ РїРѕС…СѓРґРµС‚СЊ' \nвЂў 'Рє 01.03.2026' \nвЂў 'РјР°Р»Рѕ РґРІРёРіР°СЋСЃСЊ вЂ” РїРѕСЃС‚Р°РІСЊ РЅРёР·РєСѓСЋ Р°РєС‚РёРІРЅРѕСЃС‚СЊ'"))
                     return
                 # Heuristic fallback for top intents (offline, RU)
                 h = parse_adjustment_heuristic(text)
@@ -1908,20 +1823,20 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
                     parsed = h
                 else:
                     await message.answer(
-                        _("Не до конца понял запрос. Сформулируй одной фразой, например: \n• 'уберите углеводы' \n• 'добавь 200 ккал' \n• 'мало двигаюсь — поставь низкую активность'"))
+                        _("РќРµ РґРѕ РєРѕРЅС†Р° РїРѕРЅСЏР» Р·Р°РїСЂРѕСЃ. РЎС„РѕСЂРјСѓР»РёСЂСѓР№ РѕРґРЅРѕР№ С„СЂР°Р·РѕР№, РЅР°РїСЂРёРјРµСЂ: \nвЂў 'СѓР±РµСЂРёС‚Рµ СѓРіР»РµРІРѕРґС‹' \nвЂў 'РґРѕР±Р°РІСЊ 200 РєРєР°Р»' \nвЂў 'РјР°Р»Рѕ РґРІРёРіР°СЋСЃСЊ вЂ” РїРѕСЃС‚Р°РІСЊ РЅРёР·РєСѓСЋ Р°РєС‚РёРІРЅРѕСЃС‚СЊ'"))
                     return
             else:
                 logger.info(
                     "adjust.parsed | user_id={} | intents={} | activity_override={} | calories={} | macros={} | conf={}",
                     user_id,
-                    getattr(parsed, 'intents', None),
-                    getattr(parsed, 'activity_override', None),
-                    getattr(parsed, 'calories', None),
-                    getattr(parsed, 'macros', None),
-                    getattr(parsed, 'confidence', None),
+                    getattr(parsed, "intents", None),
+                    getattr(parsed, "activity_override", None),
+                    getattr(parsed, "calories", None),
+                    getattr(parsed, "macros", None),
+                    getattr(parsed, "confidence", None),
                 )
 
-            # 4) Применим детерминированные правила
+            # 4) РџСЂРёРјРµРЅРёРј РґРµС‚РµСЂРјРёРЅРёСЂРѕРІР°РЅРЅС‹Рµ РїСЂР°РІРёР»Р°
             new_plan, explanation, summary = apply_adjustment(base_plan, payload, parsed)
             logger.info(
                 "adjust.applied | user_id={} | calories={} | p/f/c={}/{}/{}",
@@ -1932,57 +1847,57 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
                 new_plan.carbs_g,
             )
 
-            # Сформируем персональную заметку (без чисел), чтобы текст был менее шаблонным
+            # РЎС„РѕСЂРјРёСЂСѓРµРј РїРµСЂСЃРѕРЅР°Р»СЊРЅСѓСЋ Р·Р°РјРµС‚РєСѓ (Р±РµР· С‡РёСЃРµР»), С‡С‚РѕР±С‹ С‚РµРєСЃС‚ Р±С‹Р» РјРµРЅРµРµ С€Р°Р±Р»РѕРЅРЅС‹Рј
             personal_line: str | None = None
             try:
-                note = getattr(parsed, 'rationale', None)
-                intents = list(getattr(parsed, 'intents', []) or [])
+                note = getattr(parsed, "rationale", None)
+                intents = list(getattr(parsed, "intents", []) or [])
                 if isinstance(note, str) and note.strip():
-                    personal_line = _("Учёл запрос: ") + note.strip()
+                    personal_line = _("РЈС‡С‘Р» Р·Р°РїСЂРѕСЃ: ") + note.strip()
                 else:
                     intent_map = {
-                        'low_fodmap_candidate': _("уменьшить FODMAP-продукты"),
-                        'lactose_free': _("избегать лактозы"),
-                        'gluten_free': _("без глютена"),
-                        'sugar_free': _("ограничить сахар"),
-                        'keto': _("кето-схему"),
-                        'low_carb': _("снизить углеводы"),
-                        'high_protein': _("акцент на белок"),
-                        'raise_calories': _("увеличить калорийность"),
-                        'lower_calories': _("снизить калорийность"),
-                        'activity_down': _("понизить активность"),
-                        'activity_up': _("повысить активность"),
-                        'reduce_protein': _("снизить белок"),
-                        'reduce_fat': _("снизить жиры"),
-                        'increase_fat': _("повысить жиры"),
-                        'custom_macros': _("кастомные макросы"),
+                        "low_fodmap_candidate": _("СѓРјРµРЅСЊС€РёС‚СЊ FODMAP-РїСЂРѕРґСѓРєС‚С‹"),
+                        "lactose_free": _("РёР·Р±РµРіР°С‚СЊ Р»Р°РєС‚РѕР·С‹"),
+                        "gluten_free": _("Р±РµР· РіР»СЋС‚РµРЅР°"),
+                        "sugar_free": _("РѕРіСЂР°РЅРёС‡РёС‚СЊ СЃР°С…Р°СЂ"),
+                        "keto": _("РєРµС‚Рѕ-СЃС…РµРјСѓ"),
+                        "low_carb": _("СЃРЅРёР·РёС‚СЊ СѓРіР»РµРІРѕРґС‹"),
+                        "high_protein": _("Р°РєС†РµРЅС‚ РЅР° Р±РµР»РѕРє"),
+                        "raise_calories": _("СѓРІРµР»РёС‡РёС‚СЊ РєР°Р»РѕСЂРёР№РЅРѕСЃС‚СЊ"),
+                        "lower_calories": _("СЃРЅРёР·РёС‚СЊ РєР°Р»РѕСЂРёР№РЅРѕСЃС‚СЊ"),
+                        "activity_down": _("РїРѕРЅРёР·РёС‚СЊ Р°РєС‚РёРІРЅРѕСЃС‚СЊ"),
+                        "activity_up": _("РїРѕРІС‹СЃРёС‚СЊ Р°РєС‚РёРІРЅРѕСЃС‚СЊ"),
+                        "reduce_protein": _("СЃРЅРёР·РёС‚СЊ Р±РµР»РѕРє"),
+                        "reduce_fat": _("СЃРЅРёР·РёС‚СЊ Р¶РёСЂС‹"),
+                        "increase_fat": _("РїРѕРІС‹СЃРёС‚СЊ Р¶РёСЂС‹"),
+                        "custom_macros": _("РєР°СЃС‚РѕРјРЅС‹Рµ РјР°РєСЂРѕСЃС‹"),
                     }
                     phrases = [intent_map[i] for i in intents if i in intent_map]
                     if phrases:
-                        personal_line = _("Учёл запрос: ") + ", ".join(phrases)
+                        personal_line = _("РЈС‡С‘Р» Р·Р°РїСЂРѕСЃ: ") + ", ".join(phrases)
             except Exception:
                 personal_line = None
 
-            # 4.1) Гибрид (асинхронно): перефразировать объяснение в фоне и, если успеет, отредактировать сообщение
+            # 4.1) Р“РёР±СЂРёРґ (Р°СЃРёРЅС…СЂРѕРЅРЅРѕ): РїРµСЂРµС„СЂР°Р·РёСЂРѕРІР°С‚СЊ РѕР±СЉСЏСЃРЅРµРЅРёРµ РІ С„РѕРЅРµ Рё, РµСЃР»Рё СѓСЃРїРµРµС‚, РѕС‚СЂРµРґР°РєС‚РёСЂРѕРІР°С‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ
             should_try_rephrase = (
                 settings.ADJUST_REPHRASE_ENABLED
                 and explanation
                 and len(explanation) >= int(getattr(settings, "ADJUST_REPHRASE_LENGTH_MIN", 220) or 220)
             )
 
-            # 5) Сохраним
+            # 5) РЎРѕС…СЂР°РЅРёРј
             adjustments = list(data_json.get("adjustments") or [])
             adjustments.append({
-                "ts": getattr(message, 'date', None).isoformat() if getattr(message, 'date', None) else None,
+                "ts": getattr(message, "date", None).isoformat() if getattr(message, "date", None) else None,
                 "text_raw": text,
                 "parsed": {
-                    "intents": getattr(parsed, 'intents', None),
-                    "activity_override": getattr(parsed, 'activity_override', None),
-                    "calories": getattr(parsed, 'calories', None),
-                    "macros": getattr(parsed, 'macros', None),
-                    "dietary_restrictions": getattr(parsed, 'dietary_restrictions', None),
-                    "confidence": getattr(parsed, 'confidence', None),
-                    "version": getattr(parsed, 'version', None),
+                    "intents": getattr(parsed, "intents", None),
+                    "activity_override": getattr(parsed, "activity_override", None),
+                    "calories": getattr(parsed, "calories", None),
+                    "macros": getattr(parsed, "macros", None),
+                    "dietary_restrictions": getattr(parsed, "dietary_restrictions", None),
+                    "confidence": getattr(parsed, "confidence", None),
+                    "version": getattr(parsed, "version", None),
                 },
                 "applied": summary,
             })
@@ -1996,21 +1911,21 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
 
     except Exception as e:
         logger.exception("adjust.apply_failed | user_id={} | err={}", user_id, e)
-        await message.answer(_("Не удалось применить корректировку. Попробуй ещё раз позже."))
+        await message.answer(_("РќРµ СѓРґР°Р»РѕСЃСЊ РїСЂРёРјРµРЅРёС‚СЊ РєРѕСЂСЂРµРєС‚РёСЂРѕРІРєСѓ. РџРѕРїСЂРѕР±СѓР№ РµС‰С‘ СЂР°Р· РїРѕР·Р¶Рµ."))
         # Analytics: Adjust Fail (exception)
         try:
             if analytics.logger:
                 analytics.fire_event(
                     BaseEvent(
-                        user_id=getattr(message.from_user, 'id', None),
+                        user_id=getattr(message.from_user, "id", None),
                         event_type="Adjust:Fail",
                         event_properties=EventProperties(
-                            chat_id=getattr(message.chat, 'id', None),
-                            chat_type=getattr(message.chat, 'type', None),
+                            chat_id=getattr(message.chat, "id", None),
+                            chat_type=getattr(message.chat, "type", None),
                             text=None,
                             command=None,
                         ),
-                        language=getattr(message.from_user, 'language_code', None),
+                        language=getattr(message.from_user, "language_code", None),
                         plan=Plan(branch="Adjust", source="onboarding", version="v1"),
                     )
                 )
@@ -2018,19 +1933,19 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
             pass
         return
 
-    # Попробуем подготовить обновленный график (без немедленной отправки — вложим как caption ниже)
+    # РџРѕРїСЂРѕР±СѓРµРј РїРѕРґРіРѕС‚РѕРІРёС‚СЊ РѕР±РЅРѕРІР»РµРЅРЅС‹Р№ РіСЂР°С„РёРє (Р±РµР· РЅРµРјРµРґР»РµРЅРЅРѕР№ РѕС‚РїСЂР°РІРєРё вЂ” РІР»РѕР¶РёРј РєР°Рє caption РЅРёР¶Рµ)
     png_data = None
     try:
         if settings.CHARTS_ENABLED:
             start_w = float(payload.weight_kg)
             goal_w = float(payload.goal_weight_kg) if payload.goal_weight_kg is not None else None
-            weekly = float(getattr(new_plan, 'weekly_rate_kg', 0.0) or 0.0)
-            start_dt = getattr(message, 'date', None)
+            weekly = float(getattr(new_plan, "weekly_rate_kg", 0.0) or 0.0)
+            start_dt = getattr(message, "date", None)
             start_d = start_dt.date() if start_dt else date.today()
-            eta = getattr(new_plan, 'eta_date', None)
+            eta = getattr(new_plan, "eta_date", None)
             logger.info("charts.try_send | phase=adjust | user_id={} | weekly={} | eta={}", user_id, weekly, eta)
             key_str = f"{start_w}:{goal_w}:{weekly}:{start_d.isoformat()}:{eta.isoformat() if eta else ''}:{settings.CHARTS_PRIVACY_MODE}:{settings.CHARTS_BAND_FRAC}:adjust"
-            ph = hashlib.sha256(key_str.encode('utf-8')).hexdigest()[:16]
+            ph = hashlib.sha256(key_str.encode("utf-8")).hexdigest()[:16]
             png = await get_plan_chart_png(user_id, ph,
                                            start_weight=start_w,
                                            goal_weight=goal_w,
@@ -2043,44 +1958,44 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
     except Exception as e:
         logger.warning("charts.render_failed | user_id={} | err={}", user_id, e)
 
-    # 6) Рендер ответа
+    # 6) Р РµРЅРґРµСЂ РѕС‚РІРµС‚Р°
     lines: list[str] = []
-    lines.append("<b>" + _("Твой план скорректирован!") + "</b>")
+    lines.append("<b>" + _("РўРІРѕР№ РїР»Р°РЅ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°РЅ!") + "</b>")
     lines.append("")
     if payload.goal != Goal.maintain:
-        # ETA и скорость
+        # ETA Рё СЃРєРѕСЂРѕСЃС‚СЊ
         if new_plan.eta_date is not None and payload.goal_weight_kg is not None:
             delta = abs(payload.weight_kg - payload.goal_weight_kg)
-            formatted_date = new_plan.eta_date.strftime('%d.%m.%Y')
+            formatted_date = new_plan.eta_date.strftime("%d.%m.%Y")
             if payload.goal == Goal.lose:
-                lines.append(f"Ты сбросишь {round(delta, 1)} кг к {formatted_date}")
+                lines.append(f"РўС‹ СЃР±СЂРѕСЃРёС€СЊ {round(delta, 1)} РєРі Рє {formatted_date}")
             elif payload.goal == Goal.gain:
-                lines.append(f"Ты наберешь {round(delta, 1)} кг к {formatted_date}")
-        lines.append(f"{_('Скорость')}: {new_plan.weekly_rate_kg} {_('кг в неделю')}")
+                lines.append(f"РўС‹ РЅР°Р±РµСЂРµС€СЊ {round(delta, 1)} РєРі Рє {formatted_date}")
+        lines.append(f"{_('РЎРєРѕСЂРѕСЃС‚СЊ')}: {new_plan.weekly_rate_kg} {_('РєРі РІ РЅРµРґРµР»СЋ')}")
     lines.append("")
-    lines.append("<b>" + _("Обновленная дневная норма:") + "</b>")
-    lines.append(f"🔥 {_('Калории')}: {new_plan.calories} {_('ккал')}")
-    lines.append(f"🥩 {_('Белки')}: {new_plan.protein_g} {_('г')}")
-    lines.append(f"🥑 {_('Жиры')}: {new_plan.fat_g} {_('г')}")
-    lines.append(f"🍞 {_('Углеводы')}: {new_plan.carbs_g} {_('г')}")
+    lines.append("<b>" + _("РћР±РЅРѕРІР»РµРЅРЅР°СЏ РґРЅРµРІРЅР°СЏ РЅРѕСЂРјР°:") + "</b>")
+    lines.append(f"рџ”Ґ {_('РљР°Р»РѕСЂРёРё')}: {new_plan.calories} {_('РєРєР°Р»')}")
+    lines.append(f"рџҐ© {_('Р‘РµР»РєРё')}: {new_plan.protein_g} {_('Рі')}")
+    lines.append(f"рџҐ‘ {_('Р–РёСЂС‹')}: {new_plan.fat_g} {_('Рі')}")
+    lines.append(f"рџЌћ {_('РЈРіР»РµРІРѕРґС‹')}: {new_plan.carbs_g} {_('Рі')}")
     lines.append("")
-    if 'personal_line' in locals() and personal_line:
+    if "personal_line" in locals() and personal_line:
         # Deduplicate: skip personal line if it repeats the explanation content
         def _norm_txt(s: str) -> str:
             return re.sub(r"\s+", " ", (s or "").lower()).strip()
-        pl_core = re.sub(r"^уч[её]л\s+запрос:\s*", "", personal_line, flags=re.I)
+        pl_core = re.sub(r"^СѓС‡[РµС‘]Р»\s+Р·Р°РїСЂРѕСЃ:\s*", "", personal_line, flags=re.IGNORECASE)
         if _norm_txt(pl_core) and _norm_txt(pl_core) not in _norm_txt(explanation):
             lines.append(personal_line)
     lines.append(explanation)
     lines.append("")
-    lines.append(_("Оставим так или нужна еще корректировка?"))
+    lines.append(_("РћСЃС‚Р°РІРёРј С‚Р°Рє РёР»Рё РЅСѓР¶РЅР° РµС‰Рµ РєРѕСЂСЂРµРєС‚РёСЂРѕРІРєР°?"))
 
     kb = _ikb([
-        [("Всё отлично!", "final:ok")],
-        [("Хочу скорректировать", "final:adjust")],
+        [("Р’СЃС‘ РѕС‚Р»РёС‡РЅРѕ!", "final:ok")],
+        [("РҐРѕС‡Сѓ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°С‚СЊ", "final:adjust")],
     ])
 
-    # Сначала попробуем отправить фото с подписью (единое сообщение)
+    # РЎРЅР°С‡Р°Р»Р° РїРѕРїСЂРѕР±СѓРµРј РѕС‚РїСЂР°РІРёС‚СЊ С„РѕС‚Рѕ СЃ РїРѕРґРїРёСЃСЊСЋ (РµРґРёРЅРѕРµ СЃРѕРѕР±С‰РµРЅРёРµ)
     try:
         if png_data:
             caption = "\n".join(lines)
@@ -2088,54 +2003,53 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
                 await message.answer_photo(BufferedInputFile(png_data, filename="goal_plan.png"), caption=caption, reply_markup=kb)
                 await state.set_state(OnboardingStates.review)
                 return
-            else:
-                await message.answer_photo(BufferedInputFile(png_data, filename="goal_plan.png"), caption=lines[0])
-                await message.answer(caption, reply_markup=kb, disable_web_page_preview=True)
-                await state.set_state(OnboardingStates.review)
-                return
+            await message.answer_photo(BufferedInputFile(png_data, filename="goal_plan.png"), caption=lines[0])
+            await message.answer(caption, reply_markup=kb, disable_web_page_preview=True)
+            await state.set_state(OnboardingStates.review)
+            return
     except Exception as e:
         logger.warning("charts.send_failed_caption | user_id={} | err={}", user_id, e)
 
-    # Фолбэк: отправим текстом (как было), чтобы сохранить rephrase-путь
+    # Р¤РѕР»Р±СЌРє: РѕС‚РїСЂР°РІРёРј С‚РµРєСЃС‚РѕРј (РєР°Рє Р±С‹Р»Рѕ), С‡С‚РѕР±С‹ СЃРѕС…СЂР°РЅРёС‚СЊ rephrase-РїСѓС‚СЊ
     sent_msg = await message.answer("\n".join(lines), reply_markup=kb, disable_web_page_preview=True)
 
-    # Если включено — запустим перефраз в фоне и при успехе обновим текст сообщения
-    if 'should_try_rephrase' in locals() and should_try_rephrase:
+    # Р•СЃР»Рё РІРєР»СЋС‡РµРЅРѕ вЂ” Р·Р°РїСѓСЃС‚РёРј РїРµСЂРµС„СЂР°Р· РІ С„РѕРЅРµ Рё РїСЂРё СѓСЃРїРµС…Рµ РѕР±РЅРѕРІРёРј С‚РµРєСЃС‚ СЃРѕРѕР±С‰РµРЅРёСЏ
+    if "should_try_rephrase" in locals() and should_try_rephrase:
         async def _rephrase_and_edit() -> None:
             try:
                 rewritten = await rephrase_explanation_cached(explanation, settings.ADJUST_REPHRASE_TONE or "neutral")
                 if not rewritten:
                     logger.info("adjust.rephrase.fallback | user_id={}", user_id)
                     return
-                # Сформировать обновлённый текст с перефразом
+                # РЎС„РѕСЂРјРёСЂРѕРІР°С‚СЊ РѕР±РЅРѕРІР»С‘РЅРЅС‹Р№ С‚РµРєСЃС‚ СЃ РїРµСЂРµС„СЂР°Р·РѕРј
                 new_lines: list[str] = []
-                new_lines.append("<b>" + _("Твой план скорректирован!") + "</b>")
+                new_lines.append("<b>" + _("РўРІРѕР№ РїР»Р°РЅ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°РЅ!") + "</b>")
                 new_lines.append("")
                 if payload.goal != Goal.maintain:
                     if new_plan.eta_date is not None and payload.goal_weight_kg is not None:
                         delta = abs(payload.weight_kg - payload.goal_weight_kg)
-                        formatted_date = new_plan.eta_date.strftime('%d.%m.%Y')
+                        formatted_date = new_plan.eta_date.strftime("%d.%m.%Y")
                         if payload.goal == Goal.lose:
-                            new_lines.append(f"Ты сбросишь {round(delta, 1)} кг к {formatted_date}")
+                            new_lines.append(f"РўС‹ СЃР±СЂРѕСЃРёС€СЊ {round(delta, 1)} РєРі Рє {formatted_date}")
                         elif payload.goal == Goal.gain:
-                            new_lines.append(f"Ты наберешь {round(delta, 1)} кг к {formatted_date}")
-                    new_lines.append(f"{_('Скорость')}: {new_plan.weekly_rate_kg} {_('кг в неделю')}")
+                            new_lines.append(f"РўС‹ РЅР°Р±РµСЂРµС€СЊ {round(delta, 1)} РєРі Рє {formatted_date}")
+                    new_lines.append(f"{_('РЎРєРѕСЂРѕСЃС‚СЊ')}: {new_plan.weekly_rate_kg} {_('РєРі РІ РЅРµРґРµР»СЋ')}")
                 new_lines.append("")
-                new_lines.append("<b>" + _("Обновленная дневная норма:") + "</b>")
-                new_lines.append(f"🔥 { _('Калории') }: {new_plan.calories} { _('ккал') }")
-                new_lines.append(f"🥩 { _('Белки') }: {new_plan.protein_g} { _('г') }")
-                new_lines.append(f"🥑 { _('Жиры') }: {new_plan.fat_g} { _('г') }")
-                new_lines.append(f"🍞 { _('Углеводы') }: {new_plan.carbs_g} { _('г') }")
+                new_lines.append("<b>" + _("РћР±РЅРѕРІР»РµРЅРЅР°СЏ РґРЅРµРІРЅР°СЏ РЅРѕСЂРјР°:") + "</b>")
+                new_lines.append(f"рџ”Ґ { _('РљР°Р»РѕСЂРёРё') }: {new_plan.calories} { _('РєРєР°Р»') }")
+                new_lines.append(f"рџҐ© { _('Р‘РµР»РєРё') }: {new_plan.protein_g} { _('Рі') }")
+                new_lines.append(f"рџҐ‘ { _('Р–РёСЂС‹') }: {new_plan.fat_g} { _('Рі') }")
+                new_lines.append(f"рџЌћ { _('РЈРіР»РµРІРѕРґС‹') }: {new_plan.carbs_g} { _('Рі') }")
                 new_lines.append("")
-                if 'personal_line' in locals() and personal_line:
+                if "personal_line" in locals() and personal_line:
                     def _norm_txt2(s: str) -> str:
                         return re.sub(r"\s+", " ", (s or "").lower()).strip()
-                    pl_core2 = re.sub(r"^уч[её]л\s+запрос:\s*", "", personal_line, flags=re.I)
+                    pl_core2 = re.sub(r"^СѓС‡[РµС‘]Р»\s+Р·Р°РїСЂРѕСЃ:\s*", "", personal_line, flags=re.IGNORECASE)
                     if _norm_txt2(pl_core2) and _norm_txt2(pl_core2) not in _norm_txt2(rewritten):
                         new_lines.append(personal_line)
                 new_lines.append(rewritten)
                 new_lines.append("")
-                new_lines.append(_("Оставим так или нужна еще корректировка?"))
+                new_lines.append(_("РћСЃС‚Р°РІРёРј С‚Р°Рє РёР»Рё РЅСѓР¶РЅР° РµС‰Рµ РєРѕСЂСЂРµРєС‚РёСЂРѕРІРєР°?"))
                 try:
                     await sent_msg.edit_text("\n".join(new_lines), reply_markup=kb)
                     logger.info("adjust.rephrase.applied | user_id={} | len={}", user_id, len(rewritten))
@@ -2147,3 +2061,5 @@ async def adjust_apply(message: Message, state: FSMContext) -> None:
         asyncio.create_task(_rephrase_and_edit())
 
     await state.set_state(OnboardingStates.review)
+
+

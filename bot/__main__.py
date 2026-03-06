@@ -8,6 +8,8 @@ import uvloop
 from loguru import logger
 from sentry_sdk.integrations.loguru import LoggingLevels, LoguruIntegration
 
+from bot.background.recurring_scheduler import recurring_scheduler
+from bot.background.report_scheduler import scheduler
 from bot.core.config import settings
 from bot.core.loader import app, bot, dp
 from bot.handlers import get_handlers_router
@@ -15,8 +17,6 @@ from bot.handlers.metrics import MetricsView
 from bot.keyboards.default_commands import remove_default_commands, set_default_commands
 from bot.middlewares import register_middlewares
 from bot.middlewares.prometheus import prometheus_middleware_factory
-from bot.background.report_scheduler import scheduler
-from bot.background.recurring_scheduler import recurring_scheduler
 
 
 async def on_startup() -> None:
@@ -115,6 +115,7 @@ async def on_shutdown() -> None:
 async def setup_webhook() -> None:
     from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application  # noqa: PLC0415
     from aiohttp.web import AppRunner, TCPSite  # noqa: PLC0415
+
     from bot.handlers.yookassa_webhook import YooKassaWebhookView  # noqa: PLC0415
 
     await bot.set_webhook(
@@ -144,6 +145,7 @@ async def setup_webhook() -> None:
 async def setup_aux_http_server() -> None:
     """Start a lightweight aiohttp server in polling mode to accept external webhooks (YooKassa)."""
     from aiohttp.web import AppRunner, TCPSite  # noqa: PLC0415
+
     from bot.handlers.yookassa_webhook import YooKassaWebhookView  # noqa: PLC0415
 
     # Register YooKassa webhook route

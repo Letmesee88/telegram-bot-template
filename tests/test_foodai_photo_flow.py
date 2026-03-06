@@ -1,16 +1,15 @@
 from __future__ import annotations
-
 import asyncio
-import pytest
+
 from bot.services import foodai as foodai_mod
 
 
-def test_foodai_photo_flow_basic(monkeypatch):
+def test_foodai_photo_flow_basic(monkeypatch) -> None:
     """Self-contained photo flow test without DB or docker.
     Wraps async logic in asyncio.run to avoid pytest-asyncio dependency.
     """
 
-    async def _run():
+    async def _run() -> None:
         # 1) Force provider path
         monkeypatch.setattr(foodai_mod, "_use_openai", lambda: True)
 
@@ -19,7 +18,7 @@ def test_foodai_photo_flow_basic(monkeypatch):
 
         monkeypatch.setattr(foodai_mod, "_tg_file_url", fake_tg_file_url)
 
-        async def fake_openai_request(kind: str, payload: dict):
+        async def fake_openai_request(kind: str, payload: dict) -> str:
             return (
                 """
                 {
@@ -40,7 +39,7 @@ def test_foodai_photo_flow_basic(monkeypatch):
         monkeypatch.setattr(foodai_mod, "_openai_request", fake_openai_request)
 
         # Ensure pre-check passes
-        async def fake_foodness_photo(url: str):
+        async def fake_foodness_photo(url: str) -> bool:
             return True
 
         monkeypatch.setattr(foodai_mod, "_foodness_photo", fake_foodness_photo)

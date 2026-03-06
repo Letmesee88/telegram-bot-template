@@ -36,7 +36,7 @@ try:
 except Exception:
     # In tests locales may be missing or not compiled; provide a minimal fallback
     class _DummyI18n:
-        def gettext(self, message: str) -> str:  # noqa: D401
+        def gettext(self, message: str) -> str:
             return message
 
         def __call__(self, message: str) -> str:

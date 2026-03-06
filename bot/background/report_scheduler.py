@@ -1,24 +1,27 @@
 from __future__ import annotations
-
 import asyncio
+import contextlib
 import random
 import time
-from datetime import datetime, timedelta, timezone, time as dtime
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
+from typing import TYPE_CHECKING
 
-from aiogram import Bot
 from loguru import logger
 from sqlalchemy import select
 
+from bot.analytics.types import BaseEvent, EventProperties, Plan
 from bot.core.config import settings
 from bot.core.loader import redis_client
 from bot.database.database import sessionmaker
-from bot.database.models import OnboardingAnswerModel, UserModel, SubscriptionModel, DailyIntakeModel
-from bot.services.users import get_user_tzinfo
-from bot.services.reports import assemble_and_send_report
+from bot.database.models import DailyIntakeModel, OnboardingAnswerModel, SubscriptionModel
 from bot.metrics import daily_report_queue_lag_seconds
 from bot.services.analytics import analytics
-from bot.analytics.types import BaseEvent, EventProperties, Plan
+from bot.services.reports import assemble_and_send_report
+from bot.services.users import get_user_tzinfo
+
+if TYPE_CHECKING:
+    from aiogram import Bot
 
 ZSET_KEY = "reports:schedule"
 LOCK_FMT = "reports:lock:{}"
@@ -75,21 +78,20 @@ async def _seed_audience() -> None:
                     )
                 )
             res = await session.execute(base.distinct())
-        else:
-            if getattr(settings, "DAILY_REPORTS_REQUIRE_PREMIUM", False):
-                now = datetime.now(timezone.utc)
-                res = await session.execute(
-                    select(OnboardingAnswerModel.user_id)
-                    .join(SubscriptionModel, SubscriptionModel.user_id == OnboardingAnswerModel.user_id)
-                    .where(
-                        SubscriptionModel.status == "active",
-                        SubscriptionModel.expires_at_utc.is_not(None),
-                        SubscriptionModel.expires_at_utc > now,
-                    )
-                    .distinct()
+        elif getattr(settings, "DAILY_REPORTS_REQUIRE_PREMIUM", False):
+            now = datetime.now(timezone.utc)
+            res = await session.execute(
+                select(OnboardingAnswerModel.user_id)
+                .join(SubscriptionModel, SubscriptionModel.user_id == OnboardingAnswerModel.user_id)
+                .where(
+                    SubscriptionModel.status == "active",
+                    SubscriptionModel.expires_at_utc.is_not(None),
+                    SubscriptionModel.expires_at_utc > now,
                 )
-            else:
-                res = await session.execute(select(OnboardingAnswerModel.user_id).distinct())
+                .distinct()
+            )
+        else:
+            res = await session.execute(select(OnboardingAnswerModel.user_id).distinct())
         uids = [int(x) for x in res.scalars().all()]
     if not uids:
         return
@@ -98,7 +100,7 @@ async def _seed_audience() -> None:
         pipe.zscore(ZSET_KEY, uid)
     scores = await pipe.execute()
     to_add: list[tuple[int, int]] = []
-    for uid, sc in zip(uids, scores):
+    for uid, sc in zip(uids, scores, strict=False):
         if sc is None:
             nxt = await _next_run_epoch(uid)
             to_add.append((uid, nxt))
@@ -166,15 +168,13 @@ async def _scan_onboarding_abandoned() -> None:
         except Exception:
             continue
     if tasks:
-        try:
+        with contextlib.suppress(Exception):
             await asyncio.gather(*tasks, return_exceptions=True)
-        except Exception:
-            pass
 
 
 class ReportScheduler:
     def __init__(self) -> None:
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
         self._sem = asyncio.Semaphore(int(getattr(settings, "DAILY_REPORTS_LLM_CONCURRENCY", 50) or 50))
         self._last_onb_scan_ts = 0
@@ -187,20 +187,16 @@ class ReportScheduler:
         try:
             now = int(time.time())
             lag = max(0, now - int(scheduled_epoch or now))
-            try:
+            with contextlib.suppress(Exception):
                 daily_report_queue_lag_seconds.observe(float(lag))
-            except Exception:
-                pass
             async with self._sem:
                 should_reschedule = await assemble_and_send_report(bot, user_id, scheduled_epoch=scheduled_epoch)
             if should_reschedule:
                 nxt = await _next_run_epoch(user_id)
                 await redis_client.zadd(ZSET_KEY, {user_id: nxt})
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 await redis_client.delete(lock_key)
-            except Exception:
-                pass
 
     async def run(self, bot: Bot) -> None:
         await _seed_audience()
@@ -236,10 +232,8 @@ class ReportScheduler:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                try:
+                with contextlib.suppress(Exception):
                     logger.warning("report_scheduler_loop_error | err={}", e)
-                except Exception:
-                    pass
                 await asyncio.sleep(2)
 
     async def start(self, bot: Bot) -> None:
@@ -252,10 +246,8 @@ class ReportScheduler:
         self._stopping.set()
         if self._task:
             self._task.cancel()
-            try:
+            with contextlib.suppress(Exception):
                 await self._task
-            except Exception:
-                pass
 
 
 scheduler = ReportScheduler()

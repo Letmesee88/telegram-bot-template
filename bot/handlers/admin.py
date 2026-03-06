@@ -1,23 +1,24 @@
 from __future__ import annotations
-
 import asyncio
 from time import perf_counter
+from typing import TYPE_CHECKING
 
-from aiogram import Router, types, F
+from aiogram import F, Router, types
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from sqlalchemy import exists, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.core.loader import redis_client
-from bot.filters.admin import AdminFilter
 from bot.database.models import PaymentModel, UserModel
+from bot.filters.admin import AdminFilter
 from bot.services.users import get_user_count
 
+if TYPE_CHECKING:
+    from aiogram.fsm.context import FSMContext
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 router = Router(name="admin")
 
@@ -162,10 +163,7 @@ async def broadcast_start_free(message: types.Message, state: FSMContext) -> Non
 async def broadcast_preview(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     """Store text and show preview with Confirm/Cancel."""
     raw_text = (message.text or "").strip()
-    if message.entities:
-        text = (message.html_text or raw_text).strip()
-    else:
-        text = raw_text
+    text = (message.html_text or raw_text).strip() if message.entities else raw_text
     if not text:
         await message.answer("Текст пуст. Пришлите непустое сообщение.")
         return

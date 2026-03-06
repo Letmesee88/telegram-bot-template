@@ -1,15 +1,15 @@
 from __future__ import annotations
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select
-from datetime import datetime, timezone
 
 from bot.database.database import sessionmaker
 from bot.database.models import SubscriptionModel, UserModel
 
 
 @pytest.mark.asyncio
-async def test_rebill_canceled_temporary_reason(test_db_env, ensure_user, make_webhook_request, make_yk_view, patch_redis_client, monkeypatch):
+async def test_rebill_canceled_temporary_reason(test_db_env, ensure_user, make_webhook_request, make_yk_view, patch_redis_client, monkeypatch) -> None:
     user_id = await ensure_user(10021)
     # Seed subscription
     async with sessionmaker() as session:
@@ -62,11 +62,12 @@ async def test_rebill_canceled_temporary_reason(test_db_env, ensure_user, make_w
         assert sub.status == "past_due"
         assert sub.auto_renew is True
         u = (await session.execute(select(UserModel).where(UserModel.id == user_id))).scalar_one_or_none()
-        assert u is not None and not bool(u.is_premium)
+        assert u is not None
+        assert not bool(u.is_premium)
 
 
 @pytest.mark.asyncio
-async def test_rebill_canceled_permanent_reason_disables_auto_renew(test_db_env, ensure_user, make_webhook_request, make_yk_view, patch_redis_client):
+async def test_rebill_canceled_permanent_reason_disables_auto_renew(test_db_env, ensure_user, make_webhook_request, make_yk_view, patch_redis_client) -> None:
     user_id = await ensure_user(10022)
     # Seed subscription
     async with sessionmaker() as session:
@@ -109,11 +110,12 @@ async def test_rebill_canceled_permanent_reason_disables_auto_renew(test_db_env,
         assert sub.auto_renew is False
         assert sub.payment_method_id is None
         u = (await session.execute(select(UserModel).where(UserModel.id == user_id))).scalar_one_or_none()
-        assert u is not None and not bool(u.is_premium)
+        assert u is not None
+        assert not bool(u.is_premium)
 
 
 @pytest.mark.asyncio
-async def test_rebill_canceled_permanent_restricted_and_expired(test_db_env, ensure_user, make_webhook_request, make_yk_view, patch_redis_client):
+async def test_rebill_canceled_permanent_restricted_and_expired(test_db_env, ensure_user, make_webhook_request, make_yk_view, patch_redis_client) -> None:
     # Covers payment_method_restricted and expired_on_confirmation
     for reason in ("payment_method_restricted", "expired_on_confirmation"):
         user_id = await ensure_user(11000 if reason == "payment_method_restricted" else 11001)
@@ -158,7 +160,7 @@ async def test_rebill_canceled_permanent_restricted_and_expired(test_db_env, ens
 
 
 @pytest.mark.asyncio
-async def test_rebill_canceled_idempotent_duplicate_no_extra_retry(test_db_env, ensure_user, make_webhook_request, make_yk_view, monkeypatch):
+async def test_rebill_canceled_idempotent_duplicate_no_extra_retry(test_db_env, ensure_user, make_webhook_request, make_yk_view, monkeypatch) -> None:
     user_id = await ensure_user(10023)
     # Seed subscription
     async with sessionmaker() as session:
@@ -210,7 +212,7 @@ async def test_rebill_canceled_idempotent_duplicate_no_extra_retry(test_db_env, 
 
 
 @pytest.mark.asyncio
-async def test_rebill_canceled_clears_submitted_key(test_db_env, ensure_user, make_webhook_request, make_yk_view, monkeypatch):
+async def test_rebill_canceled_clears_submitted_key(test_db_env, ensure_user, make_webhook_request, make_yk_view, monkeypatch) -> None:
     user_id = await ensure_user(10024)
     async with sessionmaker() as session:
         sub = SubscriptionModel(

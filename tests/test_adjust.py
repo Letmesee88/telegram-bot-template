@@ -1,12 +1,10 @@
-import pytest
 from bot.core.config import settings
-
-from bot.schemas.onboarding import OnboardingData, DailyPlan, ActivityLevel, Goal
+from bot.schemas.onboarding import ActivityLevel, DailyPlan, Goal, OnboardingData
 from bot.services.adjust import (
-    parse_adjustment_heuristic,
+    ParsedAdjustment,
     _apply_strength_defaults,
     apply_adjustment,
-    ParsedAdjustment,
+    parse_adjustment_heuristic,
 )
 
 
@@ -49,15 +47,16 @@ def _mk_plan(cal: int = 2000, p: int = 130, f: int = 60, c: int = 200) -> DailyP
     )
 
 
-def test_heuristic_percent_minus():
+def test_heuristic_percent_minus() -> None:
     text = "минус 10%"
     parsed = parse_adjustment_heuristic(text)
     assert parsed is not None
-    assert parsed.calories and parsed.calories["mode"] == "percent"
+    assert parsed.calories
+    assert parsed.calories["mode"] == "percent"
     assert float(parsed.calories["value"]) == -10.0
 
 
-def test_apply_strength_defaults_when_no_units_for_calories(monkeypatch):
+def test_apply_strength_defaults_when_no_units_for_calories(monkeypatch) -> None:
     # Force hybrid mode for this test to exercise strength defaults
     monkeypatch.setattr(settings, "ADJUST_ENGINE_MODE", "hybrid", raising=False)
     # No explicit numbers -> should remain None here; strength defaults handled only when mode is None
@@ -78,7 +77,7 @@ def test_apply_strength_defaults_when_no_units_for_calories(monkeypatch):
     assert float(pa2.calories["value"]) > 0
 
 
-def test_apply_adjustment_raise_calories_delta_changes_numbers():
+def test_apply_adjustment_raise_calories_delta_changes_numbers() -> None:
     data = _mk_data()
     base = _mk_plan(cal=1800, p=120, f=50, c=160)
     parsed = ParsedAdjustment(
@@ -98,7 +97,7 @@ def test_apply_adjustment_raise_calories_delta_changes_numbers():
     assert str(new_plan.calories) in explanation
 
 
-def test_apply_adjustment_activity_override_active_increases_calories():
+def test_apply_adjustment_activity_override_active_increases_calories() -> None:
     data = _mk_data(activity_level=ActivityLevel.light)
     base = _mk_plan(cal=1800)
     parsed = ParsedAdjustment(

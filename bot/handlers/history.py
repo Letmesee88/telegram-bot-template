@@ -1,36 +1,38 @@
 from __future__ import annotations
+import contextlib
+import hashlib
+from datetime import date as date_cls
+from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
+from typing import Any
 
-from datetime import datetime, timedelta, timezone, date as date_cls, time as dtime
-from typing import Any, List
-
-from aiogram import Router, types, F
+from aiogram import F, Router, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.i18n import gettext as _
+from loguru import logger
 from sqlalchemy import select
 
+from bot.analytics.types import BaseEvent, EventProperties
 from bot.database.database import sessionmaker
 from bot.database.models import MealModel, OnboardingAnswerModel
-from bot.services.users import get_user_tzinfo
+from bot.services.analytics import analytics
+from bot.services.charts import get_history_chart_png
 from bot.services.history import (
     aggregate_last7_days,
     get_week_advice,
-    weekday_ru,
     set_add_in_day_target,
+    weekday_ru,
 )
-from bot.services.charts import get_history_chart_png
-import hashlib
-from bot.services.analytics import analytics
-from bot.analytics.types import BaseEvent, EventProperties
-from loguru import logger
+from bot.services.users import get_user_tzinfo
 
 router = Router(name="history")
 
 
-def _kb_history_days(days: List[dict[str, Any]]) -> InlineKeyboardMarkup:
+def _kb_history_days(days: list[dict[str, Any]]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
-    for i, d in enumerate(days):
+    for _i, d in enumerate(days):
         ld: date_cls = d["date"]
         wd = weekday_ru(ld)
         text = f"{wd} {ld.strftime('%d.%m')}"
@@ -55,10 +57,7 @@ def _truncate_wordwise(s: str, limit: int) -> str:
         return "…"
     t = s[:limit]
     sp = t.rfind(" ")
-    if sp > 0:
-        t = t[:sp]
-    else:
-        t = s[: max(0, limit - 1)]
+    t = t[:sp] if sp > 0 else s[:max(0, limit - 1)]
     return t.rstrip() + "…"
 
 
@@ -81,8 +80,7 @@ def _compose_caption(lines: list[str], max_len: int = 1024) -> str:
     parts_count = (1 if pre else 0) + 1 + (1 if post else 0)
     newlines = parts_count - 1
     budget = max_len - len(pre) - len(post) - newlines
-    if budget < 0:
-        budget = 0
+    budget = max(budget, 0)
 
     adv_line = lines[adv_idx]
     prefix = "✨ Совет: "
@@ -123,7 +121,7 @@ async def cmd_history(message: types.Message) -> None:
             )
             await message.answer(text, reply_markup=kb)
             if analytics.logger:
-                try:
+                with contextlib.suppress(Exception):
                     analytics.fire_event(
                         BaseEvent(
                             user_id=user_id,
@@ -137,8 +135,6 @@ async def cmd_history(message: types.Message) -> None:
                             language=message.from_user.language_code if message.from_user else None,
                         )
                     )
-                except Exception:
-                    pass
             return
     except Exception:
         pass
@@ -171,10 +167,10 @@ async def cmd_history(message: types.Message) -> None:
         # chronological order left->right
         days_chrono = sorted(days_sorted, key=lambda x: x["date"])
         x_labels = [f"{weekday_ru(d['date'])} {d['date'].strftime('%d.%m')}" for d in days_chrono]
-        cal = [int(round(float(d.get("total_cal") or 0))) for d in days_chrono]
-        p = [int(round(float(d.get("total_p") or 0.0))) for d in days_chrono]
-        f = [int(round(float(d.get("total_f") or 0.0))) for d in days_chrono]
-        c = [int(round(float(d.get("total_c") or 0.0))) for d in days_chrono]
+        cal = [round(float(d.get("total_cal") or 0)) for d in days_chrono]
+        p = [round(float(d.get("total_p") or 0.0)) for d in days_chrono]
+        f = [round(float(d.get("total_f") or 0.0)) for d in days_chrono]
+        c = [round(float(d.get("total_c") or 0.0)) for d in days_chrono]
 
         # fetch norms from onboarding plan
         norms: dict[str, int] | None = None
@@ -197,10 +193,8 @@ async def cmd_history(message: types.Message) -> None:
         png = await get_history_chart_png(user_id, ph, x_labels=x_labels, cal=cal, p=p, f=f, c=c, norms=norms)
         if png:
             logger.info("history.png_ready | user_id={} | size={} bytes", user_id, len(png))
-            try:
+            with contextlib.suppress(Exception):
                 await placeholder.delete()
-            except Exception:
-                pass
             caption = _compose_caption(lines, 1024)
             await message.answer_photo(
                 types.BufferedInputFile(png, filename="history_7d.png"),
@@ -222,7 +216,7 @@ async def cmd_history(message: types.Message) -> None:
 
     # Analytics
     if analytics.logger and message.from_user:
-        try:
+        with contextlib.suppress(Exception):
             analytics.fire_event(
                 BaseEvent(
                     user_id=message.from_user.id,
@@ -236,8 +230,6 @@ async def cmd_history(message: types.Message) -> None:
                     language=message.from_user.language_code if message.from_user else None,
                 )
             )
-        except Exception:
-            pass
 
 
 @router.callback_query(F.data == "history:back")
@@ -252,20 +244,16 @@ async def cb_history_back(callback: types.CallbackQuery) -> None:
                 select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
             )
         if not bool(exists):
-            try:
+            with contextlib.suppress(Exception):
                 await callback.answer()
-            except Exception:
-                pass
             text = _("Завершите онбординг за пару минут, чтобы получить полный доступ к данным")
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
             )
-            try:
+            with contextlib.suppress(Exception):
                 await callback.message.answer(text, reply_markup=kb)
-            except Exception:
-                pass
             if analytics.logger and callback.from_user:
-                try:
+                with contextlib.suppress(Exception):
                     analytics.fire_event(
                         BaseEvent(
                             user_id=callback.from_user.id,
@@ -276,11 +264,9 @@ async def cb_history_back(callback: types.CallbackQuery) -> None:
                                 command=None,
                                 text="history:back",
                             ),
-                            language=getattr(callback.from_user, 'language_code', None),
+                            language=getattr(callback.from_user, "language_code", None),
                         )
                     )
-                except Exception:
-                    pass
             return
     except Exception:
         pass
@@ -304,18 +290,16 @@ async def cb_history_back(callback: types.CallbackQuery) -> None:
         "",
     ]
     kb = _kb_history_days(days_sorted)
-    try:
+    with contextlib.suppress(Exception):
         await callback.message.edit_text(text="💬 Еще секундочку...", reply_markup=None)
-    except Exception:
-        pass
 
     try:
         days_chrono = sorted(days_sorted, key=lambda x: x["date"])
         x_labels = [f"{weekday_ru(d['date'])} {d['date'].strftime('%d.%m')}" for d in days_chrono]
-        cal = [int(round(float(d.get("total_cal") or 0))) for d in days_chrono]
-        p = [int(round(float(d.get("total_p") or 0.0))) for d in days_chrono]
-        f = [int(round(float(d.get("total_f") or 0.0))) for d in days_chrono]
-        c = [int(round(float(d.get("total_c") or 0.0))) for d in days_chrono]
+        cal = [round(float(d.get("total_cal") or 0)) for d in days_chrono]
+        p = [round(float(d.get("total_p") or 0.0)) for d in days_chrono]
+        f = [round(float(d.get("total_f") or 0.0)) for d in days_chrono]
+        c = [round(float(d.get("total_c") or 0.0)) for d in days_chrono]
 
         norms: dict[str, int] | None = None
         try:
@@ -337,10 +321,8 @@ async def cb_history_back(callback: types.CallbackQuery) -> None:
         png = await get_history_chart_png(user_id, ph, x_labels=x_labels, cal=cal, p=p, f=f, c=c, norms=norms)
         if png:
             logger.info("history.png_ready_cb | user_id={} | size={} bytes", user_id, len(png))
-            try:
+            with contextlib.suppress(Exception):
                 await callback.message.delete()
-            except Exception:
-                pass
             caption = _compose_caption(lines, 1024)
             await callback.message.answer_photo(
                 types.BufferedInputFile(png, filename="history_7d.png"),
@@ -376,20 +358,16 @@ async def cb_history_day(callback: types.CallbackQuery) -> None:
                 select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
             )
         if not bool(exists):
-            try:
+            with contextlib.suppress(Exception):
                 await callback.answer()
-            except Exception:
-                pass
             text = _("Завершите онбординг за пару минут, чтобы получить полный доступ к данным")
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
             )
-            try:
+            with contextlib.suppress(Exception):
                 await callback.message.answer(text, reply_markup=kb)
-            except Exception:
-                pass
             if analytics.logger and callback.from_user:
-                try:
+                with contextlib.suppress(Exception):
                     analytics.fire_event(
                         BaseEvent(
                             user_id=callback.from_user.id,
@@ -400,11 +378,9 @@ async def cb_history_day(callback: types.CallbackQuery) -> None:
                                 command=None,
                                 text="history:day",
                             ),
-                            language=getattr(callback.from_user, 'language_code', None),
+                            language=getattr(callback.from_user, "language_code", None),
                         )
                     )
-                except Exception:
-                    pass
             return
     except Exception:
         pass
@@ -526,7 +502,7 @@ async def cb_history_day(callback: types.CallbackQuery) -> None:
 
     # Analytics
     if analytics.logger and callback.from_user:
-        try:
+        with contextlib.suppress(Exception):
             analytics.fire_event(
                 BaseEvent(
                     user_id=callback.from_user.id,
@@ -537,11 +513,9 @@ async def cb_history_day(callback: types.CallbackQuery) -> None:
                         text=f"date={target_local_date.isoformat()}, cal={total_cal}",
                         command=None,
                     ),
-                    language=getattr(callback.from_user, 'language_code', None),
+                    language=getattr(callback.from_user, "language_code", None),
                 )
             )
-        except Exception:
-            pass
 
 
 @router.callback_query(F.data.regexp(r"^history:add:(\d{4}-\d{2}-\d{2})$"))
@@ -556,20 +530,16 @@ async def cb_history_add(callback: types.CallbackQuery) -> None:
                 select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
             )
         if not bool(exists):
-            try:
+            with contextlib.suppress(Exception):
                 await callback.answer()
-            except Exception:
-                pass
             text = _("Завершите онбординг за пару минут, чтобы получить полный доступ к данным")
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
             )
-            try:
+            with contextlib.suppress(Exception):
                 await callback.message.answer(text, reply_markup=kb)
-            except Exception:
-                pass
             if analytics.logger and callback.from_user:
-                try:
+                with contextlib.suppress(Exception):
                     analytics.fire_event(
                         BaseEvent(
                             user_id=callback.from_user.id,
@@ -580,11 +550,9 @@ async def cb_history_add(callback: types.CallbackQuery) -> None:
                                 command=None,
                                 text="history:add",
                             ),
-                            language=getattr(callback.from_user, 'language_code', None),
+                            language=getattr(callback.from_user, "language_code", None),
                         )
                     )
-                except Exception:
-                    pass
             return
     except Exception:
         pass
@@ -605,7 +573,7 @@ async def cb_history_add(callback: types.CallbackQuery) -> None:
         d_disp = datetime.fromisoformat(target).strftime("%d.%m.%Y")
     except Exception:
         d_disp = target
-    text = _((f"Добавление еды в {d_disp}\n🍗 Отправь фото еды или опиши текстом."))
+    text = _(f"Добавление еды в {d_disp}\n🍗 Отправь фото еды или опиши текстом.")
     kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=_("◀️ Вернуться назад"), callback_data=f"history:day:{target}")]]
     )
@@ -621,7 +589,7 @@ async def cb_history_add(callback: types.CallbackQuery) -> None:
         await callback.message.answer(text, reply_markup=kb)
 
     if analytics.logger and callback.from_user:
-        try:
+        with contextlib.suppress(Exception):
             analytics.fire_event(
                 BaseEvent(
                     user_id=callback.from_user.id,
@@ -632,8 +600,6 @@ async def cb_history_add(callback: types.CallbackQuery) -> None:
                         text=f"date={target}",
                         command=None,
                     ),
-                    language=getattr(callback.from_user, 'language_code', None),
+                    language=getattr(callback.from_user, "language_code", None),
                 )
             )
-        except Exception:
-            pass

@@ -1,7 +1,7 @@
 import asyncio
-import sys
 import os
-from typing import Dict, Any
+import sys
+from typing import Any
 
 # Make repo root importable when running as: python tests/manual_foodai_edit.py
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -12,7 +12,7 @@ if _ROOT_DIR not in sys.path:
 from bot.services import foodai
 
 
-def _make_base() -> Dict[str, Any]:
+def _make_base() -> dict[str, Any]:
     # Base meal approximates the screenshot: pasta + chicken + tomatoes + croutons
     return {
         "title": "Паста с курицей, вялеными помидорами и сухариками",
@@ -39,14 +39,14 @@ async def _safe_foodness(text: str | None) -> bool | None:
     return True
 
 
-def _install_patches():
+def _install_patches() -> None:
     # Avoid any OpenAI calls in tests
     foodai._use_openai = lambda: False  # type: ignore
     # Monkeypatch foodness classifier to local stub
     foodai._foodness_text = _safe_foodness  # type: ignore
 
 
-async def _call(instr: str) -> Dict[str, Any]:
+async def _call(instr: str) -> dict[str, Any]:
     base = _make_base()
     return await foodai.refine_meal(base, instr)
 
@@ -59,7 +59,7 @@ def _find_item(items, needle: str):
     return None
 
 
-async def test_add_parsley_40g():
+async def test_add_parsley_40g() -> None:
     r = await _call("добавь петрушку 40 г")
     assert not r.get("error"), f"unexpected error: {r}"
     it = _find_item(r.get("items") or [], "петруш")
@@ -68,7 +68,7 @@ async def test_add_parsley_40g():
     assert 39.0 <= w <= 41.0, f"expected ~40g, got {w}"
 
 
-async def test_add_basil_default():
+async def test_add_basil_default() -> None:
     r = await _call("добавь базилик")
     assert not r.get("error"), f"unexpected error: {r}"
     it = _find_item(r.get("items") or [], "базилик")
@@ -77,7 +77,7 @@ async def test_add_basil_default():
     assert 4.0 <= w <= 6.5, f"expected ~5g, got {w}"
 
 
-async def test_add_greens_default():
+async def test_add_greens_default() -> None:
     r = await _call("добавь зелень")
     assert not r.get("error"), f"unexpected error: {r}"
     it = _find_item(r.get("items") or [], "зелень")
@@ -86,7 +86,7 @@ async def test_add_greens_default():
     assert 4.0 <= w <= 6.5, f"expected ~5g, got {w}"
 
 
-async def test_add_sauce_default():
+async def test_add_sauce_default() -> None:
     r = await _call("добавь соус")
     assert not r.get("error"), f"unexpected error: {r}"
     it = _find_item(r.get("items") or [], "соус")
@@ -95,7 +95,7 @@ async def test_add_sauce_default():
     assert 18.0 <= w <= 22.5, f"expected ~20g, got {w}"
 
 
-async def test_replace_chicken_to_fish():
+async def test_replace_chicken_to_fish() -> None:
     r = await _call("замени курицу на рыбу")
     assert not r.get("error"), f"unexpected error: {r}"
     items = r.get("items") or []
@@ -106,7 +106,7 @@ async def test_replace_chicken_to_fish():
     assert 140.0 <= w <= 160.0, f"fish weight should inherit ~150g, got {w}"
 
 
-async def test_add_unit_first_honey_tbsp():
+async def test_add_unit_first_honey_tbsp() -> None:
     r = await _call("добавь 1 ст.л. мёда")
     assert not r.get("error"), f"unexpected error: {r}"
     it = _find_item(r.get("items") or [], "мёд")
@@ -116,7 +116,7 @@ async def test_add_unit_first_honey_tbsp():
     assert 19.0 <= w <= 23.5, f"expected ~21g honey, got {w}"
 
 
-async def test_add_soy_sauce_teaspoons():
+async def test_add_soy_sauce_teaspoons() -> None:
     r = await _call("добавь соевый соус 2 ч.л.")
     assert not r.get("error"), f"unexpected error: {r}"
     it = _find_item(r.get("items") or [], "соевый соус")
@@ -126,7 +126,7 @@ async def test_add_soy_sauce_teaspoons():
     assert 9.0 <= w <= 14.5, f"expected ~12g soy sauce, got {w}"
 
 
-async def test_add_pinch_salt():
+async def test_add_pinch_salt() -> None:
     r = await _call("добавь щепотку соли")
     assert not r.get("error"), f"unexpected error: {r}"
     it = _find_item(r.get("items") or [], "соль")
@@ -135,7 +135,7 @@ async def test_add_pinch_salt():
     assert 0.2 <= w <= 0.7, f"expected ~0.4g pinch, got {w}"
 
 
-async def test_add_handful_nuts():
+async def test_add_handful_nuts() -> None:
     r = await _call("добавь горсть орехов")
     assert not r.get("error"), f"unexpected error: {r}"
     it = _find_item(r.get("items") or [], "орех")
@@ -144,7 +144,7 @@ async def test_add_handful_nuts():
     assert 25.0 <= w <= 35.0, f"expected ~30g handful of nuts, got {w}"
 
 
-async def test_add_cup_kefir():
+async def test_add_cup_kefir() -> None:
     r = await _call("добавь 1 стакан кефира")
     assert not r.get("error"), f"unexpected error: {r}"
     it = _find_item(r.get("items") or [], "кефир")
@@ -153,7 +153,7 @@ async def test_add_cup_kefir():
     assert 235.0 <= w <= 270.0, f"expected ~250g kefir, got {w}"
 
 
-async def test_replace_croutons_to_bread():
+async def test_replace_croutons_to_bread() -> None:
     r = await _call("замени сухарики на хлеб")
     assert not r.get("error"), f"unexpected error: {r}"
     items = r.get("items") or []
@@ -161,7 +161,7 @@ async def test_replace_croutons_to_bread():
     assert not _find_item(items, "сухар"), "croutons still present"
 
 
-async def test_change_qty_pasta():
+async def test_change_qty_pasta() -> None:
     r = await _call("паста 300 г")
     assert not r.get("error"), f"unexpected error: {r}"
     it = _find_item(r.get("items") or [], "паста")
@@ -170,12 +170,12 @@ async def test_change_qty_pasta():
     assert 295.0 <= w <= 305.0, f"expected 300g pasta, got {w}"
 
 
-async def test_not_food_rejected():
+async def test_not_food_rejected() -> None:
     r = await _call("добавь телефон 1 г")
     assert r.get("error") == "not_food", f"expected not_food error, got {r}"
 
 
-async def main():
+async def main() -> None:
     _install_patches()
     tests = [
         test_add_parsley_40g,
@@ -194,20 +194,14 @@ async def main():
     ]
     failed = 0
     for t in tests:
-        name = t.__name__
         try:
             await t()
-            print(f"[OK] {name}")
-        except AssertionError as e:
+        except AssertionError:
             failed += 1
-            print(f"[FAIL] {name}: {e}")
-        except Exception as e:
+        except Exception:
             failed += 1
-            print(f"[ERROR] {name}: {e}")
     if failed:
-        print(f"\nFAILED: {failed} test(s)")
         sys.exit(1)
-    print("\nAll tests passed.")
 
 
 if __name__ == "__main__":

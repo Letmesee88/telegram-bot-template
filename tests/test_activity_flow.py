@@ -1,19 +1,19 @@
 import pytest
 
-from bot.schemas.onboarding import OnboardingData, ActivityLevel, Goal, Gender
-from bot.services.plan import calculate_daily_plan
 from bot.handlers import onboarding as onboarding_mod
+from bot.schemas.onboarding import ActivityLevel, Gender, Goal, OnboardingData
+from bot.services.plan import calculate_daily_plan
 
 
 class DummyState:
-    def __init__(self):
+    def __init__(self) -> None:
         self._data = {}
         self._state = None
 
-    async def update_data(self, **kwargs):
+    async def update_data(self, **kwargs) -> None:
         self._data.update(kwargs)
 
-    async def set_state(self, state):
+    async def set_state(self, state) -> None:
         # aiogram stores internal string value; we keep it as given
         self._state = state
 
@@ -25,49 +25,49 @@ class DummyState:
 
 
 class DummyChat:
-    def __init__(self, chat_id=1, chat_type="private"):
+    def __init__(self, chat_id=1, chat_type="private") -> None:
         self.id = chat_id
         self.type = chat_type
 
 
 class DummyMessage:
-    def __init__(self, text="", chat_id=1):
+    def __init__(self, text="", chat_id=1) -> None:
         self.text = text
         self.chat = DummyChat(chat_id)
 
-    async def answer(self, *args, **kwargs):
+    async def answer(self, *args, **kwargs) -> None:
         return None
 
-    async def edit_reply_markup(self, *args, **kwargs):
+    async def edit_reply_markup(self, *args, **kwargs) -> None:
         return None
 
 
 class DummyFromUser:
-    def __init__(self, user_id=1, language_code="ru"):
+    def __init__(self, user_id=1, language_code="ru") -> None:
         self.id = user_id
         self.language_code = language_code
 
 
 class DummyCall:
-    def __init__(self, data: str, user_id=1):
+    def __init__(self, data: str, user_id=1) -> None:
         self.data = data
         self.from_user = DummyFromUser(user_id)
         self.message = DummyMessage(chat_id=user_id)
 
-    async def answer(self, *args, **kwargs):
+    async def answer(self, *args, **kwargs) -> None:
         return None
 
 
 @pytest.mark.asyncio
-async def test_cb_activity_select_sets_level_and_moves_to_goal(monkeypatch):
+async def test_cb_activity_select_sets_level_and_moves_to_goal(monkeypatch) -> None:
     state = DummyState()
 
     called = {"ask_goal": False, "fired": False}
 
-    async def fake_ask_goal(message):
+    async def fake_ask_goal(message) -> None:
         called["ask_goal"] = True
 
-    def fake_fire_event(evt):
+    def fake_fire_event(evt) -> None:
         called["fired"] = True
 
     monkeypatch.setattr(onboarding_mod, "_ask_goal", fake_ask_goal)
@@ -85,17 +85,17 @@ async def test_cb_activity_select_sets_level_and_moves_to_goal(monkeypatch):
     st = await state.get_state()
     # OnboardingStates.goal is a State; module uses set_state(OnboardingStates.goal)
     # We accept either object equality or stringy value
-    assert st == onboarding_mod.OnboardingStates.goal or st == onboarding_mod.OnboardingStates.goal.state
+    assert st in (onboarding_mod.OnboardingStates.goal, onboarding_mod.OnboardingStates.goal.state)
     assert called["ask_goal"] is True
     assert called["fired"] is True
 
 
 @pytest.mark.asyncio
-async def test_height_set_shows_activity_buttons(monkeypatch):
+async def test_height_set_shows_activity_buttons(monkeypatch) -> None:
     # Replace _ask_activity to capture call
     called = {"ask_activity": False}
 
-    async def fake_ask_activity(message):
+    async def fake_ask_activity(message) -> None:
         called["ask_activity"] = True
 
     monkeypatch.setattr(onboarding_mod, "_ask_activity", fake_ask_activity)
@@ -107,11 +107,11 @@ async def test_height_set_shows_activity_buttons(monkeypatch):
 
     # Verify we switched to activity state and asked activity
     st = await state.get_state()
-    assert st == onboarding_mod.OnboardingStates.activity or st == onboarding_mod.OnboardingStates.activity.state
+    assert st in (onboarding_mod.OnboardingStates.activity, onboarding_mod.OnboardingStates.activity.state)
     assert called["ask_activity"] is True
 
 
-def test_calculate_plan_no_text_uses_level():
+def test_calculate_plan_no_text_uses_level() -> None:
     data = OnboardingData(
         user_id=1,
         gender=Gender.male,
@@ -128,7 +128,7 @@ def test_calculate_plan_no_text_uses_level():
     # For maintain, target calories should equal TDEE = BMR * multiplier
     # BMR (Mifflin): 10*80 + 6.25*180 - 5*30 + 5 = 800 + 1125 - 150 + 5 = 1780
     # Multiplier for active = 1.725
-    expected_tdee = int(round(1780 * 1.725))
+    expected_tdee = round(1780 * 1.725)
     assert plan.tdee == expected_tdee
     assert plan.calories == expected_tdee
 
@@ -141,15 +141,15 @@ def test_calculate_plan_no_text_uses_level():
     "active",
     "athlete",
 ])
-async def test_cb_activity_select_all_levels(monkeypatch, code):
+async def test_cb_activity_select_all_levels(monkeypatch, code) -> None:
     state = DummyState()
 
     called = {"ask_goal": False, "fired": False}
 
-    async def fake_ask_goal(message):
+    async def fake_ask_goal(message) -> None:
         called["ask_goal"] = True
 
-    def fake_fire_event(evt):
+    def fake_fire_event(evt) -> None:
         called["fired"] = True
 
     monkeypatch.setattr(onboarding_mod, "_ask_goal", fake_ask_goal)
@@ -163,6 +163,6 @@ async def test_cb_activity_select_all_levels(monkeypatch, code):
     data = await state.get_data()
     assert data.get("activity_level") == code
     st = await state.get_state()
-    assert st == onboarding_mod.OnboardingStates.goal or st == onboarding_mod.OnboardingStates.goal.state
+    assert st in (onboarding_mod.OnboardingStates.goal, onboarding_mod.OnboardingStates.goal.state)
     assert called["ask_goal"] is True
     assert called["fired"] is True

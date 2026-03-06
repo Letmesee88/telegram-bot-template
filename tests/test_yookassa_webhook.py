@@ -1,15 +1,16 @@
-import asyncio
 import types
-import json
-from aiohttp import web
-from aiohttp.test_utils import TestServer, TestClient
-import pytest
 
-from bot.handlers.yookassa_webhook import YooKassaWebhookView as View, Payment as YKPayment, settings as app_settings
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
+from bot.handlers.yookassa_webhook import Payment as YKPayment
+from bot.handlers.yookassa_webhook import YooKassaWebhookView as View
+from bot.handlers.yookassa_webhook import settings as app_settings
 
 
 class _FakeResult:
-    def __init__(self, value=None):
+    def __init__(self, value=None) -> None:
         self._v = value
 
     def scalar_one_or_none(self):
@@ -17,7 +18,7 @@ class _FakeResult:
 
 
 class _FakeSession:
-    def __init__(self, result=None, on_execute=None):
+    def __init__(self, result=None, on_execute=None) -> None:
         self._result = result
         self._on_execute = on_execute
         self.executed = []
@@ -34,13 +35,13 @@ class _FakeSession:
         self.executed.append((args, kwargs))
         return _FakeResult(self._result)
 
-    async def commit(self):
+    async def commit(self) -> None:
         return None
 
-    async def flush(self):
+    async def flush(self) -> None:
         return None
 
-    def add(self, *args, **kwargs):
+    def add(self, *args, **kwargs) -> None:
         return None
 
 
@@ -58,7 +59,7 @@ async def _make_client():
         text = await resp.text()
         return resp.status, text
 
-    async def _close():
+    async def _close() -> None:
         await client.close()
         await server.close()
 
@@ -66,7 +67,7 @@ async def _make_client():
 
 
 @pytest.mark.asyncio
-async def test_cancel_ignored_when_payment_not_in_db(monkeypatch):
+async def test_cancel_ignored_when_payment_not_in_db(monkeypatch) -> None:
     # Ensure YooKassa config is present
     app_settings.YOOKASSA_SHOP_ID = "test"
     app_settings.YOOKASSA_SECRET_KEY = "test"
@@ -105,13 +106,13 @@ async def test_cancel_ignored_when_payment_not_in_db(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cancel_updates_payment_when_verified(monkeypatch):
+async def test_cancel_updates_payment_when_verified(monkeypatch) -> None:
     app_settings.YOOKASSA_SHOP_ID = "test"
     app_settings.YOOKASSA_SECRET_KEY = "test"
 
     # YooKassa returns metadata that marks rebill and links to subscription
     class _YKObj:
-        def __init__(self):
+        def __init__(self) -> None:
             self.metadata = {"user_id": 100, "rebill": True, "subscription_id": 42, "period_key": "2025-12"}
 
     monkeypatch.setattr(YKPayment, "find_one", lambda pid: _YKObj())
@@ -125,7 +126,7 @@ async def test_cancel_updates_payment_when_verified(monkeypatch):
 
     updated = {"called": False, "values": None}
 
-    def _on_execute(args, kwargs):
+    def _on_execute(args, kwargs) -> None:
         # Capture UPDATE calls (very loose check)
         txt = str(args[0])
         if "UPDATE" in txt or "update" in txt.lower():
@@ -150,22 +151,22 @@ async def test_cancel_updates_payment_when_verified(monkeypatch):
 
     # Stub bot to avoid real Telegram calls
     class _Bot:
-        async def send_message(self, *a, **k):
+        async def send_message(self, *a, **k) -> None:
             return None
 
     monkeypatch.setattr(mod, "bot", _Bot())
 
     # Stub redis client
     class _Redis:
-        async def delete(self, *a, **k):
+        async def delete(self, *a, **k) -> int:
             return 1
-        async def zadd(self, *a, **k):
+        async def zadd(self, *a, **k) -> int:
             return 1
-        async def incr(self, *a, **k):
+        async def incr(self, *a, **k) -> int:
             return 1
-        async def expire(self, *a, **k):
+        async def expire(self, *a, **k) -> int:
             return 1
-        async def set(self, *a, **k):
+        async def set(self, *a, **k) -> bool:
             return True
 
     monkeypatch.setattr(mod, "redis_client", _Redis())

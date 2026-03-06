@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import pytest
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from sqlalchemy import insert
-
-from bot.database.database import sessionmaker
 from bot.database.models import SubscriptionModel
 
 
 @pytest.mark.asyncio
-async def test_scheduler_past_due_notification_has_pay_button(async_sessionmaker, ensure_user):
+async def test_scheduler_past_due_notification_has_pay_button(async_sessionmaker, ensure_user) -> None:
     from bot.background.recurring_scheduler import _mark_past_due_and_notify
 
     user_id = await ensure_user(10021)
@@ -28,7 +24,7 @@ async def test_scheduler_past_due_notification_has_pay_button(async_sessionmaker
     sent: list[dict] = []
 
     class _Bot:
-        async def send_message(self, uid: int, text: str, **kwargs):
+        async def send_message(self, uid: int, text: str, **kwargs) -> None:
             sent.append({"user_id": uid, "text": text, "kwargs": kwargs})
 
     bot = _Bot()
@@ -42,13 +38,15 @@ async def test_scheduler_past_due_notification_has_pay_button(async_sessionmaker
     kb = msg["kwargs"].get("reply_markup")
     assert isinstance(kb, InlineKeyboardMarkup), "reply_markup must be InlineKeyboardMarkup"
     # Single row, single button expected
-    assert kb.inline_keyboard and kb.inline_keyboard[0] and isinstance(kb.inline_keyboard[0][0], InlineKeyboardButton)
+    assert kb.inline_keyboard
+    assert kb.inline_keyboard[0]
+    assert isinstance(kb.inline_keyboard[0][0], InlineKeyboardButton)
     btn = kb.inline_keyboard[0][0]
     assert btn.callback_data == "sale:pay:month"
 
 
 @pytest.mark.asyncio
-async def test_webhook_rebill_canceled_has_pay_button(async_sessionmaker, ensure_user, make_webhook_request, make_yk_view, monkeypatch):
+async def test_webhook_rebill_canceled_has_pay_button(async_sessionmaker, ensure_user, make_webhook_request, make_yk_view, monkeypatch) -> None:
     from bot.core.loader import bot as real_bot
 
     user_id = await ensure_user(10022)
@@ -64,7 +62,7 @@ async def test_webhook_rebill_canceled_has_pay_button(async_sessionmaker, ensure
     # Patch bot.send_message to capture reply_markup
     sent: list[dict] = []
 
-    async def _fake_send_message(uid: int, text: str, **kwargs):
+    async def _fake_send_message(uid: int, text: str, **kwargs) -> None:
         sent.append({"user_id": uid, "text": text, "kwargs": kwargs})
 
     monkeypatch.setattr(real_bot, "send_message", _fake_send_message, raising=True)
@@ -88,13 +86,14 @@ async def test_webhook_rebill_canceled_has_pay_button(async_sessionmaker, ensure
     view = make_yk_view(req)
 
     # Act
-    resp = await view.post()
+    await view.post()
 
     # Assert message and keyboard
     assert sent, "No message sent by webhook cancellation handler"
     kb = sent[-1]["kwargs"].get("reply_markup")
     assert isinstance(kb, InlineKeyboardMarkup), "reply_markup must be InlineKeyboardMarkup"
-    assert kb.inline_keyboard and kb.inline_keyboard[0]
+    assert kb.inline_keyboard
+    assert kb.inline_keyboard[0]
     btn = kb.inline_keyboard[0][0]
     assert isinstance(btn, InlineKeyboardButton)
     assert btn.callback_data == "sale:pay:year"

@@ -1,34 +1,32 @@
 from __future__ import annotations
-
+import contextlib
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta, time as dtime, date
-from typing import Optional, Tuple, List
+from datetime import date, datetime, timezone
 
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
-from bot.database.database import sessionmaker
 from bot.core.loader import redis_client
-from bot.database.models import WeightLogModel, OnboardingAnswerModel
+from bot.database.database import sessionmaker
+from bot.database.models import OnboardingAnswerModel, WeightLogModel
 from bot.services.users import get_user_tzinfo
 
 
 @dataclass
 class WeightSummary:
-    current: Optional[float]
-    goal: Optional[float]
-    left: Optional[float]
-    progress_pct: Optional[float]
+    current: float | None
+    goal: float | None
+    left: float | None
+    progress_pct: float | None
 
 
-async def _now_local_and_date(user_id: int) -> Tuple[datetime, date]:
+async def _now_local_and_date(user_id: int) -> tuple[datetime, date]:
     async with sessionmaker() as session:
         tz = await get_user_tzinfo(session, user_id)
         now_local = datetime.now(tz)
         return now_local, now_local.date()
 
 
-def parse_weight_input(s: str) -> Optional[float]:
+def parse_weight_input(s: str) -> float | None:
     if not isinstance(s, str):
         return None
     s = s.strip().replace(",", ".")
@@ -41,7 +39,7 @@ def parse_weight_input(s: str) -> Optional[float]:
     return round(v, 1)
 
 
-async def save_weight(user_id: int, value_kg: float) -> Tuple[float, date]:
+async def save_weight(user_id: int, value_kg: float) -> tuple[float, date]:
     now_local, local_date = await _now_local_and_date(user_id)
     recorded_at_utc = now_local.astimezone(timezone.utc)
     async with sessionmaker() as session:
@@ -66,14 +64,12 @@ async def save_weight(user_id: int, value_kg: float) -> Tuple[float, date]:
             session.add(wl)
         await session.commit()
     # Invalidate account summary cache so UI reflects the change immediately
-    try:
+    with contextlib.suppress(Exception):
         await redis_client.delete(f"account:summary:{user_id}")
-    except Exception:
-        pass
     return float(value_kg), local_date
 
 
-async def get_current_weight(user_id: int) -> Optional[float]:
+async def get_current_weight(user_id: int) -> float | None:
     async with sessionmaker() as session:
         wl = await session.scalar(
             select(WeightLogModel)
@@ -94,7 +90,7 @@ async def get_current_weight(user_id: int) -> Optional[float]:
         return None
 
 
-async def get_goal_weight(user_id: int) -> Optional[float]:
+async def get_goal_weight(user_id: int) -> float | None:
     async with sessionmaker() as session:
         oa = await session.scalar(select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id))
         data = (oa.data if oa and isinstance(getattr(oa, "data", None), dict) else {}) or {}
@@ -106,7 +102,7 @@ async def get_goal_weight(user_id: int) -> Optional[float]:
         return None
 
 
-async def get_start_weight(user_id: int) -> Optional[float]:
+async def get_start_weight(user_id: int) -> float | None:
     async with sessionmaker() as session:
         oa = await session.scalar(select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id))
         data = (oa.data if oa and isinstance(getattr(oa, "data", None), dict) else {}) or {}
@@ -133,7 +129,7 @@ async def get_start_weight(user_id: int) -> Optional[float]:
         return None
 
 
-def compute_progress(start_w: Optional[float], current_w: Optional[float], goal_w: Optional[float]) -> Optional[float]:
+def compute_progress(start_w: float | None, current_w: float | None, goal_w: float | None) -> float | None:
     if start_w is None or current_w is None or goal_w is None or goal_w == start_w:
         return None
     if goal_w < start_w:
@@ -154,7 +150,7 @@ async def build_my_weight_text(user_id: int) -> str:
     goal = await get_goal_weight(user_id)
     start = await get_start_weight(user_id)
     left = (abs(current - goal) if (current is not None and goal is not None) else None)
-    progress = compute_progress(start, current, goal)
+    compute_progress(start, current, goal)
 
     lines: list[str] = ["⚖️ Мой вес", ""]
     lines.append(f"• Текущий вес: {current:.1f} кг" if current is not None else "• Текущий вес: Нет данных")
@@ -185,7 +181,7 @@ async def build_history_page(user_id: int, page: int, page_size: int = 20) -> We
             .offset(offset)
             .limit(page_size + 1)
         )
-        rows: List[WeightLogModel] = list(res.scalars().all())
+        rows: list[WeightLogModel] = list(res.scalars().all())
     has_next = len(rows) > page_size
     rows = rows[:page_size]
     has_prev = page > 1

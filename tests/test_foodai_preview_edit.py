@@ -32,11 +32,13 @@ async def test_preview_hides_sources_analysis_itogo_on_edit(monkeypatch: pytest.
 
     assert isinstance(txt, str)
     # Always present
-    assert "Калории:" in txt and "⚖️ Вес:" in txt
+    assert "Калории:" in txt
+    assert "⚖️ Вес:" in txt
 
     # Hidden blocks for edit
     assert "------------------------------" not in txt
     assert "📋 Источники данных:" not in txt
     assert "🔍 Анализ:" not in txt
-    assert "Уверенность:" not in txt and "Внимание: низкая уверенность" not in txt
+    assert "Уверенность:" not in txt
+    assert "Внимание: низкая уверенность" not in txt
     assert "📊 Итого:" not in txt

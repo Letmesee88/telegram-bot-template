@@ -9,7 +9,7 @@ from bot.services.weight import save_weight
 
 
 @pytest.mark.asyncio
-async def test_account_summary_uses_log_current_and_no_progress_line(ensure_user):
+async def test_account_summary_uses_log_current_and_no_progress_line(ensure_user) -> None:
     user_id = await ensure_user(user_id=21001)
 
     # Setup onboarding: start=100, goal=80, current in onboarding=100
@@ -40,7 +40,7 @@ async def test_account_summary_uses_log_current_and_no_progress_line(ensure_user
 
 
 @pytest.mark.asyncio
-async def test_account_summary_no_logs_fallbacks_to_onboarding_weight(ensure_user):
+async def test_account_summary_no_logs_fallbacks_to_onboarding_weight(ensure_user) -> None:
     user_id = await ensure_user(user_id=21002)
 
     # Onboarding only, no logs

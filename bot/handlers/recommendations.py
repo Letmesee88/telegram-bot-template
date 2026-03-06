@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import re
 import time
 from typing import Any
@@ -7,12 +6,11 @@ from typing import Any
 from aiogram import F, Router, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from bot.analytics.types import BaseEvent, EventProperties, Plan
 from bot.core.config import settings
 from bot.core.loader import redis_client
 from bot.services.analytics import analytics
-from bot.analytics.types import BaseEvent, EventProperties, Plan
 from bot.services.recommender import recommend
-
 
 router = Router()
 
@@ -149,7 +147,7 @@ async def cb_rec_start(callback: types.CallbackQuery) -> None:
                     chat_type=callback.message.chat.type if callback.message else None,
                     text=f"meal_id={meal_id}",
                 ),
-                language=getattr(callback.from_user, 'language_code', None),
+                language=getattr(callback.from_user, "language_code", None),
                 plan=Plan(branch="Recommend", source="FoodAI", version="v1"),
             )
         )
@@ -186,7 +184,7 @@ async def cb_rec_type(callback: types.CallbackQuery) -> None:
                     chat_type=callback.message.chat.type if callback.message else None,
                     text=f"type={meal_type}",
                 ),
-                language=getattr(callback.from_user, 'language_code', None),
+                language=getattr(callback.from_user, "language_code", None),
                 plan=Plan(branch="Recommend", source="FoodAI", version="v1"),
             )
         )
@@ -204,7 +202,7 @@ async def cb_rec_type(callback: types.CallbackQuery) -> None:
                             chat_type=callback.message.chat.type if callback.message else None,
                             text=f"type={meal_type}; reason=rate_limited",
                         ),
-                        language=getattr(callback.from_user, 'language_code', None),
+                        language=getattr(callback.from_user, "language_code", None),
                         plan=Plan(branch="Recommend", source="FoodAI", version="v1"),
                     )
                 )
@@ -227,7 +225,7 @@ async def cb_rec_type(callback: types.CallbackQuery) -> None:
                                 chat_type=callback.message.chat.type if callback.message else None,
                                 text=f"type={meal_type}; reason={reason}",
                             ),
-                            language=getattr(callback.from_user, 'language_code', None),
+                            language=getattr(callback.from_user, "language_code", None),
                             plan=Plan(branch="Recommend", source="FoodAI", version="v1"),
                         )
                     )
@@ -252,7 +250,7 @@ async def cb_rec_type(callback: types.CallbackQuery) -> None:
                             chat_type=callback.message.chat.type if callback.message else None,
                             text=f"type={meal_type}; title={title}; cal={cal}",
                         ),
-                        language=getattr(callback.from_user, 'language_code', None),
+                        language=getattr(callback.from_user, "language_code", None),
                         plan=Plan(branch="Recommend", source="FoodAI", version="v1"),
                     )
                 )
@@ -285,7 +283,7 @@ async def cb_rec_other(callback: types.CallbackQuery) -> None:
                     chat_type=callback.message.chat.type if callback.message else None,
                     text=f"type={meal_type}",
                 ),
-                language=getattr(callback.from_user, 'language_code', None),
+                language=getattr(callback.from_user, "language_code", None),
                 plan=Plan(branch="Recommend", source="FoodAI", version="v1"),
             )
         )
@@ -303,7 +301,7 @@ async def cb_rec_other(callback: types.CallbackQuery) -> None:
                             chat_type=callback.message.chat.type if callback.message else None,
                             text=f"type={meal_type}; reason=rate_limited",
                         ),
-                        language=getattr(callback.from_user, 'language_code', None),
+                        language=getattr(callback.from_user, "language_code", None),
                         plan=Plan(branch="Recommend", source="FoodAI", version="v1"),
                     )
                 )
@@ -326,7 +324,7 @@ async def cb_rec_other(callback: types.CallbackQuery) -> None:
                                 chat_type=callback.message.chat.type if callback.message else None,
                                 text=f"type={meal_type}; other=1; reason={reason}",
                             ),
-                            language=getattr(callback.from_user, 'language_code', None),
+                            language=getattr(callback.from_user, "language_code", None),
                             plan=Plan(branch="Recommend", source="FoodAI", version="v1"),
                         )
                     )
@@ -351,7 +349,7 @@ async def cb_rec_other(callback: types.CallbackQuery) -> None:
                             chat_type=callback.message.chat.type if callback.message else None,
                             text=f"type={meal_type}; other=1; title={title}; cal={cal}",
                         ),
-                        language=getattr(callback.from_user, 'language_code', None),
+                        language=getattr(callback.from_user, "language_code", None),
                         plan=Plan(branch="Recommend", source="FoodAI", version="v1"),
                     )
                 )

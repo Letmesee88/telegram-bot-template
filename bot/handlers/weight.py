@@ -1,18 +1,22 @@
 from __future__ import annotations
+import contextlib
+from typing import TYPE_CHECKING
 
-from aiogram import Router, types, F
-from aiogram.fsm.state import StatesGroup, State
-from aiogram.fsm.context import FSMContext
+from aiogram import F, Router, types
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.i18n import gettext as _
 
-from bot.services.weight import (
-    build_my_weight_text,
-    build_history_page,
-    save_weight,
-)
-from bot.services.analytics import analytics
 from bot.analytics.types import BaseEvent, EventProperties
 from bot.core.loader import redis_client
+from bot.services.analytics import analytics
+from bot.services.weight import (
+    build_history_page,
+    build_my_weight_text,
+    save_weight,
+)
+
+if TYPE_CHECKING:
+    from aiogram.fsm.context import FSMContext
 
 router = Router(name="weight")
 
@@ -44,7 +48,7 @@ async def cb_weight_open(callback: types.CallbackQuery) -> None:
 
     # Analytics
     if analytics.logger and callback.from_user:
-        try:
+        with contextlib.suppress(Exception):
             analytics.fire_event(
                 BaseEvent(
                     user_id=callback.from_user.id,
@@ -54,11 +58,9 @@ async def cb_weight_open(callback: types.CallbackQuery) -> None:
                         chat_type=callback.message.chat.type if callback.message else None,
                         command=None,
                     ),
-                    language=getattr(callback.from_user, 'language_code', None),
+                    language=getattr(callback.from_user, "language_code", None),
                 )
             )
-        except Exception:
-            pass
 
 
 @router.callback_query(F.data == "weight:record:start")
@@ -72,7 +74,7 @@ async def cb_weight_record_start(callback: types.CallbackQuery, state: FSMContex
         await callback.answer(text, show_alert=False)
 
     if analytics.logger and callback.from_user:
-        try:
+        with contextlib.suppress(Exception):
             analytics.fire_event(
                 BaseEvent(
                     user_id=callback.from_user.id,
@@ -81,11 +83,9 @@ async def cb_weight_record_start(callback: types.CallbackQuery, state: FSMContex
                         chat_id=callback.message.chat.id if callback.message else None,
                         chat_type=callback.message.chat.type if callback.message else None,
                     ),
-                    language=getattr(callback.from_user, 'language_code', None),
+                    language=getattr(callback.from_user, "language_code", None),
                 )
             )
-        except Exception:
-            pass
 
 
 @router.message(WeightRecord.waiting_for_weight)
@@ -94,7 +94,7 @@ async def msg_weight_value(message: types.Message, state: FSMContext) -> None:
     if not message.text:
         await message.answer(_("Попробуйте еще раз (Пример: 60.5)"))
         if analytics.logger and message.from_user:
-            try:
+            with contextlib.suppress(Exception):
                 analytics.fire_event(BaseEvent(
                     user_id=message.from_user.id,
                     event_type="WeightInputInvalid",
@@ -104,10 +104,8 @@ async def msg_weight_value(message: types.Message, state: FSMContext) -> None:
                         text="non_text",
                         command=None,
                     ),
-                    language=getattr(message.from_user, 'language_code', None),
+                    language=getattr(message.from_user, "language_code", None),
                 ))
-            except Exception:
-                pass
         return
 
     raw = (message.text or "").strip().replace(",", ".")
@@ -116,7 +114,7 @@ async def msg_weight_value(message: types.Message, state: FSMContext) -> None:
     except Exception:
         await message.answer(_("Попробуйте еще раз (Пример: 60.5)"))
         if analytics.logger and message.from_user:
-            try:
+            with contextlib.suppress(Exception):
                 analytics.fire_event(BaseEvent(
                     user_id=message.from_user.id,
                     event_type="WeightInputInvalid",
@@ -126,16 +124,14 @@ async def msg_weight_value(message: types.Message, state: FSMContext) -> None:
                         text=(raw[:32] if raw else None),
                         command=None,
                     ),
-                    language=getattr(message.from_user, 'language_code', None),
+                    language=getattr(message.from_user, "language_code", None),
                 ))
-            except Exception:
-                pass
         return
 
     if value < 30 or value > 300:
         await message.answer(_("Пожалуйста, введи корректный вес (30–300 кг)"))
         if analytics.logger and message.from_user:
-            try:
+            with contextlib.suppress(Exception):
                 analytics.fire_event(BaseEvent(
                     user_id=message.from_user.id,
                     event_type="WeightOutOfRange",
@@ -145,10 +141,8 @@ async def msg_weight_value(message: types.Message, state: FSMContext) -> None:
                         text=f"{value:.3f}",
                         command=None,
                     ),
-                    language=getattr(message.from_user, 'language_code', None),
+                    language=getattr(message.from_user, "language_code", None),
                 ))
-            except Exception:
-                pass
         return
 
     value = round(value, 1)
@@ -177,10 +171,8 @@ async def cb_weight_confirm_yes(callback: types.CallbackQuery, state: FSMContext
         return
     saved_value, local_date = await save_weight(user_id, float(value))
     # Invalidate account summary cache so new weight is reflected immediately
-    try:
+    with contextlib.suppress(Exception):
         await redis_client.delete(f"account:summary:{user_id}")
-    except Exception:
-        pass
     await state.clear()
 
     date_str = local_date.strftime("%d.%m.%Y")
@@ -192,7 +184,7 @@ async def cb_weight_confirm_yes(callback: types.CallbackQuery, state: FSMContext
         await callback.answer(text, show_alert=False)
 
     if analytics.logger and callback.from_user:
-        try:
+        with contextlib.suppress(Exception):
             analytics.fire_event(BaseEvent(
                 user_id=callback.from_user.id,
                 event_type="WeightSaved",
@@ -202,10 +194,8 @@ async def cb_weight_confirm_yes(callback: types.CallbackQuery, state: FSMContext
                     text=f"{saved_value:.1f} @ {date_str}",
                     command=None,
                 ),
-                language=getattr(callback.from_user, 'language_code', None),
+                language=getattr(callback.from_user, "language_code", None),
             ))
-        except Exception:
-            pass
 
 
 @router.callback_query(F.data == "weight:confirm:no")
@@ -221,7 +211,7 @@ async def cb_weight_confirm_no(callback: types.CallbackQuery, state: FSMContext)
         await callback.answer(_("⚖️ Мой вес"), show_alert=False)
 
     if analytics.logger and callback.from_user:
-        try:
+        with contextlib.suppress(Exception):
             analytics.fire_event(BaseEvent(
                 user_id=callback.from_user.id,
                 event_type="WeightConfirmNo",
@@ -229,10 +219,8 @@ async def cb_weight_confirm_no(callback: types.CallbackQuery, state: FSMContext)
                     chat_id=callback.message.chat.id if callback.message else None,
                     chat_type=callback.message.chat.type if callback.message else None,
                 ),
-                language=getattr(callback.from_user, 'language_code', None),
+                language=getattr(callback.from_user, "language_code", None),
             ))
-        except Exception:
-            pass
 
 
 @router.callback_query(F.data.regexp(r"^weight:history:(\d+)$"))
@@ -265,7 +253,7 @@ async def cb_weight_history(callback: types.CallbackQuery) -> None:
         await callback.answer(_("📉 История моего веса"), show_alert=False)
 
     if analytics.logger and callback.from_user:
-        try:
+        with contextlib.suppress(Exception):
             analytics.fire_event(BaseEvent(
                 user_id=callback.from_user.id,
                 event_type="WeightHistoryOpen",
@@ -275,7 +263,5 @@ async def cb_weight_history(callback: types.CallbackQuery) -> None:
                     text=f"page={page_obj.page}",
                     command=None,
                 ),
-                language=getattr(callback.from_user, 'language_code', None),
+                language=getattr(callback.from_user, "language_code", None),
             ))
-        except Exception:
-            pass

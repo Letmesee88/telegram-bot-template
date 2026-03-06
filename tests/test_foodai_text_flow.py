@@ -1,18 +1,17 @@
 # tests/test_foodai_text_flow.py
 from __future__ import annotations
-
 import asyncio
 
 from bot.services import foodai as foodai_mod
 
 
-def test_analyze_text_explicit_not_food(monkeypatch):
+def test_analyze_text_explicit_not_food(monkeypatch) -> None:
     """If model returns not_food=true for text, we propagate that (handler will short-circuit)."""
 
-    async def _run():
+    async def _run() -> None:
         monkeypatch.setattr(foodai_mod, "_use_openai", lambda: True)
 
-        async def fake_openai_request(kind: str, payload: dict):
+        async def fake_openai_request(kind: str, payload: dict) -> str:
             return (
                 """
                 {"title":"","calories":0,"protein_g":0.0,"fat_g":0.0,"carbs_g":0.0,"weight_g":0.0,

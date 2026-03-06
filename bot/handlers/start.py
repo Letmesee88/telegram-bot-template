@@ -1,16 +1,18 @@
-from aiogram import Router, types
+import contextlib
 import os
-from aiogram.filters import CommandStart, Command
-from aiogram.utils.i18n import gettext as _
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-from aiogram import F
+
+from aiogram import F, Router, types
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
+from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils.i18n import gettext as _
 from sqlalchemy import select
-from bot.services.analytics import analytics
+
+from bot.analytics.types import BaseEvent, EventProperties, Plan
 from bot.core.config import settings
 from bot.database.database import sessionmaker
 from bot.database.models.onboarding_answer import OnboardingAnswerModel
-from bot.analytics.types import BaseEvent, EventProperties, Plan
+from bot.services.analytics import analytics
 
 router = Router(name="start")
 
@@ -22,10 +24,8 @@ async def start_handler(message: types.Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else None
 
     # Force-reset FSM to avoid stale states (e.g., lingering OnboardingStates.adjust)
-    try:
+    with contextlib.suppress(Exception):
         await state.clear()
-    except Exception:
-        pass
 
     # Intro text unified with /onboarding
     intro = _(

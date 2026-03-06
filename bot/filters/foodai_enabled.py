@@ -1,10 +1,12 @@
-from aiogram.filters import BaseFilter
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from sqlalchemy.ext.asyncio import AsyncSession
-from aiogram.fsm.context import FSMContext
-from sqlalchemy import update, func, select
+import contextlib
 
-from bot.database.models import UserModel, OnboardingAnswerModel
+from aiogram.filters import BaseFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from bot.database.models import OnboardingAnswerModel, UserModel
 from bot.services.users import is_subscription_active
 
 
@@ -58,10 +60,8 @@ class FoodAIEnabledFilter(BaseFilter):
                     await session.execute(
                         update(UserModel).where(UserModel.id == user.id).values(foodai_enabled_at=func.now())
                     )
-                    try:
+                    with contextlib.suppress(Exception):
                         await session.commit()
-                    except Exception:
-                        pass
                 except Exception:
                     pass
             return True
@@ -74,10 +74,8 @@ class FoodAIEnabledFilter(BaseFilter):
                     await session.execute(
                         update(UserModel).where(UserModel.id == user.id).values(foodai_enabled_at=func.now())
                     )
-                    try:
+                    with contextlib.suppress(Exception):
                         await session.commit()
-                    except Exception:
-                        pass
                 except Exception:
                     pass
             return True
@@ -117,11 +115,11 @@ class FoodAIEnabledFilter(BaseFilter):
             # Avoid duplicate sends across multiple handlers for the same update
             if getattr(event, "_foodai_cta_sent", False):
                 return False
-            setattr(event, "_foodai_cta_sent", True)
+            event._foodai_cta_sent = True
             if msg_obj is not None and msg_obj is not event:
                 if getattr(msg_obj, "_foodai_cta_sent", False):
                     return False
-                setattr(msg_obj, "_foodai_cta_sent", True)
+                msg_obj._foodai_cta_sent = True
 
             text = (
                 "😴 Подписка не активна\n"
@@ -140,10 +138,8 @@ class FoodAIEnabledFilter(BaseFilter):
                     pass
             # Final fallback (if event is a Message implementing answer)
             if hasattr(event, "answer"):
-                try:
+                with contextlib.suppress(Exception):
                     await event.answer(text, reply_markup=kb, disable_web_page_preview=True)
-                except Exception:
-                    pass
         except Exception:
             pass
         return False

@@ -1,14 +1,13 @@
-import pytest
 
 from bot.services.foodai import (
-    _norm_detail,
-    _top_components,
-    _strip_code_fence,
     _lexicon_is_food_text,
+    _norm_detail,
+    _strip_code_fence,
+    _top_components,
 )
 
 
-def test_norm_detail_variants():
+def test_norm_detail_variants() -> None:
     assert _norm_detail("low") == "low"
     assert _norm_detail("HIGH") == "high"
     assert _norm_detail("auto") == "auto"
@@ -16,7 +15,7 @@ def test_norm_detail_variants():
     assert _norm_detail(None) == "low"  # default
 
 
-def test_top_components_basic_and_unique():
+def test_top_components_basic_and_unique() -> None:
     items = [
         {"name": "гречка"},
         {"name": "курица"},
@@ -35,7 +34,7 @@ def test_top_components_basic_and_unique():
     assert _top_components([], k=3) == []
 
 
-def test_strip_code_fence():
+def test_strip_code_fence() -> None:
     s = """```json\n{\n  \"x\": 1\n}\n```"""
     assert _strip_code_fence(s) == '{\n  "x": 1\n}'
 
@@ -45,7 +44,7 @@ def test_strip_code_fence():
     assert _strip_code_fence(None) is None
 
 
-def test_lexicon_is_food_text():
+def test_lexicon_is_food_text() -> None:
     # single-token whitelisted food/drink -> True
     assert _lexicon_is_food_text("кофе") is True
     assert _lexicon_is_food_text("чай") is True

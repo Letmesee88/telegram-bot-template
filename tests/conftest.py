@@ -1,16 +1,18 @@
 from __future__ import annotations
-
-import os
-import time
 import asyncio
-from collections.abc import AsyncGenerator
-from typing import Generator
+import os
+from typing import TYPE_CHECKING
 
 import psycopg2
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 # ---------- pytest-docker configuration ----------
 
@@ -123,8 +125,8 @@ def apply_migrations(test_db_env) -> None:
 @pytest.fixture(scope="session")
 async def async_engine(apply_migrations) -> AsyncGenerator[AsyncEngine, None]:
     # Import after env is set and migrations applied
-    from bot.database.database import get_engine
     from bot.core.config import settings
+    from bot.database.database import get_engine
 
     engine = get_engine(url=settings.database_url)
     try:
@@ -137,8 +139,7 @@ async def async_engine(apply_migrations) -> AsyncGenerator[AsyncEngine, None]:
 async def async_sessionmaker(async_engine: AsyncEngine) -> AsyncGenerator[async_sessionmaker[AsyncSession], None]:
     from bot.database.database import get_sessionmaker
 
-    sm = get_sessionmaker(async_engine)
-    yield sm
+    return get_sessionmaker(async_engine)
 
 
 @pytest.fixture
@@ -188,10 +189,9 @@ class _FakeRedis:
         self._z: dict[str, dict[str, int]] = {}
 
     # String ops
-    async def set(self, key: str, value: str, nx: bool | None = None, ex: int | None = None):
-        if nx:
-            if key in self._kv:
-                return False
+    async def set(self, key: str, value: str, nx: bool | None = None, ex: int | None = None) -> bool:
+        if nx and key in self._kv:
+            return False
         self._kv[key] = str(value)
         return True
 
@@ -214,7 +214,7 @@ class _FakeRedis:
         return cur
 
     # ZSET ops
-    async def zadd(self, key: str, mapping: dict[str, int], nx: bool | None = None):
+    async def zadd(self, key: str, mapping: dict[str, int], nx: bool | None = None) -> bool:
         z = self._z.setdefault(key, {})
         for member, score in mapping.items():
             if nx and member in z:
@@ -259,7 +259,7 @@ class _FakeRedis:
                 self._buf.append(("zscore", (key, member), {}))
                 return self
 
-            async def execute(self):
+            async def execute(self) -> bool:
                 for op, args, kwargs in self._buf:
                     if op == "zadd":
                         await parent.zadd(*args, **kwargs)
@@ -279,7 +279,7 @@ async def patch_redis_client(monkeypatch):
     from bot.core import loader
     fake = _FakeRedis()
     monkeypatch.setattr(loader, "redis_client", fake, raising=False)
-    yield fake
+    return fake
 
 
 @pytest.fixture
@@ -287,7 +287,7 @@ def capture_bot_messages(monkeypatch):
     from bot.core.loader import bot
     sent: list[tuple[int, str]] = []
 
-    async def _fake_send_message(user_id: int, text: str, *args, **kwargs):
+    async def _fake_send_message(user_id: int, text: str, *args, **kwargs) -> None:
         sent.append((user_id, text))
 
     monkeypatch.setattr(bot, "send_message", _fake_send_message, raising=True)
@@ -297,7 +297,7 @@ def capture_bot_messages(monkeypatch):
 @pytest.fixture
 def fake_bot(capture_bot_messages):
     class _Bot:
-        async def send_message(self, user_id: int, text: str, *args, **kwargs):
+        async def send_message(self, user_id: int, text: str, *args, **kwargs) -> None:
             await asyncio.sleep(0)
             capture_bot_messages.append((user_id, text))
 
@@ -357,7 +357,7 @@ def make_yk_view():
     from bot.handlers.yookassa_webhook import YooKassaWebhookView
 
     class _View(YooKassaWebhookView):
-        def __init__(self, req):
+        def __init__(self, req) -> None:
             self._request = req
 
         @property

@@ -4,10 +4,10 @@ from bot.handlers import onboarding as onboarding_mod
 
 
 class DummyState:
-    def __init__(self):
+    def __init__(self) -> None:
         self._data = {}
 
-    async def update_data(self, **kwargs):
+    async def update_data(self, **kwargs) -> None:
         self._data.update(kwargs)
 
     async def get_data(self):
@@ -15,42 +15,42 @@ class DummyState:
 
 
 class DummyChat:
-    def __init__(self, chat_id=1, chat_type="private"):
+    def __init__(self, chat_id=1, chat_type="private") -> None:
         self.id = chat_id
         self.type = chat_type
 
 
 class DummyMessage:
-    def __init__(self, chat_id=1):
+    def __init__(self, chat_id=1) -> None:
         self.chat = DummyChat(chat_id)
 
-    async def answer(self, *args, **kwargs):
+    async def answer(self, *args, **kwargs) -> None:
         return None
 
 
 class DummyFromUser:
-    def __init__(self, user_id=1, language_code="ru"):
+    def __init__(self, user_id=1, language_code="ru") -> None:
         self.id = user_id
         self.language_code = language_code
 
 
 class DummyCall:
-    def __init__(self, data: str, user_id=1):
+    def __init__(self, data: str, user_id=1) -> None:
         self.data = data
         self.from_user = DummyFromUser(user_id)
         self.message = DummyMessage(chat_id=user_id)
 
-    async def answer(self, *args, **kwargs):
+    async def answer(self, *args, **kwargs) -> None:
         return None
 
 
 @pytest.mark.asyncio
-async def test_speed_selected_fires_analytics(monkeypatch):
+async def test_speed_selected_fires_analytics(monkeypatch) -> None:
     state = DummyState()
 
     fired = {"called": False}
 
-    def fake_fire_event(evt):
+    def fake_fire_event(evt) -> None:
         fired["called"] = True
 
     # Monkeypatch analytics.fire_event in module scope
@@ -58,7 +58,7 @@ async def test_speed_selected_fires_analytics(monkeypatch):
     monkeypatch.setattr(onboarding_mod.analytics, "fire_event", fake_fire_event, raising=False)
 
     # Stub out finalize to avoid heavy flow
-    async def fake_finalize(message, state, user_id):
+    async def fake_finalize(message, state, user_id) -> None:
         return None
 
     monkeypatch.setattr(onboarding_mod, "_finalize_and_show", fake_finalize)

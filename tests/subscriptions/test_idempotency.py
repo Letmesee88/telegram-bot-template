@@ -1,18 +1,18 @@
 from __future__ import annotations
+from datetime import datetime, timedelta, timezone
 
 import pytest
-from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
 
 from bot.core.config import settings
 from bot.database.database import sessionmaker
-from bot.database.models import SubscriptionModel, PaymentModel, UserModel
+from bot.database.models import PaymentModel, SubscriptionModel
 
 
 @pytest.mark.asyncio
 async def test_webhook_idempotent_success_duplicate_event(
     test_db_env, ensure_user, yk_stub, make_webhook_request, make_yk_view
-):
+) -> None:
     user_id = await ensure_user(10041)
     # Stub YooKassa find_one to return succeeded month with saved PM
     amount = f"{settings.PRICE_MONTH_RUB:.2f}"
@@ -62,7 +62,7 @@ async def test_webhook_idempotent_success_duplicate_event(
 @pytest.mark.asyncio
 async def test_scheduler_idempotent_submitted_key_prevents_duplicate_submit(
     test_db_env, ensure_user, monkeypatch
-):
+) -> None:
     user_id = await ensure_user(10042)
     # Prepare subscription
     async with sessionmaker() as session:
@@ -100,7 +100,7 @@ async def test_scheduler_idempotent_submitted_key_prevents_duplicate_submit(
     monkeypatch.setattr(rs, "redis_client", _fake_redis, raising=True)
 
     # Call _try_rebill twice with same (sub, period)
-    from bot.background.recurring_scheduler import _try_rebill, _RebillTask, _period_key
+    from bot.background.recurring_scheduler import _period_key, _RebillTask, _try_rebill
 
     period = _period_key(datetime.now(timezone.utc))
     task = _RebillTask(

@@ -1,15 +1,16 @@
 from __future__ import annotations
+import contextlib
 
-from aiogram import Router, types, F
+from aiogram import F, Router, types
 from aiogram.filters import Command
 from aiogram.utils.i18n import gettext as _
-
-from bot.services.account import get_account_summary_text
-from bot.services.analytics import analytics
-from bot.analytics.types import BaseEvent, EventProperties
 from sqlalchemy import select
+
+from bot.analytics.types import BaseEvent, EventProperties
 from bot.database.database import sessionmaker
 from bot.database.models.onboarding_answer import OnboardingAnswerModel
+from bot.services.account import get_account_summary_text
+from bot.services.analytics import analytics
 
 router = Router(name="account")
 
@@ -40,7 +41,7 @@ async def cmd_account(message: types.Message) -> None:
             )
             await message.answer(text, reply_markup=kb)
             if analytics.logger:
-                try:
+                with contextlib.suppress(Exception):
                     analytics.fire_event(
                         BaseEvent(
                             user_id=user_id,
@@ -54,19 +55,17 @@ async def cmd_account(message: types.Message) -> None:
                             language=message.from_user.language_code if message.from_user else None,
                         )
                     )
-                except Exception:
-                    pass
             return
     except Exception:
         pass
 
-    
+
 
     text = await get_account_summary_text(user_id)
     await message.answer(text, reply_markup=_kb_account())
 
     if analytics.logger and message.from_user:
-        try:
+        with contextlib.suppress(Exception):
             analytics.fire_event(
                 BaseEvent(
                     user_id=message.from_user.id,
@@ -79,8 +78,6 @@ async def cmd_account(message: types.Message) -> None:
                     language=message.from_user.language_code if message.from_user else None,
                 )
             )
-        except Exception:
-            pass
 
 
 @router.callback_query(F.data.regexp(r"^account:open(?::(today|history|weight))?$"))
@@ -96,20 +93,16 @@ async def cb_account_open(callback: types.CallbackQuery) -> None:
                 select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
             )
         if not bool(exists):
-            try:
+            with contextlib.suppress(Exception):
                 await callback.answer()
-            except Exception:
-                pass
             text = _("Завершите онбординг за пару минут, чтобы получить полный доступ к данным")
             kb = types.InlineKeyboardMarkup(
                 inline_keyboard=[[types.InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
             )
-            try:
+            with contextlib.suppress(Exception):
                 await callback.message.answer(text, reply_markup=kb)
-            except Exception:
-                pass
             if analytics.logger and callback.from_user:
-                try:
+                with contextlib.suppress(Exception):
                     analytics.fire_event(
                         BaseEvent(
                             user_id=callback.from_user.id,
@@ -120,11 +113,9 @@ async def cb_account_open(callback: types.CallbackQuery) -> None:
                                 command=None,
                                 text="account:open",
                             ),
-                            language=getattr(callback.from_user, 'language_code', None),
+                            language=getattr(callback.from_user, "language_code", None),
                         )
                     )
-                except Exception:
-                    pass
             return
     except Exception:
         pass
@@ -155,7 +146,7 @@ async def cb_account_open(callback: types.CallbackQuery) -> None:
                         command=None,
                         text=f"source={source or 'button'}",
                     ),
-                    language=getattr(callback.from_user, 'language_code', None),
+                    language=getattr(callback.from_user, "language_code", None),
                 )
             )
             # Source-specific
@@ -168,7 +159,7 @@ async def cb_account_open(callback: types.CallbackQuery) -> None:
                             chat_id=callback.message.chat.id if callback.message else None,
                             chat_type=callback.message.chat.type if callback.message else None,
                         ),
-                        language=getattr(callback.from_user, 'language_code', None),
+                        language=getattr(callback.from_user, "language_code", None),
                     )
                 )
             elif source == "history":
@@ -180,7 +171,7 @@ async def cb_account_open(callback: types.CallbackQuery) -> None:
                             chat_id=callback.message.chat.id if callback.message else None,
                             chat_type=callback.message.chat.type if callback.message else None,
                         ),
-                        language=getattr(callback.from_user, 'language_code', None),
+                        language=getattr(callback.from_user, "language_code", None),
                     )
                 )
         except Exception:

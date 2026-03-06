@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
-from bot.schemas.onboarding import OnboardingData, Gender, Goal, ActivityLevel
+
+from bot.schemas.onboarding import ActivityLevel, Gender, Goal, OnboardingData
 from bot.services.plan import calculate_daily_plan
 
 
 class DummyUser:
-    def __init__(self, user_id: int = 123):
+    def __init__(self, user_id: int = 123) -> None:
         self.id = user_id
         self.first_name = "Test"
         self.last_name = None
@@ -32,7 +33,7 @@ class DummyMessage:
 
 
 class DummyCallback:
-    def __init__(self, user_id: int = 123):
+    def __init__(self, user_id: int = 123) -> None:
         self.from_user = DummyUser(user_id)
         self.message = DummyMessage(user_id)
         self.data: str | None = None
@@ -72,10 +73,10 @@ class FakeRedis:
     async def get(self, key: str):
         return self.storage.get(key)
 
-    async def setex(self, key: str, ttl: int, value: str):
+    async def setex(self, key: str, ttl: int, value: str) -> None:
         self.storage[key] = value.encode("utf-8") if isinstance(value, str) else value
 
-    async def delete(self, key: str):
+    async def delete(self, key: str) -> None:
         self.deleted.append(key)
         self.storage.pop(key, None)
 
@@ -98,12 +99,10 @@ async def test_daily_norm_open_shows_values(monkeypatch: pytest.MonkeyPatch) -> 
     from bot.services import analytics as analytics_module
     monkeypatch.setattr(analytics_module.analytics, "logger", None)
 
-    from bot.handlers import settings as s
-    from bot.database.models import OnboardingAnswerModel, UserModel
-    from bot.schemas.onboarding import OnboardingData, Gender, Goal, ActivityLevel
-    from bot.services.plan import calculate_daily_plan
     from bot.database.database import sessionmaker
-    from bot.schemas.onboarding import OnboardingData, Gender, Goal, ActivityLevel
+    from bot.database.models import OnboardingAnswerModel, UserModel
+    from bot.handlers import settings as s
+    from bot.schemas.onboarding import ActivityLevel, Gender, Goal, OnboardingData
     from bot.services.plan import calculate_daily_plan
 
     # neutralize i18n _
@@ -152,7 +151,8 @@ async def test_daily_norm_open_shows_values(monkeypatch: pytest.MonkeyPatch) -> 
     assert "Белки:" in txt
     assert "Жиры:" in txt
     assert "Углеводы:" in txt
-    assert "Цель:" in txt and "До цели:" in txt
+    assert "Цель:" in txt
+    assert "До цели:" in txt
 
 
 @pytest.mark.asyncio
@@ -175,8 +175,8 @@ async def test_daily_norm_apply_updates_and_invalidate_cache(monkeypatch: pytest
     from bot.services import analytics as analytics_module
     monkeypatch.setattr(analytics_module.analytics, "logger", None)
 
-    from bot.handlers import settings as s
     from bot.database.models import OnboardingAnswerModel, UserModel
+    from bot.handlers import settings as s
 
     monkeypatch.setattr(s, "_", lambda x: x)
 
@@ -236,10 +236,10 @@ async def test_daily_norm_apply_updates_and_invalidate_cache(monkeypatch: pytest
             protein_g=160,
             fat_g=70,
             carbs_g=190,
-            sources=list(getattr(base_plan_obj, 'sources', []) or []),
-            tdee=int(getattr(base_plan_obj, 'tdee', 0) or 0),
-            weekly_rate_kg=float(getattr(base_plan_obj, 'weekly_rate_kg', 0.0) or 0.0),
-            eta_date=getattr(base_plan_obj, 'eta_date', None),
+            sources=list(getattr(base_plan_obj, "sources", []) or []),
+            tdee=int(getattr(base_plan_obj, "tdee", 0) or 0),
+            weekly_rate_kg=float(getattr(base_plan_obj, "weekly_rate_kg", 0.0) or 0.0),
+            eta_date=getattr(base_plan_obj, "eta_date", None),
         )
         return new, "Детальное объяснение…", {"dummy": True}
 
@@ -278,8 +278,8 @@ async def test_daily_norm_llm_only_rephrase_prompt(monkeypatch: pytest.MonkeyPat
     from bot.services import analytics as analytics_module
     monkeypatch.setattr(analytics_module.analytics, "logger", None)
 
-    from bot.handlers import settings as s
     from bot.database.models import OnboardingAnswerModel, UserModel
+    from bot.handlers import settings as s
 
     monkeypatch.setattr(s, "_", lambda x: x)
 
@@ -318,7 +318,7 @@ async def test_daily_norm_llm_only_rephrase_prompt(monkeypatch: pytest.MonkeyPat
             session.add(OnboardingAnswerModel(user_id=user_id, data=data, daily_plan=plan, goal="lose", calories=int(plan.get("calories") or 0)))
         await session.commit()
 
-    async def parse_none(*args, **kwargs):
+    async def parse_none(*args, **kwargs) -> None:
         return None
 
     monkeypatch.setattr(s, "parse_adjustment_cached", parse_none)
@@ -333,4 +333,4 @@ async def test_daily_norm_llm_only_rephrase_prompt(monkeypatch: pytest.MonkeyPat
     text = msg.captured[-1][1]["text"]
     assert "Не до конца понял запрос" in text
     # state should not be cleared; user remains in waiting_text stage
-    assert await state.get_state() is None or await state.get_state() == getattr(getattr(s, 'SettingsDailyNormStates'), 'waiting_text', None)
+    assert await state.get_state() is None or await state.get_state() == getattr(s.SettingsDailyNormStates, "waiting_text", None)

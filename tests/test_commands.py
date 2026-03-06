@@ -1,33 +1,33 @@
 import pytest
 
-from bot.keyboards.default_commands import users_commands
 from bot.handlers.start import cmd_add_meal, cmd_support
+from bot.keyboards.default_commands import users_commands
 
 
 class FakeChat:
-    def __init__(self, id=1, type="private"):
+    def __init__(self, id=1, type="private") -> None:
         self.id = id
         self.type = type
 
 
 class FakeFromUser:
-    def __init__(self, id=123, language_code="ru"):
+    def __init__(self, id=123, language_code="ru") -> None:
         self.id = id
         self.language_code = language_code
 
 
 class FakeMessage:
-    def __init__(self, user_id=123):
+    def __init__(self, user_id=123) -> None:
         self.from_user = FakeFromUser(user_id)
         self.chat = FakeChat(777, "private")
         self._answers: list[tuple[str, dict]] = []
 
-    async def answer(self, text: str, **kwargs):
+    async def answer(self, text: str, **kwargs) -> None:
         self._answers.append((text, kwargs))
 
 
 @pytest.mark.asyncio
-async def test_cmd_add_meal_text_and_no_cta():
+async def test_cmd_add_meal_text_and_no_cta() -> None:
     m = FakeMessage(user_id=1)
     await cmd_add_meal(m)
     assert len(m._answers) == 1
@@ -41,7 +41,7 @@ async def test_cmd_add_meal_text_and_no_cta():
 
 
 @pytest.mark.asyncio
-async def test_cmd_support_text_and_no_cta():
+async def test_cmd_support_text_and_no_cta() -> None:
     m = FakeMessage(user_id=2)
     await cmd_support(m)
     assert len(m._answers) == 1
@@ -51,7 +51,7 @@ async def test_cmd_support_text_and_no_cta():
     assert "подписка не активна" not in txt.lower()
 
 
-def test_ru_commands_order_and_presence():
+def test_ru_commands_order_and_presence() -> None:
     ru = users_commands.get("ru", {})
     expected_order = [
         "account",

@@ -6,7 +6,7 @@ from bot.services.recommender import _is_nutrition_valid
 
 
 @pytest.mark.parametrize(
-    "data, target_cal_max, enforce_cap, expected",
+    ("data", "target_cal_max", "enforce_cap", "expected"),
     [
         (
             {"nutrition": {"calories": 400, "protein_g": 30, "fat_g": 15, "carbs_g": 35}},
@@ -37,6 +37,6 @@ from bot.services.recommender import _is_nutrition_valid
         ),
     ],
 )
-def test_is_nutrition_valid(data, target_cal_max, enforce_cap, expected):
+def test_is_nutrition_valid(data, target_cal_max, enforce_cap, expected) -> None:
     ok, _ = _is_nutrition_valid(data, target_cal_max, enforce_cap)
     assert ok is expected

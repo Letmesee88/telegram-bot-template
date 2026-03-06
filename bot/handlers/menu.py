@@ -1,16 +1,17 @@
-from datetime import datetime, timezone, timedelta
+import contextlib
+from datetime import datetime, timedelta, timezone
 
-from aiogram import Router, types, F
+from aiogram import F, Router, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.i18n import gettext as _
 from sqlalchemy import select
 
+from bot.analytics.types import BaseEvent, EventProperties
 from bot.database.database import sessionmaker
 from bot.database.models import MealModel, OnboardingAnswerModel
-from bot.services.users import get_user_tzinfo
 from bot.services.analytics import analytics
-from bot.analytics.types import BaseEvent, EventProperties
+from bot.services.users import get_user_tzinfo
 
 router = Router(name="menu")
 
@@ -27,10 +28,8 @@ async def _edit_caption_or_text(cb: types.CallbackQuery, text: str, kb: InlineKe
         return
     except Exception:
         pass
-    try:
+    with contextlib.suppress(Exception):
         await cb.message.answer(text, reply_markup=kb)
-    except Exception:
-        pass
 
 
 @router.message(Command("day"))
@@ -51,7 +50,7 @@ async def cmd_day(message: types.Message) -> None:
             )
             await message.answer(text, reply_markup=kb)
             if analytics.logger:
-                try:
+                with contextlib.suppress(Exception):
                     analytics.fire_event(
                         BaseEvent(
                             user_id=user_id,
@@ -65,8 +64,6 @@ async def cmd_day(message: types.Message) -> None:
                             language=message.from_user.language_code if message.from_user else None,
                         )
                     )
-                except Exception:
-                    pass
             return
     except Exception:
         pass
@@ -199,20 +196,16 @@ async def cb_diary_today(callback: types.CallbackQuery) -> None:
                 select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
             )
         if not bool(exists):
-            try:
+            with contextlib.suppress(Exception):
                 await callback.answer()
-            except Exception:
-                pass
             text = _("Завершите онбординг за пару минут, чтобы получить полный доступ к данным")
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
             )
-            try:
+            with contextlib.suppress(Exception):
                 await callback.message.answer(text, reply_markup=kb)
-            except Exception:
-                pass
             if analytics.logger and callback.from_user:
-                try:
+                with contextlib.suppress(Exception):
                     analytics.fire_event(
                         BaseEvent(
                             user_id=callback.from_user.id,
@@ -223,11 +216,9 @@ async def cb_diary_today(callback: types.CallbackQuery) -> None:
                                 command=None,
                                 text="diary:today",
                             ),
-                            language=getattr(callback.from_user, 'language_code', None),
+                            language=getattr(callback.from_user, "language_code", None),
                         )
                     )
-                except Exception:
-                    pass
             return
     except Exception:
         pass
@@ -273,8 +264,7 @@ async def cb_diary_today(callback: types.CallbackQuery) -> None:
 
     n = len(meals)
     total_pages = max(1, (n + PAGE_SIZE - 1) // PAGE_SIZE)
-    if page > total_pages:
-        page = total_pages
+    page = min(page, total_pages)
     start_idx = (page - 1) * PAGE_SIZE
     end_idx = min(n, start_idx + PAGE_SIZE)
 
@@ -365,7 +355,7 @@ async def cb_edit_delete(callback: types.CallbackQuery) -> None:
 
     # Analytics: Deleted
     if analytics.logger and callback.from_user:
-        try:
+        with contextlib.suppress(Exception):
             analytics.fire_event(
                 BaseEvent(
                     user_id=callback.from_user.id,
@@ -376,11 +366,9 @@ async def cb_edit_delete(callback: types.CallbackQuery) -> None:
                         text=f"meal_id={meal_id}",
                         command=None,
                     ),
-                    language=getattr(callback.from_user, 'language_code', None),
+                    language=getattr(callback.from_user, "language_code", None),
                 )
             )
-        except Exception:
-            pass
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=_("◀️ К списку блюд"), callback_data=f"de:l:{page}")]]
@@ -401,20 +389,16 @@ async def cb_back_to_day(callback: types.CallbackQuery) -> None:
                 select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
             )
         if not bool(exists):
-            try:
+            with contextlib.suppress(Exception):
                 await callback.answer()
-            except Exception:
-                pass
             text = _("Завершите онбординг за пару минут, чтобы получить полный доступ к данным")
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
             )
-            try:
+            with contextlib.suppress(Exception):
                 await callback.message.answer(text, reply_markup=kb)
-            except Exception:
-                pass
             if analytics.logger and callback.from_user:
-                try:
+                with contextlib.suppress(Exception):
                     analytics.fire_event(
                         BaseEvent(
                             user_id=callback.from_user.id,
@@ -425,11 +409,9 @@ async def cb_back_to_day(callback: types.CallbackQuery) -> None:
                                 command=None,
                                 text="de:back:day",
                             ),
-                            language=getattr(callback.from_user, 'language_code', None),
+                            language=getattr(callback.from_user, "language_code", None),
                         )
                     )
-                except Exception:
-                    pass
             return
     except Exception:
         pass
@@ -578,12 +560,11 @@ async def cb_edit_list(callback: types.CallbackQuery) -> None:
 
     n = len(meals)
     total_pages = max(1, (n + PAGE_SIZE - 1) // PAGE_SIZE)
-    if page > total_pages:
-        page = total_pages
+    page = min(page, total_pages)
     start_idx = (page - 1) * PAGE_SIZE
     end_idx = min(n, start_idx + PAGE_SIZE)
 
-    date_str = local_start.strftime("%d.%m.%Y")
+    local_start.strftime("%d.%m.%Y")
     lines: list[str] = [_("👉🏻 Выберите блюдо которое нужно отредактировать"), ""]
     for i, meal in enumerate(meals[start_idx:end_idx], start=start_idx + 1):
         t_local = (meal.consumed_at or start_utc).astimezone(tz).strftime("%H:%M")
@@ -613,7 +594,7 @@ async def cb_edit_list(callback: types.CallbackQuery) -> None:
 
     # Analytics: List opened
     if analytics.logger and callback.from_user:
-        try:
+        with contextlib.suppress(Exception):
             analytics.fire_event(
                 BaseEvent(
                     user_id=callback.from_user.id,
@@ -624,11 +605,9 @@ async def cb_edit_list(callback: types.CallbackQuery) -> None:
                         text=f"page={page}, count={n}",
                         command=None,
                     ),
-                    language=getattr(callback.from_user, 'language_code', None),
+                    language=getattr(callback.from_user, "language_code", None),
                 )
             )
-        except Exception:
-            pass
 
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
@@ -704,7 +683,7 @@ async def cb_edit_detail(callback: types.CallbackQuery) -> None:
 
     # Analytics: Detail opened
     if analytics.logger and callback.from_user:
-        try:
+        with contextlib.suppress(Exception):
             analytics.fire_event(
                 BaseEvent(
                     user_id=callback.from_user.id,
@@ -715,10 +694,8 @@ async def cb_edit_detail(callback: types.CallbackQuery) -> None:
                         text=f"meal_id={meal_id}, page={page}",
                         command=None,
                     ),
-                    language=getattr(callback.from_user, 'language_code', None),
+                    language=getattr(callback.from_user, "language_code", None),
                 )
             )
-        except Exception:
-            pass
 
     await _edit_caption_or_text(callback, text, kb=kb)

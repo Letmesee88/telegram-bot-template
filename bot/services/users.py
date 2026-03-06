@@ -1,15 +1,16 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
-from datetime import datetime, timezone, timedelta, time as dtime
 import random
+from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, update
 
-from bot.cache.redis import build_key, cached, clear_cache
-from bot.database.models import UserModel, SubscriptionModel
 import bot.core.config as cfg
+from bot.cache.redis import build_key, cached, clear_cache
 from bot.core.loader import redis_client
+from bot.database.models import SubscriptionModel, UserModel
 
 if TYPE_CHECKING:
     from aiogram.types import User
@@ -95,7 +96,7 @@ async def set_language_code(
 # =====================
 
 @cached(key_builder=lambda session, user_id: build_key(user_id))
-async def get_timezone(session: "AsyncSession", user_id: int) -> str:
+async def get_timezone(session: AsyncSession, user_id: int) -> str:
     """Return user's IANA timezone string or empty string if not set."""
     query = select(UserModel.timezone).filter_by(id=user_id)
     result = await session.execute(query)
@@ -103,7 +104,7 @@ async def get_timezone(session: "AsyncSession", user_id: int) -> str:
     return tz or ""
 
 
-async def set_timezone(session: "AsyncSession", user_id: int, tz_name: str) -> None:
+async def set_timezone(session: AsyncSession, user_id: int, tz_name: str) -> None:
     """Set user's timezone (IANA name). Caller must validate value upstream."""
     stmt = update(UserModel).where(UserModel.id == user_id).values(timezone=(tz_name or "").strip() or None)
     await session.execute(stmt)
@@ -120,10 +121,7 @@ async def set_timezone(session: "AsyncSession", user_id: int, tz_name: str) -> N
             # Compute next local 08:00 with jitter
             tzinfo = None
             try:
-                if (tz_name or "").upper() in ("UTC", "Z"):
-                    tzinfo = timezone.utc
-                else:
-                    tzinfo = ZoneInfo(tz_name)
+                tzinfo = timezone.utc if (tz_name or "").upper() in ("UTC", "Z") else ZoneInfo(tz_name)
             except Exception:
                 tzinfo = timezone.utc
             now_local = datetime.now(tzinfo)
@@ -139,7 +137,7 @@ async def set_timezone(session: "AsyncSession", user_id: int, tz_name: str) -> N
         pass
 
 
-async def get_user_tzinfo(session: "AsyncSession", user_id: int):
+async def get_user_tzinfo(session: AsyncSession, user_id: int):
     """Resolve user's tzinfo with fallback to DEFAULT_TZ or UTC."""
     tz_name = str(getattr(cfg.settings, "DEFAULT_TZ", "Europe/Moscow") or "Europe/Moscow")
     try:
@@ -156,7 +154,7 @@ async def get_user_tzinfo(session: "AsyncSession", user_id: int):
         return timezone.utc
 
 
-async def today_local_utc_dates(session: "AsyncSession", user_id: int) -> set:
+async def today_local_utc_dates(session: AsyncSession, user_id: int) -> set:
     """Return 1-2 UTC dates covering user's local 'today' window."""
     tz = await get_user_tzinfo(session, user_id)
     now_local = datetime.now(tz)
@@ -215,7 +213,7 @@ async def get_user_count(session: AsyncSession) -> int:
     return int(count)
 
 
-async def is_subscription_active(session: "AsyncSession", user_id: int, include_grace: bool = False) -> bool:
+async def is_subscription_active(session: AsyncSession, user_id: int, include_grace: bool = False) -> bool:
     """Return True if user has an active, non-expired app subscription.
 
     Strict criteria (default):

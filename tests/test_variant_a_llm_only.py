@@ -1,7 +1,6 @@
-import pytest
 
-from bot.schemas.onboarding import OnboardingData, DailyPlan, ActivityLevel, Goal
-from bot.services.adjust import apply_adjustment, ParsedAdjustment
+from bot.schemas.onboarding import ActivityLevel, DailyPlan, Goal, OnboardingData
+from bot.services.adjust import ParsedAdjustment, apply_adjustment
 
 
 def _mk_data(
@@ -43,7 +42,7 @@ def _mk_plan(cal: int = 2000, p: int = 130, f: int = 60, c: int = 200, tdee: int
     )
 
 
-def test_llm_only_single_macro_percent_carbs_drop_calories():
+def test_llm_only_single_macro_percent_carbs_drop_calories() -> None:
     # Emulate LLM JSON for phrase like "уменьши углеводы на 10%"
     data = _mk_data(goal=Goal.lose)
     base = _mk_plan(cal=2000, p=120, f=60, c=200)
@@ -70,7 +69,7 @@ def test_llm_only_single_macro_percent_carbs_drop_calories():
     assert new_plan.calories < base.calories
 
 
-def test_llm_only_faster_weight_loss_percent_calories():
+def test_llm_only_faster_weight_loss_percent_calories() -> None:
     # Emulate LLM JSON for phrase like "хочу быстрее похудеть"
     data = _mk_data(goal=Goal.lose)
     base = _mk_plan(cal=2000, p=120, f=60, c=200)
@@ -88,4 +87,6 @@ def test_llm_only_faster_weight_loss_percent_calories():
     # Calorie target should be reduced by ~10% with safety clamps applied
     assert new_plan.calories < base.calories
     # Macros should be recomputed consistently with calorie change
-    assert new_plan.protein_g > 0 and new_plan.fat_g > 0 and new_plan.carbs_g > 0
+    assert new_plan.protein_g > 0
+    assert new_plan.fat_g > 0
+    assert new_plan.carbs_g > 0

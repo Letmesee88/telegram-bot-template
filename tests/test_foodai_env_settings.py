@@ -1,11 +1,10 @@
 from __future__ import annotations
-
 import os
 
 from bot.core import config as cfg
 
 
-def test_env_settings_foodai_bd_mode():
+def test_env_settings_foodai_bd_mode() -> None:
     # Clear potential ENV overrides set by other tests
     for key in [
         "FOODAI_PROVIDER",
@@ -43,7 +42,8 @@ def test_env_settings_foodai_bd_mode():
     # Provider/model consistency
     assert (settings.FOODAI_PROVIDER or "").lower() == "openai"
     # Photo analysis uses explicit vision model from .env; default model may differ
-    assert isinstance(settings.FOODAI_VISION_MODEL, str) and settings.FOODAI_VISION_MODEL.startswith("gpt-5")
+    assert isinstance(settings.FOODAI_VISION_MODEL, str)
+    assert settings.FOODAI_VISION_MODEL.startswith("gpt-5")
 
     # API modes: Responses enabled (including GPT-5 photo via Responses)
     assert (settings.FOODAI_API or "").lower() == "responses"

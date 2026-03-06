@@ -1,11 +1,11 @@
 import pytest
 
-from bot.services.foodai import analyze_photo
 from bot.services import foodai as foodai_module
+from bot.services.foodai import analyze_photo
 
 
 @pytest.mark.asyncio
-async def test_escalation_low_conf_without_many_items(monkeypatch: pytest.MonkeyPatch):
+async def test_escalation_low_conf_without_many_items(monkeypatch: pytest.MonkeyPatch) -> None:
     # Setup: low confidence (< threshold) should trigger escalation even with few items
     foodai_module.settings.FOODAI_VISION_ESCALATION_ENABLED = True
     foodai_module.settings.FOODAI_VISION_ESCALATION_CHAIN = "m1>m2"
@@ -28,7 +28,7 @@ async def test_escalation_low_conf_without_many_items(monkeypatch: pytest.Monkey
                 '"weight_g":300,"confidence":0.6,'
                 '"items":[{"name":"рис","calories":200,"protein_g":4,"fat_g":1,'
                 '"carbs_g":45,"weight_g":180,"is_liquid":false}],'
-                '"references":{"sources":["ФГБУН \\\"ФИЦ питания и биотехнологии\\\"","USDA FoodData Central"]},'
+                '"references":{"sources":["ФГБУН \\"ФИЦ питания и биотехнологии\\"","USDA FoodData Central"]},'
                 '"analysis_text":"ok","appearance":{"is_packaged":false,"plate_visible":true,"plate_diameter_cm":24},'
                 '"not_food":false}'
             )
@@ -36,7 +36,7 @@ async def test_escalation_low_conf_without_many_items(monkeypatch: pytest.Monkey
             '{"title":"m2","calories":450,"protein_g":20,"fat_g":12,"carbs_g":55,'
             '"weight_g":380,"confidence":0.9,'
             '"items":[{"name":"рис","calories":220,"protein_g":4,"fat_g":1.5,"carbs_g":48,"weight_g":200,"is_liquid":false}],'
-            '"references":{"sources":["ФГБУН \\\"ФИЦ питания и биотехнологии\\\"","USDA FoodData Central"]},'
+            '"references":{"sources":["ФГБУН \\"ФИЦ питания и биотехнологии\\"","USDA FoodData Central"]},'
             '"analysis_text":"ok","appearance":{"is_packaged":false,"plate_visible":true,"plate_diameter_cm":24},'
             '"not_food":false}'
         )
@@ -50,7 +50,7 @@ async def test_escalation_low_conf_without_many_items(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_escalation_zero_fields_trigger(monkeypatch: pytest.MonkeyPatch):
+async def test_escalation_zero_fields_trigger(monkeypatch: pytest.MonkeyPatch) -> None:
     # Setup: zero_fields enabled, any zero in macros triggers escalation
     foodai_module.settings.FOODAI_VISION_ESCALATION_ENABLED = True
     foodai_module.settings.FOODAI_VISION_ESCALATION_CHAIN = "m1>m2"
@@ -74,7 +74,7 @@ async def test_escalation_zero_fields_trigger(monkeypatch: pytest.MonkeyPatch):
                 '"weight_g":300,"confidence":0.95,'
                 '"items":[{"name":"рис","calories":200,"protein_g":4,"fat_g":1,'
                 '"carbs_g":45,"weight_g":180,"is_liquid":false}],'
-                '"references":{"sources":["ФГБУН \\\"ФИЦ питания и биотехнологии\\\"","USDA FoodData Central"]},'
+                '"references":{"sources":["ФГБУН \\"ФИЦ питания и биотехнологии\\"","USDA FoodData Central"]},'
                 '"analysis_text":"ok","appearance":{"is_packaged":false,"plate_visible":true,"plate_diameter_cm":24},'
                 '"not_food":false}'
             )
@@ -82,7 +82,7 @@ async def test_escalation_zero_fields_trigger(monkeypatch: pytest.MonkeyPatch):
             '{"title":"m2","calories":450,"protein_g":20,"fat_g":12,"carbs_g":55,'
             '"weight_g":380,"confidence":0.9,'
             '"items":[{"name":"рис","calories":220,"protein_g":4,"fat_g":1.5,"carbs_g":48,"weight_g":200,"is_liquid":false}],'
-            '"references":{"sources":["ФГБУН \\\"ФИЦ питания и биотехнологии\\\"","USDA FoodData Central"]},'
+            '"references":{"sources":["ФГБУН \\"ФИЦ питания и биотехнологии\\"","USDA FoodData Central"]},'
             '"analysis_text":"ok","appearance":{"is_packaged":false,"plate_visible":true,"plate_diameter_cm":24},'
             '"not_food":false}'
         )
@@ -96,7 +96,7 @@ async def test_escalation_zero_fields_trigger(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_provider_error_first_model_then_second_ok(monkeypatch: pytest.MonkeyPatch):
+async def test_provider_error_first_model_then_second_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     # First model returns None (HTTP error/timeout), second returns valid JSON
     foodai_module.settings.FOODAI_VISION_ESCALATION_ENABLED = True
     foodai_module.settings.FOODAI_VISION_ESCALATION_CHAIN = "m1>m2"
@@ -117,7 +117,7 @@ async def test_provider_error_first_model_then_second_ok(monkeypatch: pytest.Mon
             '{"title":"m2","calories":480,"protein_g":20,"fat_g":12,"carbs_g":55,'
             '"weight_g":380,"confidence":0.9,"items":[{"name":"рис","calories":220,'
             '"protein_g":4,"fat_g":1.5,"carbs_g":48,"weight_g":200,"is_liquid":false}],'
-            '"references":{"sources":["ФГБУН \\\"ФИЦ питания и биотехнологии\\\"","USDA FoodData Central"]},'
+            '"references":{"sources":["ФГБУН \\"ФИЦ питания и биотехнологии\\"","USDA FoodData Central"]},'
             '"analysis_text":"ok","appearance":{"is_packaged":false,"plate_visible":true,"plate_diameter_cm":24},'
             '"not_food":false}'
         )
@@ -131,7 +131,7 @@ async def test_provider_error_first_model_then_second_ok(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
-async def test_provider_all_fail_returns_error(monkeypatch: pytest.MonkeyPatch):
+async def test_provider_all_fail_returns_error(monkeypatch: pytest.MonkeyPatch) -> None:
     # All attempts return None -> provider_unavailable
     foodai_module.settings.FOODAI_VISION_ESCALATION_ENABLED = True
     foodai_module.settings.FOODAI_VISION_ESCALATION_CHAIN = "m1>m2"

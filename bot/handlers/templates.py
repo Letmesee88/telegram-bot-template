@@ -1,30 +1,30 @@
 from __future__ import annotations
-
+import contextlib
 import re
-from aiogram import Router, types, F
+
+from aiogram import F, Router, types
 from aiogram.filters import Command
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.i18n import gettext as _
 from sqlalchemy import select
-from datetime import datetime, timezone
 
 from bot.database.database import sessionmaker
-from bot.database.models import MealTemplateModel, MealModel, DailyIntakeModel, OnboardingAnswerModel
+from bot.database.models import DailyIntakeModel, MealModel, OnboardingAnswerModel
+from bot.handlers.foodai import _build_preview_text, _preview_kb, _saved_with_recommend_kb
 from bot.keyboards.templates import (
     categories_browse_kb,
     choose_category_kb,
-    templates_list_kb,
     save_confirm_kb,
+    templates_list_kb,
 )
 from bot.services.templates import (
+    create_meal_draft_from_template,
+    create_template_from_meal,
+    delete_template,
     list_categories_with_counts,
     list_templates,
-    create_template_from_meal,
-    create_meal_draft_from_template,
-    delete_template,
 )
-from bot.handlers.foodai import _build_preview_text, _preview_kb, _saved_with_recommend_kb
 from bot.services.users import today_local_utc_dates
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 router = Router(name="templates")
 
@@ -79,14 +79,10 @@ async def cb_tpl_cat(callback: types.CallbackQuery) -> None:
             select(OnboardingAnswerModel.id).where(OnboardingAnswerModel.user_id == user_id)
         )
     if not bool(exists):
-        try:
+        with contextlib.suppress(Exception):
             await callback.answer()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             await callback.message.answer(_("Завершите онбординг за пару минут, чтобы получить полный доступ к данным"), reply_markup=_cta_kb())
-        except Exception:
-            pass
         return
     category = m.group(1)
     async with sessionmaker() as session:
@@ -238,7 +234,7 @@ async def cb_tpl_save_back(callback: types.CallbackQuery) -> None:
                 # Fallback path for tests using a simplified session that only implements scalar()
                 di_fallback = await session.scalar(
                     select(DailyIntakeModel).where(
-                        (DailyIntakeModel.user_id == user_id)
+                        DailyIntakeModel.user_id == user_id
                     )
                 )
                 if di_fallback:
@@ -262,10 +258,7 @@ async def cb_tpl_save_back(callback: types.CallbackQuery) -> None:
                 diff_f = plan_f - fact_f
                 diff_c = plan_c - fact_c
                 def _fmt(delta: float, emoji: str, unit: str, label: str) -> str:
-                    if unit == "ккал":
-                        show_val = f"{int(abs(delta))}"
-                    else:
-                        show_val = f"{abs(delta):.1f}"
+                    show_val = f"{int(abs(delta))}" if unit == "ккал" else f"{abs(delta):.1f}"
                     if delta > 0:
                         return f"{emoji} {label}: {show_val} {unit} до нормы"
                     if delta < 0:
@@ -343,7 +336,7 @@ async def cb_tpl_del(callback: types.CallbackQuery) -> None:
     if not m or not callback.from_user:
         return
     tpl_id = int(m.group(1))
-    category = m.group(2)
+    m.group(2)
     user_id = callback.from_user.id
     async with sessionmaker() as session:
         await delete_template(session, user_id, tpl_id)

@@ -18,14 +18,17 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
 # Ensure project root is importable
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import bot.services.foodai as foodai
+from bot.services import foodai
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def _json_result(
@@ -61,7 +64,7 @@ def _json_result(
         "items": items,
         "references": {
             "sources": [
-                "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                'ФГБУН "ФИЦ питания и биотехнологии"',
                 "USDA FoodData Central",
             ]
         },
@@ -114,7 +117,8 @@ async def run_scenario(scn: str) -> None:
             _json_result(confidence=0.86, items_count=2),
         ]
     else:
-        raise SystemExit(f"Unknown scenario: {scn}")
+        msg = f"Unknown scenario: {scn}"
+        raise SystemExit(msg)
 
     # Apply monkeypatches
     orig_tg = foodai._tg_file_url
@@ -126,8 +130,7 @@ async def run_scenario(scn: str) -> None:
             foodai._foodness_photo = _stub_foodness  # type: ignore
         foodai._openai_request = make_stub_openai_request(seq)  # type: ignore
 
-        res = await foodai.analyze_photo("fake_file_id")
-        print(json.dumps(res, ensure_ascii=False, indent=2))
+        await foodai.analyze_photo("fake_file_id")
     finally:
         # Restore originals
         foodai._tg_file_url = orig_tg  # type: ignore

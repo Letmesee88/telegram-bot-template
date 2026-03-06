@@ -1,18 +1,19 @@
 from __future__ import annotations
 import asyncio
+import contextlib
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiohttp.web import Response, View
 from loguru import logger
+from sqlalchemy import func, select, update
 from yookassa import Configuration, Payment
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from bot.core.config import settings
 from bot.core.loader import bot, redis_client
 from bot.database.database import sessionmaker
 from bot.database.models import PaymentModel, SubscriptionModel, UserModel
-from sqlalchemy import select, update, func
 from bot.services.users import get_user_tzinfo
 
 
@@ -30,7 +31,7 @@ def _expected_amount(plan: str) -> Decimal:
         return Decimal(str(settings.PRICE_MONTH_RUB))
     if plan == "year":
         return Decimal(str(settings.PRICE_YEAR_RUB))
-    return Decimal("0")
+    return Decimal(0)
 
 
 def _add_duration(plan: str, base: datetime) -> datetime:
@@ -214,10 +215,8 @@ class YooKassaWebhookView(View):
                             attempts = int((await redis_client.incr(attempts_key)) or 1)
                         except Exception:
                             attempts = 1
-                        try:
+                        with contextlib.suppress(Exception):
                             await redis_client.expire(attempts_key, 15 * 24 * 3600)
-                        except Exception:
-                            pass
                         if attempts <= len(delays):
                             try:
                                 next_ts = int((datetime.now(timezone.utc) + timedelta(days=delays[attempts - 1])).timestamp())

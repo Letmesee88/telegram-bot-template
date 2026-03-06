@@ -1,12 +1,14 @@
-import pytest
 from datetime import datetime, timedelta, timezone
+from typing import NoReturn
+
+import pytest
 
 import bot.handlers.yookassa_webhook as webhook
 import bot.services.yookassa as svc
 
 
 class FakeResult:
-    def __init__(self, scalar_obj=None, scalars_list=None):
+    def __init__(self, scalar_obj=None, scalars_list=None) -> None:
         self._scalar_obj = scalar_obj
         self._scalars_list = scalars_list or []
 
@@ -14,7 +16,7 @@ class FakeResult:
         return self._scalar_obj
 
     class _Scalars:
-        def __init__(self, items):
+        def __init__(self, items) -> None:
             self._items = items
 
         def all(self):
@@ -25,7 +27,7 @@ class FakeResult:
 
 
 class SelectPromise:
-    def __init__(self, model):
+    def __init__(self, model) -> None:
         self.model = model
 
     def where(self, *args, **kwargs):
@@ -43,7 +45,7 @@ def fake_select(model):
 
 
 class UpdatePromise:
-    def __init__(self, model):
+    def __init__(self, model) -> None:
         self.model = model
         self._values = {}
 
@@ -60,7 +62,7 @@ def fake_update(model):
 
 
 class FakePaymentModel:
-    def __init__(self, *, id: int, user_id: int, yk_payment_id: str, status: str = "pending", meta: dict | None = None):
+    def __init__(self, *, id: int, user_id: int, yk_payment_id: str, status: str = "pending", meta: dict | None = None) -> None:
         self.id = id
         self.user_id = user_id
         self.subscription_id = None
@@ -77,7 +79,7 @@ class FakePaymentModel:
 
 class FakeSubscriptionModel:
     def __init__(self, *, id: int, user_id: int, status: str, plan: str, expires_at_utc: datetime,
-                 auto_renew: bool = False, payment_method_id: str | None = None):
+                 auto_renew: bool = False, payment_method_id: str | None = None) -> None:
         self.id = id
         self.user_id = user_id
         self.status = status
@@ -89,14 +91,14 @@ class FakeSubscriptionModel:
 
 
 class FakeUserModel:
-    def __init__(self, *, id: int):
+    def __init__(self, *, id: int) -> None:
         self.id = id
         self.is_premium = False
         self.foodai_enabled_at = None
 
 
 class FakeSession:
-    def __init__(self, state: dict):
+    def __init__(self, state: dict) -> None:
         self.state = state
         self.update_calls = []
 
@@ -143,12 +145,12 @@ class FakeSession:
         # Used in create_payment to fetch UserModel.email; just return a dummy
         return self.state.get("user_email", "user@example.com")
 
-    async def commit(self):
+    async def commit(self) -> None:
         return None
 
 
 class FakeSessionCM:
-    def __init__(self, session: FakeSession):
+    def __init__(self, session: FakeSession) -> None:
         self._session = session
 
     async def __aenter__(self):
@@ -159,36 +161,35 @@ class FakeSessionCM:
 
 
 class FakeBot:
-    async def send_message(self, *args, **kwargs):
+    async def send_message(self, *args, **kwargs) -> None:
         return None
 
 
 class FakeRedis:
-    def __init__(self):
+    def __init__(self) -> None:
         self.calls = []
         self.kv: dict[str, str] = {}
         self.ttl: dict[str, int] = {}
         self.zsets: dict[str, dict[str, int]] = {}
 
-    async def delete(self, key):
+    async def delete(self, key) -> None:
         self.calls.append(("delete", (key,), {}))
         self.kv.pop(key, None)
         self.ttl.pop(key, None)
 
-    async def set(self, key, value, nx: bool | None = None, ex: int | None = None):
+    async def set(self, key, value, nx: bool | None = None, ex: int | None = None) -> bool:
         self.calls.append(("set", (key, value), {"nx": nx, "ex": ex}))
-        if nx:
-            if key in self.kv:
-                return False
+        if nx and key in self.kv:
+            return False
         self.kv[key] = str(value)
         if ex:
             self.ttl[key] = int(ex)
         return True
 
-    async def exists(self, key):
+    async def exists(self, key) -> int:
         return 1 if key in self.kv else 0
 
-    async def zadd(self, key, mapping: dict):
+    async def zadd(self, key, mapping: dict) -> None:
         self.calls.append(("zadd", (key, mapping), {}))
         z = self.zsets.setdefault(key, {})
         for member, score in mapping.items():
@@ -205,19 +206,19 @@ class FakeRedis:
             return slice_items
         return [m for m, _ in slice_items]
 
-    async def zrem(self, key, member):
+    async def zrem(self, key, member) -> None:
         z = self.zsets.get(key, {})
         z.pop(member if isinstance(member, str) else member.decode(), None)
 
     class _Pipeline:
-        def __init__(self, outer: "FakeRedis"):
+        def __init__(self, outer: "FakeRedis") -> None:
             self.outer = outer
             self.ops = []
 
-        def zrem(self, key, member):
+        def zrem(self, key, member) -> None:
             self.ops.append(("zrem", key, member))
 
-        async def execute(self):
+        async def execute(self) -> None:
             for op, key, member in self.ops:
                 if op == "zrem":
                     await self.outer.zrem(key, member)
@@ -235,26 +236,26 @@ class FakeRedis:
         self.kv[key] = str(cur)
         return cur
 
-    async def expire(self, key, ttl):
+    async def expire(self, key, ttl) -> None:
         self.calls.append(("expire", (key, ttl), {}))
         self.ttl[key] = int(ttl)
 
 
 class FakeYkAmount:
-    def __init__(self, value: str, currency: str = "RUB"):
+    def __init__(self, value: str, currency: str = "RUB") -> None:
         self.value = value
         self.currency = currency
 
 
 class FakeYkPaymentMethod:
-    def __init__(self, id: str, saved: bool):
+    def __init__(self, id: str, saved: bool) -> None:
         self.id = id
         self.saved = saved
 
 
 class FakeYkPayment:
     def __init__(self, *, status: str, amount_value: str, currency: str, metadata: dict,
-                 payment_method_saved: bool = False, payment_method_id: str | None = None, receipt_registration=None):
+                 payment_method_saved: bool = False, payment_method_id: str | None = None, receipt_registration=None) -> None:
         self.status = status
         self.amount = FakeYkAmount(amount_value, currency)
         self.metadata = metadata
@@ -263,7 +264,7 @@ class FakeYkPayment:
 
 
 class FakeRequest:
-    def __init__(self, payload: dict):
+    def __init__(self, payload: dict) -> None:
         self._payload = payload
 
     async def json(self):
@@ -271,14 +272,14 @@ class FakeRequest:
 
 
 @pytest.mark.asyncio
-async def test_block_repeat_trial_in_create_payment(monkeypatch):
+async def test_block_repeat_trial_in_create_payment(monkeypatch) -> None:
     # Patch credentials so _configure passes
     monkeypatch.setattr(svc.settings, "YOOKASSA_SHOP_ID", "test")
     monkeypatch.setattr(svc.settings, "YOOKASSA_SECRET_KEY", "test")
 
     # Fake session: returns succeeded trial row
     class P:
-        def __init__(self, meta):
+        def __init__(self, meta) -> None:
             self.meta = meta
             self.status = "succeeded"
 
@@ -295,7 +296,7 @@ async def test_block_repeat_trial_in_create_payment(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_no_downgrade_trial_on_active_month(monkeypatch):
+async def test_no_downgrade_trial_on_active_month(monkeypatch) -> None:
     # Patch settings/prices and config
     monkeypatch.setattr(webhook.settings, "YOOKASSA_SHOP_ID", "x")
     monkeypatch.setattr(webhook.settings, "YOOKASSA_SECRET_KEY", "y")
@@ -356,7 +357,7 @@ async def test_no_downgrade_trial_on_active_month(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_autorenew_enabled_on_non_rebill_success(monkeypatch):
+async def test_autorenew_enabled_on_non_rebill_success(monkeypatch) -> None:
     # Patch settings/prices and config
     monkeypatch.setattr(webhook.settings, "YOOKASSA_SHOP_ID", "x")
     monkeypatch.setattr(webhook.settings, "YOOKASSA_SECRET_KEY", "y")
@@ -410,7 +411,7 @@ async def test_autorenew_enabled_on_non_rebill_success(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_canceled_expired_on_confirmation_keeps_autorenew(monkeypatch):
+async def test_canceled_expired_on_confirmation_keeps_autorenew(monkeypatch) -> None:
     monkeypatch.setattr(webhook.settings, "YOOKASSA_SHOP_ID", "x")
     monkeypatch.setattr(webhook.settings, "YOOKASSA_SECRET_KEY", "y")
 
@@ -468,7 +469,7 @@ async def test_canceled_expired_on_confirmation_keeps_autorenew(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_canceled_permission_revoked_disables_autorenew(monkeypatch):
+async def test_canceled_permission_revoked_disables_autorenew(monkeypatch) -> None:
     monkeypatch.setattr(webhook.settings, "YOOKASSA_SHOP_ID", "x")
     monkeypatch.setattr(webhook.settings, "YOOKASSA_SECRET_KEY", "y")
 
@@ -521,7 +522,7 @@ async def test_canceled_permission_revoked_disables_autorenew(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_webhook_rebill_canceled_schedules_retry_single(monkeypatch):
+async def test_webhook_rebill_canceled_schedules_retry_single(monkeypatch) -> None:
     # Setup
     monkeypatch.setattr(webhook.settings, "YOOKASSA_SHOP_ID", "x")
     monkeypatch.setattr(webhook.settings, "YOOKASSA_SECRET_KEY", "y")
@@ -574,7 +575,8 @@ async def test_webhook_rebill_canceled_schedules_retry_single(monkeypatch):
     assert any(call[0] == "incr" for call in fr.calls)
     assert "rebill:attempts:501:2025-12" in fr.kv
     # ZSET has due member
-    assert "rebill:due" in fr.zsets and any(m.startswith("501:2025-12") for m in fr.zsets["rebill:due"].keys())
+    assert "rebill:due" in fr.zsets
+    assert any(m.startswith("501:2025-12") for m in fr.zsets["rebill:due"])
     assert "rebill:canceled:processed:501:2025-12" in fr.kv
 
     # Second identical webhook should be de-duplicated (processed flag blocks double scheduling)
@@ -585,7 +587,7 @@ async def test_webhook_rebill_canceled_schedules_retry_single(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_scheduler_due_retry_flow_failure(monkeypatch):
+async def test_scheduler_due_retry_flow_failure(monkeypatch) -> None:
     # Force scheduler to see one due retry and fail create_recurring_payment, then plan next retry
     import bot.background.recurring_scheduler as sched
 
@@ -614,13 +616,14 @@ async def test_scheduler_due_retry_flow_failure(monkeypatch):
     monkeypatch.setattr(sched, "redis_client", fr)
 
     # Make create_recurring_payment fail to trigger attempts++ and reschedule
-    async def fail_recurring(**kwargs):
-        raise RuntimeError("yk down")
+    async def fail_recurring(**kwargs) -> NoReturn:
+        msg = "yk down"
+        raise RuntimeError(msg)
     monkeypatch.setattr(sched.yk, "create_recurring_payment", fail_recurring)
 
     # Fake bot
     class _Bot:
-        async def send_message(self, *a, **kw):
+        async def send_message(self, *a, **kw) -> None:
             return None
     bot = _Bot()
 
@@ -630,11 +633,12 @@ async def test_scheduler_due_retry_flow_failure(monkeypatch):
     await rs._process_due_retries()
     # Validate: attempts incremented and next retry scheduled
     assert fr.kv.get(sched.ATTEMPTS_FMT.format(sub_id=601, period="2025-12")) == "1"
-    assert sched.ZSET_DUE in fr.zsets and any(m.startswith("601:2025-12") for m in fr.zsets[sched.ZSET_DUE].keys())
+    assert sched.ZSET_DUE in fr.zsets
+    assert any(m.startswith("601:2025-12") for m in fr.zsets[sched.ZSET_DUE])
 
 
 @pytest.mark.asyncio
-async def test_scheduler_due_retry_flow_success(monkeypatch):
+async def test_scheduler_due_retry_flow_success(monkeypatch) -> None:
     # On success: set submitted flag, do not increment attempts, do not schedule new zadd
     import bot.background.recurring_scheduler as sched
 
@@ -663,7 +667,7 @@ async def test_scheduler_due_retry_flow_success(monkeypatch):
     monkeypatch.setattr(sched, "redis_client", fr)
 
     class CP:
-        def __init__(self):
+        def __init__(self) -> None:
             self.payment_id = "pay_ok"
             self.confirmation_url = ""
             self.idempotence_key = "rebill:701:2025-12"
@@ -673,7 +677,7 @@ async def test_scheduler_due_retry_flow_success(monkeypatch):
     monkeypatch.setattr(sched.yk, "create_recurring_payment", ok_recurring)
 
     class _Bot:
-        async def send_message(self, *a, **kw):
+        async def send_message(self, *a, **kw) -> None:
             return None
     bot = _Bot()
 

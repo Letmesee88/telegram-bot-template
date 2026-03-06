@@ -1,16 +1,16 @@
 from __future__ import annotations
+from datetime import datetime, timedelta, timezone
+from typing import NoReturn
 
-import asyncio
 import pytest
-from datetime import datetime, timezone, timedelta, date
-from sqlalchemy import select, update, delete
+from sqlalchemy import delete, select, update
 
 from bot.database.database import sessionmaker
-from bot.database.models import SubscriptionModel, UserModel, PaymentModel
+from bot.database.models import PaymentModel, SubscriptionModel, UserModel
 
 
 @pytest.fixture(autouse=True)
-async def _cleanup_db():
+async def _cleanup_db() -> None:
     # Isolate tests: remove prior subscriptions/payments
     async with sessionmaker() as session:
         await session.execute(delete(PaymentModel))
@@ -19,7 +19,7 @@ async def _cleanup_db():
 
 
 @pytest.mark.asyncio
-async def test_scheduler_initial_submit_success(test_db_env, ensure_user, fake_bot, monkeypatch):
+async def test_scheduler_initial_submit_success(test_db_env, ensure_user, fake_bot, monkeypatch) -> None:
     # Arrange user and subscription due now
     user_id = await ensure_user(10031)
     async with sessionmaker() as session:
@@ -50,9 +50,9 @@ async def test_scheduler_initial_submit_success(test_db_env, ensure_user, fake_b
     monkeypatch.setattr(yk.Payment, "create", _fake_payment_create, raising=True)
 
     # Act: call _try_rebill directly
-    from bot.background.recurring_scheduler import _try_rebill, _RebillTask, _period_key
     # Align redis client used inside scheduler with test fake
     import bot.background.recurring_scheduler as rs
+    from bot.background.recurring_scheduler import _period_key, _RebillTask, _try_rebill
     from bot.core.loader import redis_client as _fake_redis
     monkeypatch.setattr(rs, "redis_client", _fake_redis, raising=True)
     period = _period_key(datetime.now(timezone.utc))
@@ -71,12 +71,13 @@ async def test_scheduler_initial_submit_success(test_db_env, ensure_user, fake_b
         assert pm is not None
         assert pm.status == "pending"
         assert pm.subscription_id == sub_id
-        assert pm.meta and pm.meta.get("rebill") is True
+        assert pm.meta
+        assert pm.meta.get("rebill") is True
         assert pm.meta.get("subscription_id") == sub_id
 
 
 @pytest.mark.asyncio
-async def test_scheduler_initial_failure_schedules_retry_and_closes_access(test_db_env, ensure_user, fake_bot, monkeypatch):
+async def test_scheduler_initial_failure_schedules_retry_and_closes_access(test_db_env, ensure_user, fake_bot, monkeypatch) -> None:
     user_id = await ensure_user(10032)
     async with sessionmaker() as session:
         # Ensure premium on, to verify it gets disabled
@@ -99,14 +100,15 @@ async def test_scheduler_initial_failure_schedules_retry_and_closes_access(test_
     # Force YooKassa SDK create to raise to simulate immediate failure
     import bot.services.yookassa as yk
 
-    def _raise_payment_create(payload, idempotency_key=None):
-        raise RuntimeError("test fail")
+    def _raise_payment_create(payload, idempotency_key=None) -> NoReturn:
+        msg = "test fail"
+        raise RuntimeError(msg)
 
     monkeypatch.setattr(yk.Payment, "create", _raise_payment_create, raising=True)
 
-    from bot.background.recurring_scheduler import _try_rebill, _RebillTask, _period_key, ZSET_DUE
     # Align redis client used inside scheduler with test fake
     import bot.background.recurring_scheduler as rs
+    from bot.background.recurring_scheduler import ZSET_DUE, _period_key, _RebillTask, _try_rebill
     from bot.core.loader import redis_client as _fake_redis
     monkeypatch.setattr(rs, "redis_client", _fake_redis, raising=True)
     from bot.core.loader import redis_client
@@ -124,9 +126,11 @@ async def test_scheduler_initial_failure_schedules_retry_and_closes_access(test_
     # Check subscription past_due and premium disabled
     async with sessionmaker() as session:
         sub = (await session.execute(select(SubscriptionModel).where(SubscriptionModel.id == sub_id))).scalar_one_or_none()
-        assert sub is not None and sub.status == "past_due"
+        assert sub is not None
+        assert sub.status == "past_due"
         u = (await session.execute(select(UserModel).where(UserModel.id == user_id))).scalar_one_or_none()
-        assert u is not None and not bool(u.is_premium)
+        assert u is not None
+        assert not bool(u.is_premium)
 
     # Check retry scheduled in ZSET_DUE
     # We expect a member like f"{sub_id}:{YYYY-MM-DD}"
@@ -136,7 +140,7 @@ async def test_scheduler_initial_failure_schedules_retry_and_closes_access(test_
 
 @pytest.mark.asyncio
 @pytest.mark.xfail(strict=False, reason="Hour gate needs stable wall-clock mocking; to be stabilized later")
-async def test_scheduler_respects_local_hour_gate(test_db_env, ensure_user, fake_bot, monkeypatch):
+async def test_scheduler_respects_local_hour_gate(test_db_env, ensure_user, fake_bot, monkeypatch) -> None:
     user_id = await ensure_user(10033)
     # Force user's local time < 10 to block attempt (set expiry early in day + freeze now that morning)
     import bot.background.recurring_scheduler as rs
@@ -167,7 +171,6 @@ async def test_scheduler_respects_local_hour_gate(test_db_env, ensure_user, fake
         session.add(sub)
         await session.commit()
         await session.refresh(sub)
-        sub_id = sub.id
 
     # We override tz via service stub above; no need to touch DB timezone
 
@@ -176,9 +179,10 @@ async def test_scheduler_respects_local_hour_gate(test_db_env, ensure_user, fake
 
     import bot.services.yookassa as yk
 
-    def _spy_payment_create(payload, idempotency_key=None):
+    def _spy_payment_create(payload, idempotency_key=None) -> NoReturn:
         called["count"] += 1
-        raise RuntimeError("should not be called before gate hour")
+        msg = "should not be called before gate hour"
+        raise RuntimeError(msg)
 
     monkeypatch.setattr(yk.Payment, "create", _spy_payment_create, raising=True)
 

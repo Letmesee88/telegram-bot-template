@@ -1,20 +1,23 @@
 from __future__ import annotations
-
-from typing import Optional, Sequence
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select, and_, literal
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import and_, func, literal, select
 
+from bot.analytics.types import BaseEvent, EventProperties, Plan
 from bot.database.models import (
-    MealModel,
-    MealItemModel,
     DailyIntakeModel,
-    MealTemplateModel,
+    MealItemModel,
+    MealModel,
     MealTemplateItemModel,
+    MealTemplateModel,
 )
 from bot.services.analytics import analytics
-from bot.analytics.types import BaseEvent, EventProperties, Plan
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 MAX_TEMPLATES_PER_CATEGORY = 20
 CATEGORY_VALUES = {"breakfast", "lunch", "dinner", "snack"}
@@ -55,16 +58,19 @@ async def create_template_from_meal(
     category: str,
 ) -> MealTemplateModel:
     if category not in CATEGORY_VALUES:
-        raise ValueError("invalid_category")
+        msg = "invalid_category"
+        raise ValueError(msg)
 
     # Counters and validations
     cnt = await _count_in_category(session, user_id, category)
     if cnt >= MAX_TEMPLATES_PER_CATEGORY:
-        raise ValueError("limit_reached")
+        msg = "limit_reached"
+        raise ValueError(msg)
 
     meal = await session.get(MealModel, meal_id)
     if not meal or meal.user_id != user_id:
-        raise ValueError("meal_not_found")
+        msg = "meal_not_found"
+        raise ValueError(msg)
 
     base_title = _norm_title(meal.title or "") or "Блюдо"
     if len(base_title) > 255:
@@ -144,7 +150,7 @@ async def list_categories_with_counts(session: AsyncSession, user_id: int) -> di
         select(MealTemplateModel.category, func.count()).where(MealTemplateModel.user_id == user_id).group_by(MealTemplateModel.category)
     )
     rows = res.all()
-    base = {k: 0 for k in CATEGORY_VALUES}
+    base = dict.fromkeys(CATEGORY_VALUES, 0)
     for cat, cnt in rows:
         base[str(cat)] = int(cnt or 0)
     return base
@@ -162,7 +168,8 @@ async def list_templates(session: AsyncSession, user_id: int, category: str) -> 
 async def delete_template(session: AsyncSession, user_id: int, template_id: int) -> None:
     tpl = await session.get(MealTemplateModel, template_id)
     if not tpl or tpl.user_id != user_id:
-        raise ValueError("not_found")
+        msg = "not_found"
+        raise ValueError(msg)
     await session.delete(tpl)
     await session.commit()
 
@@ -180,7 +187,8 @@ async def delete_template(session: AsyncSession, user_id: int, template_id: int)
 async def create_meal_draft_from_template(session: AsyncSession, user_id: int, template_id: int) -> int:
     tpl = await session.get(MealTemplateModel, template_id)
     if not tpl or tpl.user_id != user_id:
-        raise ValueError("not_found")
+        msg = "not_found"
+        raise ValueError(msg)
 
     meal = MealModel(
         user_id=user_id,
@@ -254,7 +262,8 @@ async def apply_template_immediately(session: AsyncSession, user_id: int, templa
 
     meal = await session.get(MealModel, meal_id)
     if not meal or meal.user_id != user_id:
-        raise ValueError("not_found")
+        msg = "not_found"
+        raise ValueError(msg)
 
     di.calories = int(int(di.calories or 0) + int(meal.calories or 0))
     di.protein_g = float(float(di.protein_g or 0) + float(meal.protein_g or 0))

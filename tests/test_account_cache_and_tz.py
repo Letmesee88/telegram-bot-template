@@ -1,21 +1,17 @@
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
-
 import pytest
 from sqlalchemy import select
 
 from bot.database.database import sessionmaker
 from bot.database.models import OnboardingAnswerModel, WeightLogModel
+from bot.services import users as users_service
 from bot.services.account import get_account_summary_text
 from bot.services.weight import save_weight
-from bot.services import users as users_service
 
 
 class FakeRedis:
-    def __init__(self):
+    def __init__(self) -> None:
         self.store: dict[str, bytes] = {}
         self.get_calls = 0
         self.set_calls = 0
@@ -26,18 +22,18 @@ class FakeRedis:
         self.get_calls += 1
         return self.store.get(key)
 
-    async def setex(self, key: str, ttl: int, value: str):
+    async def setex(self, key: str, ttl: int, value: str) -> None:
         self.set_calls += 1
         self.store[key] = value.encode("utf-8")
 
-    async def delete(self, key: str):
+    async def delete(self, key: str) -> None:
         self.delete_calls += 1
         self.store.pop(key, None)
         self.deleted_keys.append(key)
 
 
 @pytest.mark.asyncio
-async def test_account_cache_hit_and_invalidation(monkeypatch, ensure_user):
+async def test_account_cache_hit_and_invalidation(monkeypatch, ensure_user) -> None:
     user_id = await ensure_user(user_id=22001)
 
     # Provide onboarding baseline
@@ -58,10 +54,10 @@ async def test_account_cache_hit_and_invalidation(monkeypatch, ensure_user):
 
     # Patch redis to fake
     fake = FakeRedis()
-    import bot.core.loader as loader
-    import bot.services.weight as weight_module
-    import bot.services.account as account_module
     import bot.cache.redis as cache_redis
+    import bot.services.account as account_module
+    import bot.services.weight as weight_module
+    from bot.core import loader
     monkeypatch.setattr(loader, "redis_client", fake, raising=True)
     monkeypatch.setattr(weight_module, "redis_client", fake, raising=True)
     monkeypatch.setattr(cache_redis, "redis_client", fake, raising=True)
@@ -90,16 +86,16 @@ async def test_account_cache_hit_and_invalidation(monkeypatch, ensure_user):
 
 
 @pytest.mark.asyncio
-async def test_save_weight_respects_user_timezone_for_local_date(monkeypatch, ensure_user):
+async def test_save_weight_respects_user_timezone_for_local_date(monkeypatch, ensure_user) -> None:
     user_id = await ensure_user(user_id=22002)
 
     # Set user's timezone to America/Los_Angeles
     async with sessionmaker() as session:
         # Patch redis clients to avoid real connection during clear_cache
         fake = FakeRedis()
-        import bot.core.loader as loader
-        import bot.services.weight as weight_module
         import bot.cache.redis as cache_redis
+        import bot.services.weight as weight_module
+        from bot.core import loader
         monkeypatch.setattr(loader, "redis_client", fake, raising=True)
         monkeypatch.setattr(weight_module, "redis_client", fake, raising=True)
         monkeypatch.setattr(cache_redis, "redis_client", fake, raising=True)

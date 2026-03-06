@@ -1,11 +1,10 @@
 from __future__ import annotations
-
 from datetime import date, timedelta
 
 import pytest
 
-from bot.schemas.onboarding import DailyPlan, OnboardingData, Gender, Goal, ActivityLevel
-from bot.services.adjust import apply_adjustment, ParsedAdjustment
+from bot.schemas.onboarding import ActivityLevel, DailyPlan, Gender, Goal, OnboardingData
+from bot.services.adjust import ParsedAdjustment, apply_adjustment
 from bot.services.plan import MAX_DEFICIT_ABS, MAX_DEFICIT_FRAC
 
 
@@ -42,7 +41,7 @@ def make_base_plan(cal: int = 3000, p: int = 180, f: int = 90, c: int = 300,
 
 
 @pytest.mark.asyncio
-async def test_rate_per_week_applies_expected_calories_lose():
+async def test_rate_per_week_applies_expected_calories_lose() -> None:
     data = make_data(weight=100.0, activity=ActivityLevel.moderate, goal=Goal.lose, goal_weight=90.0)
     base_plan = make_base_plan(cal=3200, p=220, f=90, c=300, tdee=3300)
 
@@ -61,13 +60,13 @@ async def test_rate_per_week_applies_expected_calories_lose():
 
     # Expected target calories = clamp(tdee - delta), where delta = 0.5*7700/7
     delta = 0.5 * 7700.0 / 7.0
-    expected = int(round(new_plan.tdee - delta))
+    expected = round(new_plan.tdee - delta)
     assert new_plan.calories == expected
     assert new_plan.calories < base_plan.calories
 
 
 @pytest.mark.asyncio
-async def test_deadline_date_applies_expected_calories_lose():
+async def test_deadline_date_applies_expected_calories_lose() -> None:
     data = make_data(weight=95.0, goal=Goal.lose, goal_weight=85.0)
     base_plan = make_base_plan(cal=2900, p=200, f=80, c=300, tdee=3000)
 
@@ -95,13 +94,13 @@ async def test_deadline_date_applies_expected_calories_lose():
     raw = tdee - delta
     max_def = min(MAX_DEFICIT_ABS, MAX_DEFICIT_FRAC * tdee)
     min_allowed = max(100.0, tdee - max_def)
-    expected = int(round(max(min_allowed, min(raw, tdee))))
+    expected = round(max(min_allowed, min(raw, tdee)))
     assert new_plan.calories == expected
     assert new_plan.calories < base_plan.calories
 
 
 @pytest.mark.asyncio
-async def test_activity_override_changes_tdee_not_calories():
+async def test_activity_override_changes_tdee_not_calories() -> None:
     data = make_data(weight=85.0, activity=ActivityLevel.moderate)
     base_plan = make_base_plan(cal=2600, p=180, f=70, c=250, tdee=2700)
 

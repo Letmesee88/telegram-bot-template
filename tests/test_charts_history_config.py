@@ -1,9 +1,8 @@
-import pytest
 
 from bot.services.charts import _history_panel_config
 
 
-def test_history_panel_with_norm_annotation_and_bar_styles():
+def test_history_panel_with_norm_annotation_and_bar_styles() -> None:
     labels = ["Пн 10.10", "Вт 11.10", "Ср 12.10"]
     values = [1500, 1600, 1700]
     norm = 1800
@@ -21,7 +20,9 @@ def test_history_panel_with_norm_annotation_and_bar_styles():
     # Bar dataset styles
     bar_ds = next(ds for ds in cfg["data"]["datasets"] if ds.get("type") == "bar")
     bg = bar_ds.get("backgroundColor")
-    assert isinstance(bg, str) and bg.startswith("rgba(") and bg.endswith(",0.8)")
+    assert isinstance(bg, str)
+    assert bg.startswith("rgba(")
+    assert bg.endswith(",0.8)")
     assert bar_ds.get("borderColor") == "#ffffff"
     assert bar_ds.get("borderWidth") == 2
 
@@ -29,7 +30,7 @@ def test_history_panel_with_norm_annotation_and_bar_styles():
     norm_ds = next(ds for ds in cfg["data"]["datasets"] if ds.get("label") == "Норма")
     assert norm_ds.get("type") == "line"
     assert norm_ds.get("borderDash") == [6, 6]
-    assert norm in [int(round(float(x))) for x in norm_ds.get("data", [])]
+    assert norm in [round(float(x)) for x in norm_ds.get("data", [])]
 
     # Annotation with single centered label "Норма: N"
     plugins = cfg["options"]["plugins"]
@@ -38,7 +39,7 @@ def test_history_panel_with_norm_annotation_and_bar_styles():
     assert "normLabel" in ann
     norm_label = ann["normLabel"]
     assert norm_label.get("type") == "label"
-    assert norm_label.get("content") == f"Норма: {int(round(float(norm)))}"
+    assert norm_label.get("content") == f"Норма: {round(float(norm))}"
     assert norm_label.get("yValue") == float(norm)
     assert norm_label.get("xValue") in labels
 
@@ -46,7 +47,7 @@ def test_history_panel_with_norm_annotation_and_bar_styles():
     assert "datalabels" in plugins
 
 
-def test_history_panel_without_norm_hides_line_and_annotation():
+def test_history_panel_without_norm_hides_line_and_annotation() -> None:
     labels = ["Пн 10.10", "Вт 11.10"]
     values = [1200, 1300]
     cfg = _history_panel_config(

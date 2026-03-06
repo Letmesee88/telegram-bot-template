@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 
 class DummyUser:
-    def __init__(self, user_id: int = 123):
+    def __init__(self, user_id: int = 123) -> None:
         self.id = user_id
         self.first_name = "Test"
         self.last_name = None
@@ -27,7 +27,7 @@ class DummyMessage:
 
 
 class DummyCallback:
-    def __init__(self, user_id: int = 123):
+    def __init__(self, user_id: int = 123) -> None:
         self.from_user = DummyUser(user_id)
         self.message = DummyMessage(user_id)
         self.data: str | None = None
@@ -68,8 +68,8 @@ async def test_onboarding_happy_path_lose(apply_migrations, db_session, monkeypa
     monkeypatch.setattr(analytics_module.analytics, "logger", None)
 
     # Import handlers after env/migrations are ready
-    from bot.handlers import onboarding as ob
     from bot.database.models import OnboardingAnswerModel, UserModel
+    from bot.handlers import onboarding as ob
 
     # Avoid aiogram I18n context by replacing _ with identity
     monkeypatch.setattr(ob, "_", lambda s: s)
@@ -148,7 +148,8 @@ async def test_onboarding_happy_path_lose(apply_migrations, db_session, monkeypa
     assert rec.user_id == user_id
     assert rec.daily_plan is not None
     assert rec.goal in ("lose", "gain", "maintain")
-    assert isinstance(rec.calories, int) and rec.calories > 0
+    assert isinstance(rec.calories, int)
+    assert rec.calories > 0
 
 
 @pytest.mark.asyncio
@@ -158,8 +159,8 @@ async def test_onboarding_maintain_direct_finalize(apply_migrations, db_session,
 
     monkeypatch.setattr(analytics_module.analytics, "logger", None)
 
-    from bot.handlers import onboarding as ob
     from bot.database.models import OnboardingAnswerModel, UserModel
+    from bot.handlers import onboarding as ob
 
     monkeypatch.setattr(ob, "_", lambda s: s)
 
@@ -217,4 +218,5 @@ async def test_onboarding_maintain_direct_finalize(apply_migrations, db_session,
     assert rec is not None
     assert rec.user_id == user_id
     assert rec.goal == "maintain"
-    assert isinstance(rec.calories, int) and rec.calories > 0
+    assert isinstance(rec.calories, int)
+    assert rec.calories > 0

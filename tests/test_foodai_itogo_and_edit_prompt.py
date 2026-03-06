@@ -1,12 +1,14 @@
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
-import pytest
-
-from bot.handlers.foodai import _build_preview_text, _build_edit_prompt_text
 import bot.handlers.foodai as foodai_module
+from bot.handlers.foodai import _build_edit_prompt_text, _build_preview_text
+
+if TYPE_CHECKING:
+    import pytest
 
 
-def test_itogo_operator_precedence_and_values(monkeypatch: pytest.MonkeyPatch):
+def test_itogo_operator_precedence_and_values(monkeypatch: pytest.MonkeyPatch) -> None:
     # Stub i18n gettext to avoid requiring aiogram I18n context
     monkeypatch.setattr(foodai_module, "_", lambda s: s, raising=False)
 
@@ -18,7 +20,7 @@ def test_itogo_operator_precedence_and_values(monkeypatch: pytest.MonkeyPatch):
         conf=0.9,
         weight=300.0,
         items=[{"name": "Курица", "calories": 120, "weight_g": 150}],
-        references={"sources": ["ФГБУН \"ФИЦ питания и биотехнологии\"", "USDA FoodData Central"]},
+        references={"sources": ['ФГБУН "ФИЦ питания и биотехнологии"', "USDA FoodData Central"]},
         title="Салат с курицей",
         source="text",
         itogo={
@@ -44,7 +46,7 @@ def test_itogo_operator_precedence_and_values(monkeypatch: pytest.MonkeyPatch):
     assert "🍞 Углеводы: 35.0 г (95% от нормы)" in out
 
 
-def test_edit_prompt_proteins_spacing(monkeypatch: pytest.MonkeyPatch):
+def test_edit_prompt_proteins_spacing(monkeypatch: pytest.MonkeyPatch) -> None:
     # Stub i18n gettext
     monkeypatch.setattr(foodai_module, "_", lambda s: s, raising=False)
 

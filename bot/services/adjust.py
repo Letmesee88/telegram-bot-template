@@ -1,26 +1,22 @@
 from __future__ import annotations
-
 import asyncio
 import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Optional, Tuple
 
 import aiohttp
 from loguru import logger
 
 from bot.cache.redis import cached
 from bot.core.config import settings
-from bot.schemas.onboarding import DailyPlan, OnboardingData, ActivityLevel, Goal
+from bot.schemas.onboarding import ActivityLevel, DailyPlan, Goal, OnboardingData
 from bot.services.plan import (
-    calculate_daily_plan,
-    ACTIVITY_MULTIPLIERS,
+    GAIN_MAX_SURPLUS,
+    GAIN_MIN_SURPLUS,
     MAX_DEFICIT_ABS,
     MAX_DEFICIT_FRAC,
-    GAIN_MIN_SURPLUS,
-    GAIN_MAX_SURPLUS,
+    calculate_daily_plan,
 )
 
 
@@ -57,7 +53,7 @@ def _infer_strength(text: str) -> str:
     return "moderate"
 
 
-def _apply_strength_defaults(parsed: 'ParsedAdjustment', *, text: str) -> 'ParsedAdjustment':
+def _apply_strength_defaults(parsed: ParsedAdjustment, *, text: str) -> ParsedAdjustment:
     """Fill parsed.calories/macros with deterministic numbers derived from strength
     when user did not provide explicit units in the text (Mode B)."""
     if (settings.ADJUST_ENGINE_MODE or "").lower() != "hybrid":
@@ -108,7 +104,7 @@ def _apply_strength_defaults(parsed: 'ParsedAdjustment', *, text: str) -> 'Parse
     return parsed
 
 
-def _expand_conversational_heuristics(text: str, pa: Optional['ParsedAdjustment']) -> Optional['ParsedAdjustment']:
+def _expand_conversational_heuristics(text: str, pa: ParsedAdjustment | None) -> ParsedAdjustment | None:
     """Augment intents based on simple RU phrases (pizza/sweets/fast food -> low_carb, etc.)."""
     s = (text or "").lower()
     intents = list(pa.intents) if pa else []
@@ -141,12 +137,12 @@ def _expand_conversational_heuristics(text: str, pa: Optional['ParsedAdjustment'
 @dataclass
 class ParsedAdjustment:
     intents: list[str]
-    activity_override: Optional[str]
-    calories: Optional[dict]
-    macros: Optional[dict]
+    activity_override: str | None
+    calories: dict | None
+    macros: dict | None
     dietary_restrictions: list[str]
     confidence: float
-    rationale: Optional[str]
+    rationale: str | None
     version: str
 
 
@@ -158,7 +154,7 @@ def _privacy_hash(s: str | bytes | None) -> str | None:
     return hashlib.sha256(s).hexdigest()
 
 
-def _coerce_json(s: str) -> Optional[dict]:
+def _coerce_json(s: str) -> dict | None:
     # try parse strict first
     try:
         return json.loads(s)
@@ -198,13 +194,13 @@ def _extract_explicit_macros_from_text(text: str) -> dict:
         import re
         s = (text or "").lower()
         # Normalize decimal comma to dot, then cast to int later
-        def _find(patterns: list[tuple[str, str]]) -> Optional[int]:
-            for pat, unit in patterns:
+        def _find(patterns: list[tuple[str, str]]) -> int | None:
+            for pat, _unit in patterns:
                 m = re.search(pat, s)
                 if m:
-                    val = m.group(1).replace(',', '.')
+                    val = m.group(1).replace(",", ".")
                     try:
-                        return int(round(float(val)))
+                        return round(float(val))
                     except Exception:
                         continue
             return None
@@ -243,7 +239,7 @@ def _is_veggies_request(text: str) -> bool:
         return False
 
 
-def _extract_weekly_rate(text: str) -> Optional[float]:
+def _extract_weekly_rate(text: str) -> float | None:
     """Extract weekly rate in kg/week from text, e.g. '0.7 кг в неделю' or '1 кг/нед'."""
     try:
         import re
@@ -261,7 +257,7 @@ def _extract_weekly_rate(text: str) -> Optional[float]:
     return None
 
 
-def _extract_deadline_date(text: str) -> Optional[str]:
+def _extract_deadline_date(text: str) -> str | None:
     """Extract ISO date 'YYYY-MM-DD' from phrases like 'к 01.03.2026' or 'к 01.03'."""
     try:
         import re
@@ -289,7 +285,7 @@ def _extract_deadline_date(text: str) -> Optional[str]:
         return None
 
 
-def _respect_only_specified(text: str, pa: Optional['ParsedAdjustment']) -> Optional['ParsedAdjustment']:
+def _respect_only_specified(text: str, pa: ParsedAdjustment | None) -> ParsedAdjustment | None:
     """If user specified exactly one macro in grams, force only that macro and drop others from custom_target_g."""
     if not pa:
         return pa
@@ -306,7 +302,7 @@ def _respect_only_specified(text: str, pa: Optional['ParsedAdjustment']) -> Opti
         return pa
 
 
-async def _llm_parse_adjustment(text: str, *, lang_hint: Optional[str], base_ctx: Optional[dict] = None) -> Optional[ParsedAdjustment]:
+async def _llm_parse_adjustment(text: str, *, lang_hint: str | None, base_ctx: dict | None = None) -> ParsedAdjustment | None:
     if not settings.ADJUST_LLM_ENABLED:
         return None
     if not settings.OPENAI_API_KEY:
@@ -399,7 +395,7 @@ async def _llm_parse_adjustment(text: str, *, lang_hint: Optional[str], base_ctx
         ],
     }
     timeout = float(getattr(settings, "ADJUST_LLM_TIMEOUT_SEC", 4.0) or 4.0)
-    data: Optional[dict] = None
+    data: dict | None = None
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as sess:
             async with sess.post(f"{base}/responses", headers=headers, json=payload_resp) as resp:
@@ -413,7 +409,7 @@ async def _llm_parse_adjustment(text: str, *, lang_hint: Optional[str], base_ctx
     except Exception as e:
         logger.exception("adjust_llm_exception | endpoint=/responses | err={}", e)
 
-    def _extract_responses_text(d: dict | None) -> Optional[str]:
+    def _extract_responses_text(d: dict | None) -> str | None:
         if not d:
             return None
         try:
@@ -490,7 +486,7 @@ async def _llm_parse_adjustment(text: str, *, lang_hint: Optional[str], base_ctx
         return None
 
 
-def _activity_override(level: Optional[str], data: OnboardingData) -> Optional[ActivityLevel]:
+def _activity_override(level: str | None, data: OnboardingData) -> ActivityLevel | None:
     if not level:
         return None
     lvl = str(level).strip().lower()
@@ -515,7 +511,7 @@ def _clamp_calories(goal: Goal, tdee: float, target_cal: float) -> int:
         upper = tdee + GAIN_MAX_SURPLUS
         target_cal = max(100.0, min(target_cal, upper))
         target_cal = max(lower, target_cal)
-    return int(round(target_cal))
+    return round(target_cal)
 
 
 def _calc_weekly_rate(tdee: float, target_cal: int, goal: Goal) -> float:
@@ -580,11 +576,11 @@ def _recompute_macros(
     calories: int,
     weight_kg: float,
     scheme: str | None,
-    custom: Optional[dict],
+    custom: dict | None,
     goal: Goal,
     reduce_fat_requested: bool,
     is_keto_requested: bool,
-) -> Tuple[int, int, int, str, bool]:
+) -> tuple[int, int, int, str, bool]:
     """Return protein_g, fat_g, carbs_g, scheme_used, safety_clamped.
 
     Enforces safety floors:
@@ -596,11 +592,11 @@ def _recompute_macros(
 
     # floors/ceilings
     prot_floor_per_kg = 1.2 if goal in {Goal.lose, Goal.maintain} else 1.6
-    prot_min = int(round(max(prot_floor_per_kg * weight_kg, 60)))  # at least 60g
-    prot_cap = int(round(2.4 * weight_kg))
+    prot_min = round(max(prot_floor_per_kg * weight_kg, 60))  # at least 60g
+    prot_cap = round(2.4 * weight_kg)
 
     fat_floor_per_kg = 0.6 if reduce_fat_requested else 0.8
-    fat_min = int(round(max(fat_floor_per_kg * weight_kg, 30)))   # at least 30g
+    fat_min = round(max(fat_floor_per_kg * weight_kg, 30))   # at least 30g
 
     carb_min = 20 if is_keto_requested else 100
 
@@ -615,9 +611,9 @@ def _recompute_macros(
 
     if used == "keto":
         carbs_g = carb_min
-        protein_g = clamp(int(round(1.8 * weight_kg)), prot_min, prot_cap)
+        protein_g = clamp(round(1.8 * weight_kg), prot_min, prot_cap)
         f_cal = calories - (protein_g * 4 + carbs_g * 4)
-        fat_g = max(fat_min, int(round(f_cal / 9)))
+        fat_g = max(fat_min, round(f_cal / 9))
         if fat_g * 9 + protein_g * 4 + carbs_g * 4 > calories:
             # reduce protein slightly to satisfy fat_min
             new_p = clamp(protein_g - 10, prot_min, prot_cap)
@@ -625,7 +621,7 @@ def _recompute_macros(
                 clamped = True
             protein_g = new_p
             f_cal = calories - (protein_g * 4 + carbs_g * 4)
-            fat_new = max(fat_min, int(round(f_cal / 9)))
+            fat_new = max(fat_min, round(f_cal / 9))
             if fat_new != fat_g:
                 clamped = True
             fat_g = fat_new
@@ -633,9 +629,9 @@ def _recompute_macros(
 
     if used == "low_carb":
         carbs_g = max(100, carb_min)
-        protein_g = clamp(int(round(1.6 * weight_kg)), prot_min, prot_cap)
+        protein_g = clamp(round(1.6 * weight_kg), prot_min, prot_cap)
         f_cal = calories - (protein_g * 4 + carbs_g * 4)
-        fat_new = max(fat_min, int(round(f_cal / 9)))
+        fat_new = max(fat_min, round(f_cal / 9))
         fat_g = fat_new
         if fat_g * 9 + protein_g * 4 + carbs_g * 4 > calories:
             # relax carbs to fit
@@ -644,14 +640,14 @@ def _recompute_macros(
                 clamped = True
             carbs_g = carbs_new
             f_cal = calories - (protein_g * 4 + carbs_g * 4)
-            fat_g = max(fat_min, int(round(f_cal / 9)))
+            fat_g = max(fat_min, round(f_cal / 9))
         return protein_g, fat_g, carbs_g, used, clamped
 
     if used == "high_protein":
-        protein_g = clamp(int(round(2.0 * weight_kg)), prot_min, prot_cap)
+        protein_g = clamp(round(2.0 * weight_kg), prot_min, prot_cap)
         fat_g = fat_min
         c_cal = calories - (protein_g * 4 + fat_g * 9)
-        carbs_g = max(carb_min, int(round(c_cal / 4)))
+        carbs_g = max(carb_min, round(c_cal / 4))
         if protein_g * 4 + fat_g * 9 + carbs_g * 4 > calories:
             # lower protein a bit to fit
             new_p = clamp(protein_g - 10, prot_min, prot_cap)
@@ -659,7 +655,7 @@ def _recompute_macros(
                 clamped = True
             protein_g = new_p
             c_cal = calories - (protein_g * 4 + fat_g * 9)
-            carbs_g = max(carb_min, int(round(c_cal / 4)))
+            carbs_g = max(carb_min, round(c_cal / 4))
         return protein_g, fat_g, carbs_g, used, clamped
 
     if used == "custom" and isinstance(custom, dict):
@@ -671,30 +667,30 @@ def _recompute_macros(
         # allocate remainder to carbs if not specified
         if c is None:
             c_cal = calories - (protein_g * 4 + fat_g * 9)
-            carbs_g = max(carb_min, int(round(c_cal / 4)))
+            carbs_g = max(carb_min, round(c_cal / 4))
         else:
             carbs_g = max(carb_min, int(c))
         # final normalization: if sum exceeds, reduce carbs first
         total = protein_g * 4 + fat_g * 9 + carbs_g * 4
         if total > calories:
             excess_cal = total - calories
-            reduce_c = min(carbs_g - carb_min, int(round(excess_cal / 4)))
+            reduce_c = min(carbs_g - carb_min, round(excess_cal / 4))
             carbs_g -= max(0, reduce_c)
-        return protein_g, fat_g, carbs_g, used, (protein_g < (p or protein_g) or fat_g < (f or fat_g) or c is not None and carbs_g < int(c))
+        return protein_g, fat_g, carbs_g, used, (protein_g < (p or protein_g) or fat_g < (f or fat_g) or (c is not None and carbs_g < int(c)))
 
     # balanced (default): reuse current split roughly 30/30/40
-    p_cal = int(round(calories * 0.30))
-    f_cal = int(round(calories * 0.30))
+    p_cal = round(calories * 0.30)
+    f_cal = round(calories * 0.30)
     c_cal = calories - p_cal - f_cal
-    protein_g = max(prot_min, int(round(p_cal / 4)))
-    fat_g = max(fat_min, int(round(f_cal / 9)))
-    carbs_g = max(carb_min, int(round(c_cal / 4)))
+    protein_g = max(prot_min, round(p_cal / 4))
+    fat_g = max(fat_min, round(f_cal / 9))
+    carbs_g = max(carb_min, round(c_cal / 4))
     if protein_g == prot_min or fat_g == fat_min or carbs_g == carb_min:
         clamped = True
     return protein_g, fat_g, carbs_g, used, clamped
 
 
-def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: ParsedAdjustment) -> Tuple[DailyPlan, str, dict]:
+def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: ParsedAdjustment) -> tuple[DailyPlan, str, dict]:
     # 1) activity override
     ao = _activity_override(parsed.activity_override, data)
     payload = data
@@ -720,7 +716,7 @@ def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: Parsed
     base_cal = base_plan.calories
     # Apply calories with support for special modes (weekly rate / deadline date)
     if parsed.calories:
-        mode = str((parsed.calories.get("mode") or "")).lower()
+        mode = str(parsed.calories.get("mode") or "").lower()
         val = parsed.calories.get("value")
         if mode in {"absolute", "delta", "percent"}:
             cal_target = _apply_calorie_change(base_cal, tdee, data.goal, parsed.calories or {})
@@ -782,9 +778,8 @@ def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: Parsed
         if custom.get("fat_g") is None:
             custom["fat_g"] = int(base_plan.fat_g)
         # If only one macro was explicitly requested, don't allocate remainder: keep carbs at base
-        if single_macro_requested:
-            if custom.get("carbs_g") is None:
-                custom["carbs_g"] = int(base_plan.carbs_g)
+        if single_macro_requested and custom.get("carbs_g") is None:
+            custom["carbs_g"] = int(base_plan.carbs_g)
         # else: if carbs missing -> keep None to allocate remainder below in _recompute_macros
 
     # Low-carb by strength may set only carbs_g; keep other macros from current plan to avoid jumps
@@ -826,14 +821,13 @@ def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: Parsed
             carb_min = 20 if is_keto_req else 100
             # maintain within cal_target when possible, but do not increase carbs if explicitly low_carb was requested and carbs would rise
             c_cal = int(cal_target) - (int(protein_g) * 4 + int(fat_g) * 9)
-            carbs_new = max(carb_min, int(round(max(0, c_cal) / 4)))
-            if ('low_carb' in intents_set) and carbs_new > carbs_g:
+            carbs_new = max(carb_min, round(max(0, c_cal) / 4))
+            if ("low_carb" in intents_set) and carbs_new > carbs_g:
                 # keep carbs as is; accept extra deficit
                 pass
-            else:
-                if carbs_new != carbs_g:
-                    clamped = True
-                    carbs_g = carbs_new
+            elif carbs_new != carbs_g:
+                clamped = True
+                carbs_g = carbs_new
 
     # If user fixed exactly one macro via custom, let calories drop instead of compensating with other macros
     if single_macro_requested:
@@ -850,7 +844,7 @@ def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: Parsed
         fat_g=int(fat_g),
         carbs_g=int(carbs_g),
         sources=plan0.sources,
-        tdee=int(round(tdee)),
+        tdee=round(tdee),
         weekly_rate_kg=weekly_rate_kg,
         eta_date=plan0.eta_date,  # keep old ETA; precise recompute could be added later
     )
@@ -987,12 +981,12 @@ def _apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: Parsed
     return new_plan, explanation_text, summary
 
 
-def apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: ParsedAdjustment) -> Tuple[DailyPlan, str, dict]:
+def apply_adjustment(base_plan: DailyPlan, data: OnboardingData, parsed: ParsedAdjustment) -> tuple[DailyPlan, str, dict]:
     return _apply_adjustment(base_plan, data, parsed)
 
 
 # --- Heuristic fallback (regex-based) ---
-def parse_adjustment_heuristic(text: str) -> Optional[ParsedAdjustment]:
+def parse_adjustment_heuristic(text: str) -> ParsedAdjustment | None:
     """Very small RU-oriented heuristic to cover top intents offline.
 
     Supports:
@@ -1005,9 +999,9 @@ def parse_adjustment_heuristic(text: str) -> Optional[ParsedAdjustment]:
     s = text.lower().strip()
 
     intents: list[str] = []
-    activity_override: Optional[str] = None
-    calories: Optional[dict] = None
-    macros: Optional[dict] = None
+    activity_override: str | None = None
+    calories: dict | None = None
+    macros: dict | None = None
     dietary: list[str] = []
 
     # macros: keto/low_carb
@@ -1058,9 +1052,8 @@ def parse_adjustment_heuristic(text: str) -> Optional[ParsedAdjustment]:
         if "advice_only" not in intents:
             intents.append("advice_only")
     # veggies/fiber → advice_only
-    if _is_veggies_request(text):
-        if "advice_only" not in intents:
-            intents.append("advice_only")
+    if _is_veggies_request(text) and "advice_only" not in intents:
+        intents.append("advice_only")
 
     # GI / lactose signals (no KБЖУ change; only flags and explanation)
     if re.search(r"(пукаю|газ|вздут|метеоризм)", s):
@@ -1083,19 +1076,19 @@ def parse_adjustment_heuristic(text: str) -> Optional[ParsedAdjustment]:
     )
 
 
-def _cache_key(user_id: int, text: str, lang_hint: Optional[str] = None) -> str:
+def _cache_key(user_id: int, text: str, lang_hint: str | None = None) -> str:
     h = _privacy_hash(text) or "0"
     return f"user={user_id}:t={h}"
 
 
-def _cache_key(user_id: int, text: str, lang_hint: Optional[str] = None, plan_key: Optional[str] = None, base_ctx: Optional[dict] = None) -> str:
+def _cache_key(user_id: int, text: str, lang_hint: str | None = None, plan_key: str | None = None, base_ctx: dict | None = None) -> str:
     h = _privacy_hash(text) or "0"
     pk = (plan_key or "0")
     return f"user={user_id}:t={h}:plan={pk}"
 
 
 @cached(ttl=3600, namespace="adjust_llm_v3", key_builder=_cache_key)
-async def parse_adjustment_cached(user_id: int, text: str, *, lang_hint: Optional[str], plan_key: Optional[str] = None, base_ctx: Optional[dict] = None) -> Optional[ParsedAdjustment]:
+async def parse_adjustment_cached(user_id: int, text: str, *, lang_hint: str | None, plan_key: str | None = None, base_ctx: dict | None = None) -> ParsedAdjustment | None:
     # LLM-only mode: no local parsers/post-processing; rely on prompt rules and BASE_CONTEXT
     llm_only = (str(getattr(settings, "ADJUST_ENGINE_MODE", "")).lower() == "llm_only")
     res = await _llm_parse_adjustment(text, lang_hint=lang_hint, base_ctx=base_ctx)
@@ -1108,8 +1101,8 @@ async def parse_adjustment_cached(user_id: int, text: str, *, lang_hint: Optiona
             res = _respect_only_specified(text, res)
             if _is_veggies_request(text):
                 try:
-                    intents = set(getattr(res, 'intents', []) or [])
-                    intents.add('advice_only')
+                    intents = set(getattr(res, "intents", []) or [])
+                    intents.add("advice_only")
                     res.intents = list(intents)
                     res.activity_override = None
                     res.calories = None
@@ -1119,19 +1112,19 @@ async def parse_adjustment_cached(user_id: int, text: str, *, lang_hint: Optiona
             try:
                 if res:
                     has_keto_word = _has_explicit_keto(text)
-                    intents2 = set(getattr(res, 'intents', []) or [])
-                    if ('keto' in intents2) and not has_keto_word:
-                        intents2.discard('keto')
-                        intents2.add('low_carb')
+                    intents2 = set(getattr(res, "intents", []) or [])
+                    if ("keto" in intents2) and not has_keto_word:
+                        intents2.discard("keto")
+                        intents2.add("low_carb")
                         res.intents = list(intents2)
-                    m = getattr(res, 'macros', None)
-                    if isinstance(m, dict) and (m.get('scheme') == 'keto') and not has_keto_word:
-                        m['scheme'] = 'low_carb'
+                    m = getattr(res, "macros", None)
+                    if isinstance(m, dict) and (m.get("scheme") == "keto") and not has_keto_word:
+                        m["scheme"] = "low_carb"
                         res.macros = m
             except Exception:
                 pass
             try:
-                has_cal = isinstance(getattr(res, 'calories', None), dict) and (res.calories or {}).get('mode')
+                has_cal = isinstance(getattr(res, "calories", None), dict) and (res.calories or {}).get("mode")
                 if not has_cal:
                     rate = _extract_weekly_rate(text)
                     if rate:
@@ -1178,7 +1171,7 @@ def _rephrase_cache_key(text: str, tone: str) -> str:
     return f"text={h}:tone={tone}"
 
 
-async def _rephrase_explanation(text: str, *, tone: str, timeout: float) -> Optional[str]:
+async def _rephrase_explanation(text: str, *, tone: str, timeout: float) -> str | None:
     if not settings.OPENAI_API_KEY:
         return None
     base_url = settings.OPENAI_BASE_URL.strip() if settings.OPENAI_BASE_URL else "https://api.openai.com"
@@ -1229,7 +1222,7 @@ async def _rephrase_explanation(text: str, *, tone: str, timeout: float) -> Opti
 
 
 @cached(ttl=86400, namespace="adjust_rephrase", key_builder=_rephrase_cache_key)
-async def rephrase_explanation_cached(text: str, tone: str = "neutral") -> Optional[str]:
+async def rephrase_explanation_cached(text: str, tone: str = "neutral") -> str | None:
     if not settings.ADJUST_REPHRASE_ENABLED:
         return None
     if not text or len(text) < int(getattr(settings, "ADJUST_REPHRASE_LENGTH_MIN", 220) or 220):

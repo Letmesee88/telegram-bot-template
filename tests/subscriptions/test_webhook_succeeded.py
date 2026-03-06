@@ -1,17 +1,16 @@
 from __future__ import annotations
+from datetime import datetime, timedelta, timezone
 
-import asyncio
 import pytest
-from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
 
 from bot.core.config import settings
 from bot.database.database import sessionmaker
-from bot.database.models import SubscriptionModel, PaymentModel, UserModel
+from bot.database.models import PaymentModel, SubscriptionModel, UserModel
 
 
 @pytest.mark.asyncio
-async def test_payment_succeeded_trial_pm_saved_true(test_db_env, ensure_user, yk_stub, make_webhook_request, make_yk_view, capture_bot_messages):
+async def test_payment_succeeded_trial_pm_saved_true(test_db_env, ensure_user, yk_stub, make_webhook_request, make_yk_view, capture_bot_messages) -> None:
     user_id = await ensure_user(10011)
     # Stub YooKassa find_one to return succeeded trial with saved PM
     amount = f"{settings.PRICE_TRIAL_RUB:.2f}"
@@ -29,7 +28,8 @@ async def test_payment_succeeded_trial_pm_saved_true(test_db_env, ensure_user, y
     async with sessionmaker() as session:
         # Payment stored as succeeded
         pm = (await session.execute(select(PaymentModel).where(PaymentModel.yk_payment_id == "pay_1"))).scalar_one_or_none()
-        assert pm is not None and pm.status == "succeeded"
+        assert pm is not None
+        assert pm.status == "succeeded"
         # Subscription created/updated
         sub = (await session.execute(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))).scalar_one_or_none()
         assert sub is not None
@@ -37,14 +37,16 @@ async def test_payment_succeeded_trial_pm_saved_true(test_db_env, ensure_user, y
         assert sub.plan == "trial"
         assert sub.payment_method_id == "pm_test_1"
         assert sub.status == "active"
-        assert sub.expires_at_utc is not None and sub.expires_at_utc > datetime.now(timezone.utc) - timedelta(seconds=5)
+        assert sub.expires_at_utc is not None
+        assert sub.expires_at_utc > datetime.now(timezone.utc) - timedelta(seconds=5)
         # User premium enabled
         u = (await session.execute(select(UserModel).where(UserModel.id == user_id))).scalar_one_or_none()
-        assert u is not None and bool(u.is_premium)
+        assert u is not None
+        assert bool(u.is_premium)
 
 
 @pytest.mark.asyncio
-async def test_payment_succeeded_pm_not_saved(test_db_env, ensure_user, yk_stub, make_webhook_request, make_yk_view):
+async def test_payment_succeeded_pm_not_saved(test_db_env, ensure_user, yk_stub, make_webhook_request, make_yk_view) -> None:
     user_id = await ensure_user(10012)
     # Stub YooKassa find_one to return succeeded month with NOT saved PM
     amount = f"{settings.PRICE_MONTH_RUB:.2f}"

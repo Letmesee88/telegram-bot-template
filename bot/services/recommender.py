@@ -1,27 +1,31 @@
 from __future__ import annotations
-
-from typing import Any, Literal, Tuple
 import asyncio
+import contextlib
 import json
 import time
-from datetime import datetime, timezone, timedelta, time as dtime
+from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
+
+from loguru import logger
 
 from bot.core.config import settings
 from bot.database.database import sessionmaker
 from bot.database.models import DailyIntakeModel, OnboardingAnswerModel
-from loguru import logger
+from bot.metrics import (
+    recommender_duration_ms,
+    recommender_failed,
+    recommender_started,
+    recommender_succeeded,
+)
 
 # Reuse existing OpenAI Responses API helper
 from bot.services.foodai import _openai_request  # type: ignore
-from bot.metrics import (
-    recommender_started,
-    recommender_succeeded,
-    recommender_failed,
-    recommender_duration_ms,
-)
-from bot.services.recommendations_log import add_recommendation_title, get_recent_titles as get_recent_titles_db
+from bot.services.recommendations_log import add_recommendation_title
+from bot.services.recommendations_log import get_recent_titles as get_recent_titles_db
 from bot.services.users import get_timezone as get_user_timezone
+
 
 def _get_setting(name: str, default: Any) -> Any:
     try:
@@ -134,15 +138,13 @@ async def _load_plan_and_fact(user_id: int) -> tuple[dict[str, float], dict[str,
         )
         if oa and isinstance(getattr(oa, "daily_plan", None), dict):
             dp = oa.daily_plan or {}
-            try:
+            with contextlib.suppress(Exception):
                 plan = {
                     "calories": float(dp.get("calories") or 0),
                     "protein_g": float(dp.get("protein_g") or 0),
                     "fat_g": float(dp.get("fat_g") or 0),
                     "carbs_g": float(dp.get("carbs_g") or 0),
                 }
-            except Exception:
-                pass
         from sqlalchemy import select
         res = await session.execute(
             select(DailyIntakeModel).where(
@@ -183,14 +185,14 @@ def _build_instructions(meal_type: str, plan: dict[str, float], fact: dict[str, 
     c_rem = c_plan - c_fact
 
     # Avoid list formatted
-    avoid_list = ", ".join(sorted(set([t for t in avoid if t]))) if avoid else ""
+    avoid_list = ", ".join(sorted({t for t in avoid if t})) if avoid else ""
 
     system = (
         "Ты — ИИ-нутрициолог. Сгенерируй рекомендацию блюда на русском, без markdown. "
         "Формат ответа строго JSON по схеме. Единицы: граммы и ккал. Не упоминай уверенность. "
         "Учитывай текущий прогресс дня и ограничения: калории не должны превышать мягкий лимит. "
-        "Белок добираем приоритетно, жиры не раздуваем при переборе. Допустим небольшой овершут калорий (до {overshoot}%)."
-    ).format(overshoot=int(overshoot_pct))
+        f"Белок добираем приоритетно, жиры не раздуваем при переборе. Допустим небольшой овершут калорий (до {int(overshoot_pct)}%)."
+    )
 
     user = (
         "Тип приёма: {typ}. План КБЖУ: {pc} ккал, Б {pp} г, Ж {pf} г, У {pcb} г. "
@@ -252,7 +254,7 @@ async def recommend(
     meal_type: Literal["bf", "ln", "dn", "snack"],
     *,
     another: bool = False,
-) -> Tuple[dict[str, Any] | None, str | None]:
+) -> tuple[dict[str, Any] | None, str | None]:
     """Generate a structured recommendation dict via Responses API.
     Returns None on failure.
     """
@@ -262,10 +264,8 @@ async def recommend(
     language_required = str(_get_setting("RECOMMENDER_LANGUAGE_REQUIRED", "ru") or "ru").lower()
 
     t0 = time.time()
-    try:
+    with contextlib.suppress(Exception):
         recommender_started.labels(meal_type).inc()
-    except Exception:
-        pass
 
     plan, fact = await _load_plan_and_fact(user_id)
     avoid = await recent_titles(user_id)
@@ -319,15 +319,13 @@ async def recommend(
                 except Exception:
                     data = None
         if not isinstance(data, dict):
-            try:
+            with contextlib.suppress(Exception):
                 logger.warning(
                     "recommender_failed | user_id={} | err=json_parse | len={} | head={}",
                     user_id,
                     len(raw or ""),
                     (raw or "").replace("\n", " ")[:200],
                 )
-            except Exception:
-                pass
             try:
                 recommender_failed.labels(meal_type, "json_parse").inc()
                 recommender_duration_ms.labels(meal_type).observe((time.time() - t0) * 1000)
@@ -372,15 +370,13 @@ async def recommend(
         # Nutrition validation – first pass
         ok, det = _is_nutrition_valid(data, payload_extras.get("target_cal_max"), enforce_cap)
         if not ok:
-            try:
+            with contextlib.suppress(Exception):
                 logger.warning(
                     "recommender_invalid | user_id={} | meal_type={} | cal={} p={} f={} c={} | tmax={}",
                     user_id,
                     meal_type,
                     det.get("cal"), det.get("p"), det.get("f"), det.get("c"), payload_extras.get("target_cal_max"),
                 )
-            except Exception:
-                pass
             # Single retry with stronger hint
             retry_user_text = (
                 user_text
@@ -427,15 +423,13 @@ async def recommend(
                 return None, "json_parse"
             ok2, det2 = _is_nutrition_valid(data2, payload_extras.get("target_cal_max"), enforce_cap)
             if not ok2:
-                try:
+                with contextlib.suppress(Exception):
                     logger.warning(
                         "recommender_invalid_final | user_id={} | meal_type={} | cal={} p={} f={} c={} | tmax={}",
                         user_id,
                         meal_type,
                         det2.get("cal"), det2.get("p"), det2.get("f"), det2.get("c"), payload_extras.get("target_cal_max"),
                     )
-                except Exception:
-                    pass
                 try:
                     recommender_failed.labels(meal_type, "invalid_final").inc()
                     recommender_duration_ms.labels(meal_type).observe((time.time() - t0) * 1000)
@@ -456,10 +450,8 @@ async def recommend(
             pass
         return data, None
     except asyncio.TimeoutError:
-        try:
+        with contextlib.suppress(Exception):
             logger.warning("recommender_timeout | user_id={} | timeout_s={}", user_id, timeout)
-        except Exception:
-            pass
         try:
             recommender_failed.labels(meal_type, "timeout").inc()
             recommender_duration_ms.labels(meal_type).observe((time.time() - t0) * 1000)
@@ -467,10 +459,8 @@ async def recommend(
             pass
         return None, "timeout"
     except Exception as e:
-        try:
+        with contextlib.suppress(Exception):
             logger.warning("recommender_failed | user_id={} | err={}", user_id, e)
-        except Exception:
-            pass
         try:
             recommender_failed.labels(meal_type, "other").inc()
             recommender_duration_ms.labels(meal_type).observe((time.time() - t0) * 1000)

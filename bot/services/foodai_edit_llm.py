@@ -1,23 +1,25 @@
 from __future__ import annotations
-
+import contextlib
 import json
-from typing import Any, Optional
+from time import perf_counter
+from typing import Any
+
 from aiohttp import ClientSession
+
 from bot.core.config import settings
 from bot.metrics import (
+    foodai_edit_nlu_duration_ms,
+    foodai_edit_nlu_failed,
     foodai_edit_nlu_started,
     foodai_edit_nlu_succeeded,
-    foodai_edit_nlu_failed,
-    foodai_edit_nlu_duration_ms,
 )
-from time import perf_counter
 
 # Strict JSON schema (informal, validated in code)
 _ALLOWED_ACTIONS = {"add", "remove", "replace", "scale", "change_qty"}
 _ALLOWED_UNITS = {None, "g", "гр", "грамм", "ml", "мл", "l", "л", "pcs", "шт"}
 
 
-async def _openai_chat(payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+async def _openai_chat(payload: dict[str, Any]) -> dict[str, Any] | None:
     base = settings.OPENAI_BASE_URL or "https://api.openai.com/v1"
     url = f"{base}/chat/completions"
     headers = {
@@ -70,7 +72,7 @@ def _build_user_prompt(base: dict[str, Any], instruction: str) -> str:
     )
 
 
-def _coerce_unit(u: Optional[str]) -> Optional[str]:
+def _coerce_unit(u: str | None) -> str | None:
     if u is None:
         return None
     u = str(u).lower().strip()
@@ -87,7 +89,7 @@ def _coerce_unit(u: Optional[str]) -> Optional[str]:
     return None
 
 
-def _validate_result(obj: Any) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+def _validate_result(obj: Any) -> tuple[dict[str, Any] | None, str | None]:
     try:
         if not isinstance(obj, dict):
             return None, "not_dict"
@@ -145,10 +147,8 @@ async def interpret_edit(base: dict[str, Any], instruction: str) -> dict[str, An
         return {"error": "no_api_key"}
 
     t0 = perf_counter()
-    try:
+    with contextlib.suppress(Exception):
         foodai_edit_nlu_started.inc()
-    except Exception:
-        pass
 
     payload = {
         "model": settings.FOODAI_EDIT_MODEL or settings.FOODAI_DEFAULT_MODEL,
@@ -161,10 +161,8 @@ async def interpret_edit(base: dict[str, Any], instruction: str) -> dict[str, An
     }
     data = await _openai_chat(payload)
     if not data:
-        try:
+        with contextlib.suppress(Exception):
             foodai_edit_nlu_failed.labels(reason="provider_unavailable").inc()
-        except Exception:
-            pass
         return {"error": "provider_unavailable"}
 
     try:
@@ -175,18 +173,14 @@ async def interpret_edit(base: dict[str, Any], instruction: str) -> dict[str, An
         )
         obj = json.loads(content)
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             foodai_edit_nlu_failed.labels(reason="parse_json").inc()
-        except Exception:
-            pass
         return {"error": "parse_json"}
 
     obj, err = _validate_result(obj)
     if err:
-        try:
+        with contextlib.suppress(Exception):
             foodai_edit_nlu_failed.labels(reason=err).inc()
-        except Exception:
-            pass
         return {"error": err}
 
     try:

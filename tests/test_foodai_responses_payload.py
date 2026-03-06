@@ -1,6 +1,6 @@
 from __future__ import annotations
-
 import json
+
 import pytest
 
 
@@ -46,7 +46,7 @@ async def test_gpt5_responses_payload_excludes_temperature_top_p(monkeypatch: py
                 assert "text" in payload
                 assert "max_output_tokens" in payload
                 # Stop the flow after validation
-                raise _Stop()
+                raise _Stop
         # Return OK result for other calls (e.g., precheck)
         if kind == "responses":
             return json.dumps({"is_food": True})

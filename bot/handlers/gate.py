@@ -8,22 +8,25 @@ IMPORTANT: Handlers here only trigger for NON-onboarded users (via OnboardingGat
 Onboarded users pass through to subsequent routers (FoodAI, etc).
 """
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
-from aiogram import Router, types, F
+from aiogram import F, Router, types
 from aiogram.filters import BaseFilter, StateFilter
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.i18n import gettext as _
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.database.models import OnboardingAnswerModel
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 router = Router(name="gate")
 
 
 class OnboardingGateFilter(BaseFilter):
     """Filter that passes only if user has NOT completed onboarding.
-    
+
     If onboarding exists -> returns False (let other routers handle).
     If no onboarding -> returns True (this handler will show CTA).
     """

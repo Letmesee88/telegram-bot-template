@@ -1,7 +1,7 @@
 from __future__ import annotations
+from datetime import datetime, timedelta, timezone
 
 import pytest
-from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
 
 from bot.database.database import sessionmaker
@@ -11,7 +11,7 @@ from bot.database.models import SubscriptionModel, UserModel
 @pytest.mark.asyncio
 async def test_process_due_retries_triggers_try_rebill_once_and_consumes_due(
     test_db_env, ensure_user, monkeypatch, fake_bot
-):
+) -> None:
     user_id = await ensure_user(10071)
     # Seed subscription with saved PM
     async with sessionmaker() as session:
@@ -71,7 +71,7 @@ async def test_process_due_retries_triggers_try_rebill_once_and_consumes_due(
 @pytest.mark.asyncio
 async def test_try_rebill_missing_payment_method_sets_past_due_and_notifies_once(
     test_db_env, ensure_user, fake_bot, capture_bot_messages
-):
+) -> None:
     user_id = await ensure_user(10072)
     # Seed subscription with missing PM
     async with sessionmaker() as session:
@@ -104,7 +104,9 @@ async def test_try_rebill_missing_payment_method_sets_past_due_and_notifies_once
     # Assert past_due and notification exactly once
     async with sessionmaker() as session:
         sub = (await session.execute(select(SubscriptionModel).where(SubscriptionModel.id == sub_id))).scalar_one_or_none()
-        assert sub is not None and sub.status == "past_due"
+        assert sub is not None
+        assert sub.status == "past_due"
         u = (await session.execute(select(UserModel).where(UserModel.id == user_id))).scalar_one_or_none()
-        assert u is not None and not bool(u.is_premium)
+        assert u is not None
+        assert not bool(u.is_premium)
     assert len(capture_bot_messages) == 1

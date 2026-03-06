@@ -1,29 +1,27 @@
 from __future__ import annotations
-
 import asyncio
+import hashlib
 import json
 import re
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Any, Optional
-import hashlib
+from typing import Any
 
 import aiohttp
 from loguru import logger
 
-from bot.core.config import settings
 from bot.cache.redis import cached
-
+from bot.core.config import settings
 
 LEVELS = {"sedentary", "light", "moderate", "active", "athlete"}
 
 
 @dataclass
 class ActivityLLMResult:
-    level: Optional[str]
+    level: str | None
     confidence: float
     features: dict[str, Any]
-    rationale: Optional[str]
+    rationale: str | None
     version: str
 
 
@@ -34,7 +32,7 @@ def _strip_code_fences(s: str) -> str:
     return s.strip()
 
 
-def _coerce_json(s: str) -> Optional[dict]:
+def _coerce_json(s: str) -> dict | None:
     s1 = _strip_code_fences(s)
     try:
         return json.loads(s1)
@@ -50,7 +48,7 @@ def _coerce_json(s: str) -> Optional[dict]:
     return None
 
 
-async def classify_activity(text: str, *, lang_hint: Optional[str] = None) -> Optional[ActivityLLMResult]:
+async def classify_activity(text: str, *, lang_hint: str | None = None) -> ActivityLLMResult | None:
     """Classify free-form activity description into 5-level scale using LLM.
 
     Returns ActivityLLMResult or None on failure. Respects settings flags and timeouts.
@@ -152,13 +150,13 @@ async def classify_activity(text: str, *, lang_hint: Optional[str] = None) -> Op
         return None
 
 
-def _build_activity_cache_key(user_id: int, text: str, lang_hint: Optional[str] = None) -> str:
+def _build_activity_cache_key(user_id: int, text: str, lang_hint: str | None = None) -> str:
     """Redis key builder: (user_id, sha256(text))."""
     h = hashlib.sha256((text or "").encode("utf-8", errors="ignore")).hexdigest()
     return f"user={user_id}:t={h}"
 
 
 @cached(ttl=86400, namespace="llm_activity", key_builder=_build_activity_cache_key)
-async def classify_activity_cached(user_id: int, text: str, *, lang_hint: Optional[str] = None) -> Optional[ActivityLLMResult]:
+async def classify_activity_cached(user_id: int, text: str, *, lang_hint: str | None = None) -> ActivityLLMResult | None:
     """Cached wrapper for classify_activity. Caches both successes and failures for 24h."""
     return await classify_activity(text, lang_hint=lang_hint)

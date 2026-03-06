@@ -1,4 +1,3 @@
-import asyncio
 import pytest
 
 from bot.services import foodai as foodai_module
@@ -6,7 +5,7 @@ from bot.services.foodai import _compose_analysis_text, analyze_photo, refine_me
 
 
 @pytest.mark.asyncio
-async def test_compose_analysis_text_rewrite_enforces_phrase_and_sanitizes(monkeypatch: pytest.MonkeyPatch):
+async def test_compose_analysis_text_rewrite_enforces_phrase_and_sanitizes(monkeypatch: pytest.MonkeyPatch) -> None:
     # Force OpenAI usage path inside _compose_analysis_text
     monkeypatch.setattr(foodai_module, "_use_openai", lambda: True)
 
@@ -24,7 +23,8 @@ async def test_compose_analysis_text_rewrite_enforces_phrase_and_sanitizes(monke
     appearance = {"plate_visible": True, "plate_diameter_cm": 24, "is_packaged": False}
 
     txt = await _compose_analysis_text(items, appearance, confidence=0.82)
-    assert isinstance(txt, str) and len(txt) > 0
+    assert isinstance(txt, str)
+    assert len(txt) > 0
     # First sentence must start with "На фото" due to sanitizer
     assert txt.startswith("На фото")
     # MUST phrase must be present after rewrite normalization
@@ -34,7 +34,7 @@ async def test_compose_analysis_text_rewrite_enforces_phrase_and_sanitizes(monke
 
 
 @pytest.mark.asyncio
-async def test_analyze_photo_precheck_strict_provider_unavailable(monkeypatch: pytest.MonkeyPatch):
+async def test_analyze_photo_precheck_strict_provider_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     # Configure strict precheck
     foodai_module.settings.FOODAI_PRECHECK_STRICT = True
 
@@ -54,7 +54,7 @@ async def test_analyze_photo_precheck_strict_provider_unavailable(monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_escalation_triggers_on_many_items_low_conf(monkeypatch: pytest.MonkeyPatch):
+async def test_escalation_triggers_on_many_items_low_conf(monkeypatch: pytest.MonkeyPatch) -> None:
     # Escalation rule in code: escalate when there are many items (>= items_min)
     # AND confidence is below max(0.75, FOODAI_ESCALATE_CONF).
     foodai_module.settings.FOODAI_VISION_ESCALATION_ENABLED = True
@@ -85,7 +85,7 @@ async def test_escalation_triggers_on_many_items_low_conf(monkeypatch: pytest.Mo
                 '{"name":"курица","calories":220,"protein_g":23,"fat_g":12,"carbs_g":0,"weight_g":150,"is_liquid":false},'
                 '{"name":"овощи","calories":40,"protein_g":2,"fat_g":0.2,"carbs_g":6,"weight_g":50,"is_liquid":false}'
                 '],'
-                '"references":{"sources":["ФГБУН \\\"ФИЦ питания и биотехнологии\\\"","USDA FoodData Central"]},'
+                '"references":{"sources":["ФГБУН \\"ФИЦ питания и биотехнологии\\"","USDA FoodData Central"]},'
                 '"analysis_text":"ok","appearance":{"is_packaged":false,"plate_visible":true,"plate_diameter_cm":24},'
                 '"not_food":false}'
             )
@@ -96,7 +96,7 @@ async def test_escalation_triggers_on_many_items_low_conf(monkeypatch: pytest.Mo
             '"protein_g":4,"fat_g":1.5,"carbs_g":48,"weight_g":200,"is_liquid":false},'
             '{"name":"курица","calories":220,"protein_g":23,"fat_g":12,"carbs_g":0,"weight_g":150,"is_liquid":false},'
             '{"name":"овощи","calories":40,"protein_g":2,"fat_g":0.2,"carbs_g":6,"weight_g":50,"is_liquid":false}],'
-            '"references":{"sources":["ФГБУН \\\"ФИЦ питания и биотехнологии\\\"","USDA FoodData Central"]},'
+            '"references":{"sources":["ФГБУН \\"ФИЦ питания и биотехнологии\\"","USDA FoodData Central"]},'
             '"analysis_text":"ok","appearance":{"is_packaged":false,"plate_visible":true,"plate_diameter_cm":24},'
             '"not_food":false}'
         )

@@ -1,14 +1,14 @@
 from __future__ import annotations
-
-import pytest
 from datetime import date
 
-from bot.schemas.onboarding import DailyPlan, OnboardingData, Gender, Goal, ActivityLevel
-from bot.services.adjust import apply_adjustment, ParsedAdjustment
+import pytest
+
+from bot.schemas.onboarding import ActivityLevel, DailyPlan, Gender, Goal, OnboardingData
+from bot.services.adjust import ParsedAdjustment, apply_adjustment
 
 
 @pytest.mark.asyncio
-async def test_single_macro_carbs_drop_goal_lose_calories_drop_no_fat_increase():
+async def test_single_macro_carbs_drop_goal_lose_calories_drop_no_fat_increase() -> None:
     # Base plan after onboarding
     base_plan = DailyPlan(
         calories=3590,
@@ -61,7 +61,7 @@ async def test_single_macro_carbs_drop_goal_lose_calories_drop_no_fat_increase()
 
 
 @pytest.mark.asyncio
-async def test_reduce_fat_goal_lose_calories_drop_no_carb_compensation():
+async def test_reduce_fat_goal_lose_calories_drop_no_carb_compensation() -> None:
     base_plan = DailyPlan(
         calories=3000,
         protein_g=160,

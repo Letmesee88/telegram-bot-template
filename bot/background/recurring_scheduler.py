@@ -1,13 +1,12 @@
 from __future__ import annotations
-
 import asyncio
+import contextlib
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import TYPE_CHECKING
 
-from aiogram import Bot
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from loguru import logger
 from sqlalchemy import select, update
 
@@ -15,8 +14,11 @@ from bot.core.config import settings
 from bot.core.loader import redis_client
 from bot.database.database import sessionmaker
 from bot.database.models import SubscriptionModel, UserModel
-from bot.services.users import get_user_tzinfo
 from bot.services import yookassa as yk
+from bot.services.users import get_user_tzinfo
+
+if TYPE_CHECKING:
+    from aiogram import Bot
 
 # Redis keys
 ZSET_DUE = "rebill:due"  # zset of subscription_id -> next_attempt_epoch
@@ -33,7 +35,7 @@ class _RebillTask:
     subscription_id: int
     user_id: int
     plan: str
-    payment_method_id: Optional[str]
+    payment_method_id: str | None
     period_key: str  # YYYY-MM-DD of the expiring period
 
 
@@ -106,10 +108,8 @@ async def _try_rebill(bot: Bot, task: _RebillTask) -> None:
             await redis_client.expire(attempts_key, 15 * 24 * 3600)
             await _schedule_retry(task.subscription_id, task.period_key, attempts_done=attempts - 1)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await redis_client.delete(lock_key)
-        except Exception:
-            pass
 
 
 async def _mark_past_due_and_notify(bot: Bot, sub_id: int, user_id: int) -> None:
@@ -157,7 +157,7 @@ async def _mark_past_due_and_notify(bot: Bot, sub_id: int, user_id: int) -> None
 
 class RecurringScheduler:
     def __init__(self) -> None:
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
         self._sem = asyncio.Semaphore(int(getattr(settings, "REBILL_CONCURRENCY", 20) or 20))
 
@@ -216,10 +216,8 @@ class RecurringScheduler:
         pipe = redis_client.pipeline(transaction=False)
         for key in due:
             pipe.zrem(ZSET_DUE, key)
-        try:
+        with contextlib.suppress(Exception):
             await pipe.execute()
-        except Exception:
-            pass
         tasks: list[asyncio.Task] = []
         for entry in due:
             try:
@@ -238,10 +236,8 @@ class RecurringScheduler:
             # If subscription already extended (success happened), skip
             if getattr(sub, "expires_at_utc", None) and sub.expires_at_utc > _now_utc():
                 # Success; clear attempts counter
-                try:
+                with contextlib.suppress(Exception):
                     await redis_client.delete(ATTEMPTS_FMT.format(sub_id=sub_id, period=period))
-                except Exception:
-                    pass
                 continue
             plan = getattr(sub, "next_plan", None) or ("year" if sub.plan == "trial" else sub.plan)
             t = _RebillTask(
@@ -273,10 +269,8 @@ class RecurringScheduler:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                try:
+                with contextlib.suppress(Exception):
                     logger.warning(f"recurring_scheduler_loop_error | err={e}")
-                except Exception:
-                    pass
                 await asyncio.sleep(2)
 
     async def start(self, bot: Bot) -> None:
@@ -289,10 +283,8 @@ class RecurringScheduler:
         self._stopping.set()
         if self._task:
             self._task.cancel()
-            try:
+            with contextlib.suppress(Exception):
                 await self._task
-            except Exception:
-                pass
 
 
 recurring_scheduler = RecurringScheduler()

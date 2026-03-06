@@ -1,13 +1,13 @@
 from __future__ import annotations
-
 import json
+
 import pytest
 
 import bot.services.foodai as svc
 
 
 @pytest.mark.asyncio
-async def test_responses_payload_includes_detail_high(monkeypatch: pytest.MonkeyPatch):
+async def test_responses_payload_includes_detail_high(monkeypatch: pytest.MonkeyPatch) -> None:
     # Force settings for this test
     monkeypatch.setattr(svc.settings, "FOODAI_USE_RESPONSES_FOR_5", True, raising=False)
     monkeypatch.setattr(svc.settings, "FOODAI_IMAGE_DETAIL", "high", raising=False)
@@ -50,7 +50,7 @@ async def test_responses_payload_includes_detail_high(monkeypatch: pytest.Monkey
                     "weight_g": 150.0,
                     "confidence": 0.8,
                     "items": [],
-                    "references": {"sources": ["ФГБУН \"ФИЦ питания и биотехнологии\"", "USDA FoodData Central"]},
+                    "references": {"sources": ['ФГБУН "ФИЦ питания и биотехнологии"', "USDA FoodData Central"]},
                     "analysis_text": "Короткий анализ. Использованы справочные данные ФИЦ питания и USDA.",
                     "appearance": {"is_packaged": False, "plate_visible": False, "plate_diameter_cm": None},
                     "not_food": False,

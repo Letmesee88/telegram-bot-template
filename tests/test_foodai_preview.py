@@ -34,7 +34,7 @@ def _call_preview(module, *, conf: float, show_labels: bool, show_hint: bool, hi
 
 
 @pytest.mark.parametrize(
-    "conf, show_labels, expect_label",
+    ("conf", "show_labels", "expect_label"),
     [
         (0.62, False, False),  # labels disabled
         (0.55, False, False),  # labels disabled

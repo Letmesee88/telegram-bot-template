@@ -1,43 +1,53 @@
 from __future__ import annotations
-
-from datetime import datetime, timezone, timedelta, time as dtime
-from time import perf_counter
+import contextlib
 import re
+from datetime import datetime, timezone
+from datetime import time as dtime
 from html import escape as _html_escape
+from time import perf_counter
+from typing import TYPE_CHECKING
 
-from aiogram import Router, types, F
-from aiogram.filters import CommandStart, Command
-from aiogram.filters import StateFilter
-from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.fsm.context import FSMContext
+from aiogram import F, Router, types
+from aiogram.filters import CommandStart, StateFilter
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.i18n import gettext as _
 from loguru import logger
 from sqlalchemy import select
 
-from bot.database.database import sessionmaker
-from bot.database.models import DailyIntakeModel, MealItemModel, MealModel, MealPhotoModel, OnboardingAnswerModel, UserModel
-from bot.filters.foodai_enabled import FoodAIEnabledFilter
-from bot.services.foodai import analyze_photo, analyze_text, refine_meal
-from bot.services.users import get_user_tzinfo, today_local_utc_dates
-from bot.core.config import settings
-from bot.handlers.start import start_handler  # to forward /start from edit-state
 from bot.analytics.types import BaseEvent, EventProperties, Plan
-from bot.services.analytics import analytics
+from bot.core.config import settings
+from bot.database.database import sessionmaker
+from bot.database.models import (
+    DailyIntakeModel,
+    MealItemModel,
+    MealModel,
+    MealPhotoModel,
+    OnboardingAnswerModel,
+    UserModel,
+)
+from bot.filters.foodai_enabled import FoodAIEnabledFilter
 from bot.handlers.metrics import (
-    foodai_started,
-    foodai_succeeded,
-    foodai_failed,
     foodai_duration_ms,
-    foodai_itogo_shown,
-    foodai_not_food,
+    foodai_edit_applied,
+    foodai_edit_duration_ms,
+    foodai_edit_failed,
     # Edit flow
     foodai_edit_started,
-    foodai_edit_applied,
-    foodai_edit_failed,
-    foodai_edit_duration_ms,
+    foodai_failed,
+    foodai_itogo_shown,
+    foodai_not_food,
+    foodai_started,
+    foodai_succeeded,
 )
-from bot.services.history import get_add_in_day_target, clear_add_in_day_target
+from bot.handlers.start import start_handler  # to forward /start from edit-state
+from bot.services.analytics import analytics
+from bot.services.foodai import analyze_photo, analyze_text, refine_meal
+from bot.services.history import clear_add_in_day_target, get_add_in_day_target
+from bot.services.users import get_user_tzinfo, today_local_utc_dates
+
+if TYPE_CHECKING:
+    from aiogram.fsm.context import FSMContext
 
 router = Router(name="foodai")
 # Do not process ANY FoodAI messages while user is in any FSM state (e.g., onboarding)
@@ -47,7 +57,7 @@ router.callback_query.filter(StateFilter(None))
 
 # Separate router for edit text state (does not have global StateFilter(None))
 router_edit = Router(name="foodai_edit")
- 
+
 
 async def _gate_msg(message: types.Message) -> bool:
     if not message.from_user:
@@ -75,17 +85,13 @@ async def _gate_cb(callback: types.CallbackQuery) -> bool:
         )
     if bool(exists):
         return True
-    try:
+    with contextlib.suppress(Exception):
         await callback.answer()
-    except Exception:
-        pass
     kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=_("Начать"), callback_data="onboarding_start")]]
     )
-    try:
+    with contextlib.suppress(Exception):
         await callback.message.answer(_("Завершите онбординг за пару минут, чтобы получить полный доступ к данным"), reply_markup=kb)
-    except Exception:
-        pass
     return False
 
 
@@ -97,10 +103,8 @@ class EditStates(StatesGroup):
 # If user sends /start while in edit-state, clear FSM and forward to normal start handler
 @router_edit.message(CommandStart())
 async def edit_catch_start(message: types.Message, state: FSMContext) -> None:
-    try:
+    with contextlib.suppress(Exception):
         await state.clear()
-    except Exception:
-        pass
     await start_handler(message, state)
 
 
@@ -119,8 +123,6 @@ async def edit_text_received(message: types.Message, state: FSMContext) -> None:
         return
 
     # Load current meal
-    backdated = False
-    backdate_iso_chosen: str | None = None
     async with sessionmaker() as session:
         meal = await session.get(MealModel, meal_id)
         if not meal or meal.user_id != user_id:
@@ -178,10 +180,8 @@ async def edit_text_received(message: types.Message, state: FSMContext) -> None:
     meta = result.get("meta") if isinstance(result, dict) else None
     action = (meta or {}).get("action") or "unknown"
     reason = (meta or {}).get("reason") or ("error" if result.get("error") else None)
-    try:
+    with contextlib.suppress(Exception):
         foodai_edit_started.labels(action=action).inc()
-    except Exception:
-        pass
 
     if not isinstance(result, dict) or result.get("error"):
         # Metrics fail
@@ -192,7 +192,7 @@ async def edit_text_received(message: types.Message, state: FSMContext) -> None:
             pass
         # Amplitude fail
         if analytics.logger and message.from_user:
-            try:
+            with contextlib.suppress(Exception):
                 analytics.fire_event(
                     BaseEvent(
                         user_id=message.from_user.id,
@@ -207,8 +207,6 @@ async def edit_text_received(message: types.Message, state: FSMContext) -> None:
                         plan=Plan(branch="Edit", source="FoodAI", version="v1"),
                     )
                 )
-            except Exception:
-                pass
         # Build contextual ingredient list for better hints
         ing_hint = None
         try:
@@ -419,10 +417,8 @@ async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
 
     # Analytics: photo analyze started
     # Prometheus: started
-    try:
+    with contextlib.suppress(Exception):
         foodai_started.labels(source="photo").inc()
-    except Exception:
-        pass
     if analytics.logger and message.from_user:
         analytics.fire_event(
             BaseEvent(
@@ -469,10 +465,8 @@ async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
     except Exception as e:
         logger.exception("FoodAI analyze_photo failed: {}", e)
         # Prometheus: failed
-        try:
+        with contextlib.suppress(Exception):
             foodai_failed.labels(source="photo").inc()
-        except Exception:
-            pass
         # Analytics: photo analyze failed
         if analytics.logger and message.from_user:
             analytics.fire_event(
@@ -502,10 +496,8 @@ async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
             if err == "file_url_unavailable":
                 msg = _("Не удалось получить файл с серверов Telegram. Попробуйте ещё раз.")
             await analyzing_msg.edit_text(msg)
-            try:
+            with contextlib.suppress(Exception):
                 foodai_failed.labels(source="photo").inc()
-            except Exception:
-                pass
             return
     except Exception:
         pass
@@ -513,10 +505,8 @@ async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
     # Not-food short-circuit
     try:
         if isinstance(result, dict) and bool(result.get("not_food")):
-            try:
+            with contextlib.suppress(Exception):
                 foodai_not_food.labels(source="photo").inc()
-            except Exception:
-                pass
             await analyzing_msg.edit_text(_("Похоже, на изображении нет еды или напитков. Пришлите фото блюда или продукта."))
             return
     except Exception:
@@ -567,10 +557,8 @@ async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
         await session.commit()
         # Clear backdate target after successful save
         if backdated:
-            try:
+            with contextlib.suppress(Exception):
                 await clear_add_in_day_target(user_id)
-            except Exception:
-                pass
 
     # Prepare optional per-meal % of plan for preview
     itogo = None
@@ -600,10 +588,8 @@ async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
         itogo = None
 
     # Remove status message
-    try:
+    with contextlib.suppress(Exception):
         await analyzing_msg.delete()
-    except Exception:
-        pass
     preview_text = _build_preview_text(
         calories,
         protein_g,
@@ -629,10 +615,8 @@ async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
             _dur_ms = None
         foodai_succeeded.labels(source="photo").inc()
         if itogo:
-            try:
+            with contextlib.suppress(Exception):
                 foodai_itogo_shown.labels(source="photo").inc()
-            except Exception:
-                pass
         if _dur_ms is not None:
             foodai_duration_ms.observe(_dur_ms)
     except Exception:
@@ -663,7 +647,7 @@ async def handle_food_photo(message: types.Message, state: FSMContext) -> None:
                             text=f"chain={chain}, final_model={final_model}, steps={steps}, reason={reason}, total_ms={total_ms}",
                             command=None,
                             esc_chain=(" > ".join(chain) if isinstance(chain, list) else (str(chain) if chain is not None else None)),
-                            esc_detail_order=(" > ".join((esc.get("detail_order") or [])) if isinstance(esc.get("detail_order"), list) else (str(esc.get("detail_order")) if esc.get("detail_order") is not None else None)),
+                            esc_detail_order=(" > ".join(esc.get("detail_order") or []) if isinstance(esc.get("detail_order"), list) else (str(esc.get("detail_order")) if esc.get("detail_order") is not None else None)),
                             esc_final_model=(str(final_model) if final_model is not None else None),
                             esc_steps=(int(steps) if steps is not None else None),
                             esc_reason=(str(reason) if reason is not None else None),
@@ -746,18 +730,14 @@ async def handle_food_text(message: types.Message, state: FSMContext) -> None:
         await session.commit()
         meal_id = meal.id
 
-    try:
+    with contextlib.suppress(Exception):
         logger.info("FoodAI:Text handler entered | user_id={} | len={}", message.from_user.id if message.from_user else None, len(message.text or ""))
-    except Exception:
-        pass
     analyzing_msg = await message.answer(_("✨Анализирую описание…"))
 
     # Analytics: text analyze started
     # Prometheus: started
-    try:
+    with contextlib.suppress(Exception):
         foodai_started.labels(source="text").inc()
-    except Exception:
-        pass
     if analytics.logger and message.from_user:
         analytics.fire_event(
             BaseEvent(
@@ -780,10 +760,8 @@ async def handle_food_text(message: types.Message, state: FSMContext) -> None:
     except Exception as e:
         logger.exception("FoodAI analyze_text failed: {}", e)
         # Prometheus: failed
-        try:
+        with contextlib.suppress(Exception):
             foodai_failed.labels(source="text").inc()
-        except Exception:
-            pass
         # Analytics: text analyze failed
         if analytics.logger and message.from_user:
             analytics.fire_event(
@@ -811,14 +789,10 @@ async def handle_food_text(message: types.Message, state: FSMContext) -> None:
             err = str(result.get("error") or "")
             msg = _("Не удалось проанализировать текст. Попробуйте ещё раз позже.")
             await analyzing_msg.edit_text(msg)
-            try:
+            with contextlib.suppress(Exception):
                 logger.warning("FoodAI:Text provider error {} | user_id={}", err, message.from_user.id if message.from_user else None)
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 foodai_failed.labels(source="text").inc()
-            except Exception:
-                pass
             return
     except Exception:
         pass
@@ -826,14 +800,10 @@ async def handle_food_text(message: types.Message, state: FSMContext) -> None:
     # Not-food short-circuit for text (ensure explicit log and early return)
     try:
         if isinstance(result, dict) and bool(result.get("not_food")):
-            try:
+            with contextlib.suppress(Exception):
                 logger.info("FoodAI:Text not_food short-circuit | user_id={} | text_len={}", message.from_user.id if message.from_user else None, len(text or ""))
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 foodai_not_food.labels(source="text").inc()
-            except Exception:
-                pass
             await analyzing_msg.edit_text(_("Похоже, это не описание еды или напитков. Попробуйте описать блюдо или продукт."))
             return
     except Exception:
@@ -910,10 +880,8 @@ async def handle_food_text(message: types.Message, state: FSMContext) -> None:
         itogo = None
 
     # Remove status message; just clean up the temporary "analyzing" message
-    try:
+    with contextlib.suppress(Exception):
         await analyzing_msg.delete()
-    except Exception:
-        pass
     preview_text = _build_preview_text(
         calories,
         protein_g,
@@ -939,10 +907,8 @@ async def handle_food_text(message: types.Message, state: FSMContext) -> None:
             _dur_ms = None
         foodai_succeeded.labels(source="text").inc()
         if itogo:
-            try:
+            with contextlib.suppress(Exception):
                 foodai_itogo_shown.labels(source="text").inc()
-            except Exception:
-                pass
         if _dur_ms is not None:
             foodai_duration_ms.observe(_dur_ms)
     except Exception:
@@ -1005,7 +971,7 @@ def _build_preview_text(
     parts: list[str] = []
     # Early exit if not_food flagged
     try:
-        not_food_flag = bool((itogo or {}) and False)
+        not_food_flag = False
     except Exception:
         not_food_flag = False
     try:
@@ -1045,10 +1011,8 @@ def _build_preview_text(
         try:
             parts.append("")
             parts.append(_("Похоже, на изображении нет еды или напитков. Пришлите фото блюда или пищевого продукта."))
-            try:
+            with contextlib.suppress(Exception):
                 foodai_not_food.labels(source=source or "unknown").inc()
-            except Exception:
-                pass
             return "\n".join(parts)
         except Exception:
             return "\n".join(parts)
@@ -1118,7 +1082,7 @@ def _build_preview_text(
                             if is_liquid:
                                 d = None
                                 key = name.lower().strip()
-                                for k in density.keys():
+                                for k in density:
                                     if key.startswith(k):
                                         d = density[k]
                                         break
@@ -1187,10 +1151,8 @@ def _build_preview_text(
                 # else: high — do not show the line
             except Exception:
                 # fallback: keep old numeric display on parsing issues
-                try:
+                with contextlib.suppress(Exception):
                     parts.append(_("Уровень уверенности {conf}%").format(conf=int(float(conf) * 100)))
-                except Exception:
-                    pass
         # Keep warning if below escalate threshold
         try:
             conf_thr = float(getattr(settings, "FOODAI_ESCALATE_CONF", getattr(settings, "FOODAI_CONFIDENCE_ESCALATE", 0.7)))
@@ -1218,7 +1180,7 @@ def _build_preview_text(
                         return s
                     except Exception:
                         try:
-                            return str(int(round(float(x))))
+                            return str(round(float(x)))
                         except Exception:
                             return str(x)
 
@@ -1464,7 +1426,7 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
                     premium_ok = False
             if premium_ok:
                 try:
-                    from bot.background.report_scheduler import _next_run_epoch, ZSET_KEY
+                    from bot.background.report_scheduler import ZSET_KEY, _next_run_epoch
                     from bot.core.loader import redis_client as _rc
                     nxt = await _next_run_epoch(user_id)
                     # Do not move existing earlier schedules; only add if absent
@@ -1486,7 +1448,7 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
                     text=f"meal_id={meal_id}, cal={_cal}, p={_p}, f={_f}, c={_c}, conf={_conf}",
                     command=None,
                 ),
-                language=getattr(callback.from_user, 'language_code', None),
+                language=getattr(callback.from_user, "language_code", None),
                 plan=Plan(branch="Save", source="FoodAI", version="v1"),
             )
         )
@@ -1499,19 +1461,17 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
             d_disp = datetime.fromisoformat(backdate_iso_chosen).strftime("%d.%m.%Y")
         except Exception:
             d_disp = backdate_iso_chosen
-        text = _((f"✅ Еда сохранена в день {d_disp}"))
+        text = _(f"✅ Еда сохранена в день {d_disp}")
         kb = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text=_("◀️ Назад к дню"), callback_data=f"history:day:{backdate_iso_chosen}")]]
         )
         await _edit_caption_or_text(callback, text, kb=kb)
         # Clear add-in-day target as the backdated save completed successfully
-        try:
+        with contextlib.suppress(Exception):
             await clear_add_in_day_target(user_id)
-        except Exception:
-            pass
         # Analytics: completed add-in-day
         if analytics.logger and callback.from_user:
-            try:
+            with contextlib.suppress(Exception):
                 analytics.fire_event(
                     BaseEvent(
                         user_id=callback.from_user.id,
@@ -1522,11 +1482,9 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
                             text=f"date={backdate_iso_chosen}, meal_id={meal_id}",
                             command=None,
                         ),
-                        language=getattr(callback.from_user, 'language_code', None),
+                        language=getattr(callback.from_user, "language_code", None),
                     )
                 )
-            except Exception:
-                pass
         await callback.answer()
         return
 
@@ -1563,10 +1521,7 @@ async def cb_foodai_save(callback: types.CallbackQuery, state: FSMContext) -> No
             diff_c = plan_c - fact_c
 
             def _fmt(delta: float, emoji: str, unit: str, label: str) -> str:
-                if unit == "ккал":
-                    show_val = f"{int(abs(delta))}"
-                else:
-                    show_val = f"{abs(delta):.1f}"
+                show_val = f"{int(abs(delta))}" if unit == "ккал" else f"{abs(delta):.1f}"
                 if delta > 0:
                     return f"{emoji} {label}: {show_val} {unit} до нормы"
                 if delta < 0:
@@ -1634,7 +1589,7 @@ async def cb_foodai_delete(callback: types.CallbackQuery) -> None:
                     text=f"meal_id={meal_id}",
                     command=None,
                 ),
-                language=getattr(callback.from_user, 'language_code', None),
+                language=getattr(callback.from_user, "language_code", None),
                 plan=Plan(branch="Delete", source="FoodAI", version="v1"),
             )
         )
@@ -1702,7 +1657,7 @@ async def cb_foodai_edit(callback: types.CallbackQuery, state: FSMContext) -> No
                     text=f"meal_id={meal_id}",
                     command=None,
                 ),
-                language=getattr(callback.from_user, 'language_code', None),
+                language=getattr(callback.from_user, "language_code", None),
                 plan=Plan(branch="Edit", source="FoodAI", version="v1"),
             )
         )
@@ -1778,7 +1733,7 @@ async def cb_foodai_back(callback: types.CallbackQuery) -> None:
                     text=f"meal_id={meal_id}",
                     command=None,
                 ),
-                language=getattr(callback.from_user, 'language_code', None),
+                language=getattr(callback.from_user, "language_code", None),
                 plan=Plan(branch="Back", source="FoodAI", version="v1"),
             )
         )
@@ -1845,7 +1800,7 @@ async def cb_foodai_adjust(callback: types.CallbackQuery) -> None:
                     text=f"meal_id={meal_id}, delta={delta}",
                     command=None,
                 ),
-                language=getattr(callback.from_user, 'language_code', None),
+                language=getattr(callback.from_user, "language_code", None),
                 plan=Plan(branch=("AdjustCal" if field == "cal" else "AdjustWt"), source="FoodAI", version="v1"),
             )
         )

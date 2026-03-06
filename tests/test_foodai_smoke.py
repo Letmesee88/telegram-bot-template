@@ -1,20 +1,20 @@
 from __future__ import annotations
+from datetime import datetime, timezone
 
 import pytest
-from datetime import datetime, timezone
 from sqlalchemy import select
 
-from bot.services.foodai import analyze_text
 from bot.database.models import (
-    UserModel,
-    MealModel,
-    MealItemModel,
     DailyIntakeModel,
+    MealItemModel,
+    MealModel,
+    UserModel,
 )
+from bot.services.foodai import analyze_text
 
 
 @pytest.mark.asyncio
-async def test_foodai_smoke_create_meal_and_upsert_daily_intake(apply_migrations, db_session, ensure_user):
+async def test_foodai_smoke_create_meal_and_upsert_daily_intake(apply_migrations, db_session, ensure_user) -> None:
     # 1) Ensure user and enable FoodAI
     user_id = await ensure_user(user_id=424242, first_name="FoodAI")
     user = await db_session.get(UserModel, user_id)

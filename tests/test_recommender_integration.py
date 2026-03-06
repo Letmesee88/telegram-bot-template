@@ -1,19 +1,17 @@
 from __future__ import annotations
-
 import asyncio
 import json
-import time
 
 import pytest
 from sqlalchemy import select
 
-from bot.services import recommender as recmod
 from bot.database.models import RecommendationLogModel
+from bot.services import recommender as recmod
 from bot.services.recommendations_log import add_recommendation_title
 
 
 @pytest.mark.asyncio
-async def test_recommend_empty_returns_reason_empty(db_session, ensure_user):
+async def test_recommend_empty_returns_reason_empty(db_session, ensure_user) -> None:
     user_id = await ensure_user()
 
     async def _mock_openai_request(_endpoint: str, _payload: dict) -> str:
@@ -31,7 +29,7 @@ async def test_recommend_empty_returns_reason_empty(db_session, ensure_user):
 
 
 @pytest.mark.asyncio
-async def test_recommend_invalid_then_retry_success_writes_log(db_session, ensure_user):
+async def test_recommend_invalid_then_retry_success_writes_log(db_session, ensure_user) -> None:
     user_id = await ensure_user()
 
     # First call: wrong macros (mismatch vs calories) -> triggers retry
@@ -77,7 +75,7 @@ async def test_recommend_invalid_then_retry_success_writes_log(db_session, ensur
 
 
 @pytest.mark.asyncio
-async def test_recommend_another_uses_avoid_in_prompt(db_session, ensure_user):
+async def test_recommend_another_uses_avoid_in_prompt(db_session, ensure_user) -> None:
     user_id = await ensure_user()
     # Pre-insert a title to be avoided
     await add_recommendation_title(db_session, user_id, "Салат Цезарь")
@@ -103,7 +101,8 @@ async def test_recommend_another_uses_avoid_in_prompt(db_session, ensure_user):
     recmod._openai_request = _mock_openai_request  # type: ignore[assignment]
     try:
         rec, reason = await recmod.recommend(user_id, "dn", another=True)
-        assert reason is None and rec is not None
+        assert reason is None
+        assert rec is not None
         assert captured["user_text"] is not None
         # Prompt must include the avoided title in some form (case-insensitive)
         assert "салат цезарь" in captured["user_text"].lower()

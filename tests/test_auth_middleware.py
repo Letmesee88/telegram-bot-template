@@ -1,12 +1,14 @@
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from aiogram import types
+from sqlalchemy import select
 
 from bot.database.models.user import UserModel
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _make_user_dict(user_id: int = 12345) -> dict:
@@ -78,7 +80,7 @@ async def test_auth_middleware_registers_user_on_message(db_session: AsyncSessio
 
     event = _make_message(user_id=777, text="/start")
 
-    async def _handler(_event, data):
+    async def _handler(_event, data) -> str:
         return "ok"
 
     mw = auth_mw.AuthMiddleware()
@@ -117,7 +119,7 @@ async def test_auth_middleware_registers_user_on_callback(db_session: AsyncSessi
 
     event = _make_callback(data="start:no", user_id=888)
 
-    async def _handler(_event, data):
+    async def _handler(_event, data) -> str:
         return "ok"
 
     mw = auth_mw.AuthMiddleware()

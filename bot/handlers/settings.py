@@ -1,31 +1,41 @@
-from __future__ import annotations
-
-from aiogram import Router, types, F
-from aiogram.utils.i18n import gettext as _
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+﻿from __future__ import annotations
 import asyncio
+import contextlib
+import hashlib
 import re
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
-from bot.database.database import sessionmaker
-from bot.services.templates import list_categories_with_counts
-from bot.keyboards.templates import categories_browse_kb
-from bot.services.account import get_account_summary_text
-from bot.services.analytics import analytics
-from bot.analytics.types import BaseEvent, EventProperties, Plan
-from sqlalchemy import select, update
-from bot.database.models import OnboardingAnswerModel, SubscriptionModel, PaymentModel, UserModel
-from bot.schemas.onboarding import DailyPlan, OnboardingData, Goal
-from bot.services.plan import calculate_daily_plan
-from bot.services.adjust import parse_adjustment_cached, apply_adjustment, parse_adjustment_heuristic, rephrase_explanation_cached
-from bot.core.config import settings
-from bot.services.weight import get_current_weight
-from bot.services.users import get_user_tzinfo
+from aiogram import F, Router, types
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils.i18n import gettext as _
 from loguru import logger
+from sqlalchemy import select, update
+
+from bot.analytics.types import BaseEvent, EventProperties, Plan
+from bot.core.config import settings
 from bot.core.loader import redis_client
-import hashlib
+from bot.database.database import sessionmaker
+from bot.database.models import OnboardingAnswerModel, SubscriptionModel, UserModel
+from bot.keyboards.templates import categories_browse_kb
+from bot.schemas.onboarding import DailyPlan, Goal, OnboardingData
+from bot.services.account import get_account_summary_text
+from bot.services.adjust import (
+    apply_adjustment,
+    parse_adjustment_cached,
+    parse_adjustment_heuristic,
+    rephrase_explanation_cached,
+)
+from bot.services.analytics import analytics
+from bot.services.plan import calculate_daily_plan
+from bot.services.subscriptions import activate_free_trial, is_free_trial_available, trial_days
+from bot.services.templates import list_categories_with_counts
+from bot.services.users import get_user_tzinfo
+from bot.services.weight import get_current_weight
+
+if TYPE_CHECKING:
+    from aiogram.fsm.context import FSMContext
 
 router = Router(name="settings")
 
@@ -38,18 +48,18 @@ class SubscriptionEmailStates(StatesGroup):
     waiting_email = State()
 
 
-EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}$')
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}$")
 
 
 def _kb_settings() -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     rows.append([
-        InlineKeyboardButton(text="📊 Суточная норма", callback_data="settings:open:daily_norm"),
-        InlineKeyboardButton(text="📌 Шаблоны блюд", callback_data="settings:open:templates"),
+        InlineKeyboardButton(text="рџ“Љ РЎСѓС‚РѕС‡РЅР°СЏ РЅРѕСЂРјР°", callback_data="settings:open:daily_norm"),
+        InlineKeyboardButton(text="рџ“Њ РЁР°Р±Р»РѕРЅС‹ Р±Р»СЋРґ", callback_data="settings:open:templates"),
     ])
     rows.append([
-        InlineKeyboardButton(text="💎 Подписка", callback_data="settings:open:subscription"),
-        InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:back:cabinet"),
+        InlineKeyboardButton(text="рџ’Ћ РџРѕРґРїРёСЃРєР°", callback_data="settings:open:subscription"),
+        InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:back:cabinet"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -74,14 +84,18 @@ async def _render_settings(callback: types.CallbackQuery) -> None:
         tzinfo = await get_user_tzinfo(session, user_id)
     def _fmt(dt):
         try:
-            return dt.astimezone(tzinfo).strftime("%d.%m.%Y") if dt else "—"
+            return dt.astimezone(tzinfo).strftime("%d.%m.%Y") if dt else "вЂ”"
         except Exception:
-            return "—"
-    plan_map_short = {"trial": "Пробная", "month": "Месячная", "year": "Годовая"}
-    if sub and sub.status == "active" and sub.expires_at_utc:
-        line_sub = f"💎 Подписка: {plan_map_short.get(sub.plan, sub.plan)} • до {_fmt(sub.expires_at_utc)}"
+            return "вЂ”"
+    plan_map_short = {"trial": "пробный", "month": "месяц", "year": "год"}
+    now_utc = datetime.now(timezone.utc)
+    sub_is_active_now = bool(
+        sub and sub.status == "active" and sub.expires_at_utc and sub.expires_at_utc > now_utc
+    )
+    if sub_is_active_now:
+        line_sub = f"Подписка: {plan_map_short.get(sub.plan, sub.plan)} - до {_fmt(sub.expires_at_utc)}"
     else:
-        line_sub = "💎 Подписка: ❌ не активна"
+        line_sub = "Подписка: не активна"
     text = (
         "⚙️ Настройки\n\n"
         f"{line_sub}\n"
@@ -95,7 +109,7 @@ async def _render_settings(callback: types.CallbackQuery) -> None:
 
     # Analytics
     if analytics.logger:
-        try:
+        with contextlib.suppress(Exception):
             analytics.fire_event(
                 BaseEvent(
                     user_id=user_id,
@@ -104,8 +118,6 @@ async def _render_settings(callback: types.CallbackQuery) -> None:
                     plan=Plan(branch="Settings", source="Bot", version="v1"),
                 )
             )
-        except Exception:
-            pass
 
 
 @router.callback_query(F.data == "settings:open")
@@ -125,45 +137,45 @@ async def cb_subscription_change_plan(callback: types.CallbackQuery) -> None:
     if not sub or not sub.expires_at_utc:
         await cb_settings_open_subscription(callback)
         return
-    plan_map = {"trial": "Пробный доступ", "month": "Месячная подписка", "year": "Годовая подписка"}
+    plan_map = {"trial": "РџСЂРѕР±РЅС‹Р№ РґРѕСЃС‚СѓРї", "month": "РњРµСЃСЏС‡РЅР°СЏ РїРѕРґРїРёСЃРєР°", "year": "Р“РѕРґРѕРІР°СЏ РїРѕРґРїРёСЃРєР°"}
     base_plan = getattr(sub, "next_plan", None)
     base_plan = base_plan if base_plan in {"month", "year"} else sub.plan
     target = "year" if base_plan == "month" else "month"
-    title = "🔄 Смена плана подписки"
-    now_utc = datetime.now(timezone.utc)
+    title = "рџ”„ РЎРјРµРЅР° РїР»Р°РЅР° РїРѕРґРїРёСЃРєРё"
+    datetime.now(timezone.utc)
     try:
         cur_until = sub.expires_at_utc.astimezone(tzinfo).strftime("%d.%m.%Y")
     except Exception:
-        cur_until = "—"
+        cur_until = "вЂ”"
     lines = [
         title,
         "",
-        f"Текущий план: {plan_map.get(sub.plan, sub.plan)}",
-        f"📅 Действует до: {cur_until}",
+        f"РўРµРєСѓС‰РёР№ РїР»Р°РЅ: {plan_map.get(sub.plan, sub.plan)}",
+        f"рџ“… Р”РµР№СЃС‚РІСѓРµС‚ РґРѕ: {cur_until}",
         "",
     ]
     if target == "year":
         lines += [
-            "Предлагаемый план: Годовая подписка",
+            "РџСЂРµРґР»Р°РіР°РµРјС‹Р№ РїР»Р°РЅ: Р“РѕРґРѕРІР°СЏ РїРѕРґРїРёСЃРєР°",
             "",
-            "💰 Стоимость: 2500 руб/год",
+            "рџ’° РЎС‚РѕРёРјРѕСЃС‚СЊ: 2500 СЂСѓР±/РіРѕРґ",
             "",
-            "При смене на годовой план:",
-            "• Вы сэкономите 6 500 рублей в год",
-            "• Не нужно беспокоиться о ежемесячных платежах",
-            "• Все функции остаются доступными",
+            "РџСЂРё СЃРјРµРЅРµ РЅР° РіРѕРґРѕРІРѕР№ РїР»Р°РЅ:",
+            "вЂў Р’С‹ СЃСЌРєРѕРЅРѕРјРёС‚Рµ 6 500 СЂСѓР±Р»РµР№ РІ РіРѕРґ",
+            "вЂў РќРµ РЅСѓР¶РЅРѕ Р±РµСЃРїРѕРєРѕРёС‚СЊСЃСЏ Рѕ РµР¶РµРјРµСЃСЏС‡РЅС‹С… РїР»Р°С‚РµР¶Р°С…",
+            "вЂў Р’СЃРµ С„СѓРЅРєС†РёРё РѕСЃС‚Р°СЋС‚СЃСЏ РґРѕСЃС‚СѓРїРЅС‹РјРё",
         ]
-        cta = "💎 Перейти на годовую подписку"
+        cta = "рџ’Ћ РџРµСЂРµР№С‚Рё РЅР° РіРѕРґРѕРІСѓСЋ РїРѕРґРїРёСЃРєСѓ"
     else:
         lines += [
-            "Предлагаемый план: Месячная подписка",
+            "РџСЂРµРґР»Р°РіР°РµРјС‹Р№ РїР»Р°РЅ: РњРµСЃСЏС‡РЅР°СЏ РїРѕРґРїРёСЃРєР°",
             "",
-            "💰 Стоимость: 750 руб/месяц",
+            "рџ’° РЎС‚РѕРёРјРѕСЃС‚СЊ: 750 СЂСѓР±/РјРµСЃСЏС†",
         ]
-        cta = "💎 Перейти на месячную подписку"
+        cta = "рџ’Ћ РџРµСЂРµР№С‚Рё РЅР° РјРµСЃСЏС‡РЅСѓСЋ РїРѕРґРїРёСЃРєСѓ"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=cta, callback_data=f"subscription:change_plan_confirm:{target}")],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
+        [InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open:subscription")],
     ])
     text = "\n".join(lines)
     try:
@@ -190,20 +202,20 @@ async def cb_subscription_autorenew_disable(callback: types.CallbackQuery) -> No
     now_utc = datetime.now(timezone.utc).astimezone(tzinfo)
     days_left = max(0, (until.date() - now_utc.date()).days)
     lines = [
-        "✅ Автопродление отключено",
+        "вњ… РђРІС‚РѕРїСЂРѕРґР»РµРЅРёРµ РѕС‚РєР»СЋС‡РµРЅРѕ",
         "",
-        f"Подписка остается активной до {until.strftime('%d.%m.%Y')}",
-        f"Осталось дней: {days_left}",
+        f"РџРѕРґРїРёСЃРєР° РѕСЃС‚Р°РµС‚СЃСЏ Р°РєС‚РёРІРЅРѕР№ РґРѕ {until.strftime('%d.%m.%Y')}",
+        f"РћСЃС‚Р°Р»РѕСЃСЊ РґРЅРµР№: {days_left}",
         "",
-        "Автоматическое продление больше не будет происходить.",
-        "Вы можете возобновить подписку в любое время.",
+        "РђРІС‚РѕРјР°С‚РёС‡РµСЃРєРѕРµ РїСЂРѕРґР»РµРЅРёРµ Р±РѕР»СЊС€Рµ РЅРµ Р±СѓРґРµС‚ РїСЂРѕРёСЃС…РѕРґРёС‚СЊ.",
+        "Р’С‹ РјРѕР¶РµС‚Рµ РІРѕР·РѕР±РЅРѕРІРёС‚СЊ РїРѕРґРїРёСЃРєСѓ РІ Р»СЋР±РѕРµ РІСЂРµРјСЏ.",
         "",
-        "Спасибо за использование Calorissimo ai! 🍬",
+        "РЎРїР°СЃРёР±Рѕ Р·Р° РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ Calorissimo ai! рџЌ¬",
     ]
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="↔️ Сменить план", callback_data="subscription:change_plan")],
-        [InlineKeyboardButton(text="✅ Включить автопродление", callback_data="subscription:autorenew:enable")],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
+        [InlineKeyboardButton(text="в†”пёЏ РЎРјРµРЅРёС‚СЊ РїР»Р°РЅ", callback_data="subscription:change_plan")],
+        [InlineKeyboardButton(text="вњ… Р’РєР»СЋС‡РёС‚СЊ Р°РІС‚РѕРїСЂРѕРґР»РµРЅРёРµ", callback_data="subscription:autorenew:enable")],
+        [InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open:subscription")],
     ])
     text = "\n".join(lines)
     try:
@@ -230,17 +242,17 @@ async def cb_subscription_autorenew_enable(callback: types.CallbackQuery) -> Non
     now_utc = datetime.now(timezone.utc).astimezone(tzinfo)
     days_left = max(0, (until.date() - now_utc.date()).days)
     lines = [
-        "✅ Автопродление включено",
+        "вњ… РђРІС‚РѕРїСЂРѕРґР»РµРЅРёРµ РІРєР»СЋС‡РµРЅРѕ",
         "",
-        f"Подписка будет автоматически продлена {until.strftime('%d.%m.%Y')}",
-        f"Осталось дней: {days_left}",
+        f"РџРѕРґРїРёСЃРєР° Р±СѓРґРµС‚ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё РїСЂРѕРґР»РµРЅР° {until.strftime('%d.%m.%Y')}",
+        f"РћСЃС‚Р°Р»РѕСЃСЊ РґРЅРµР№: {days_left}",
         "",
-        "Спасибо, что остаетесь с нами! 🎉",
+        "РЎРїР°СЃРёР±Рѕ, С‡С‚Рѕ РѕСЃС‚Р°РµС‚РµСЃСЊ СЃ РЅР°РјРё! рџЋ‰",
     ]
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="↔️ Сменить план", callback_data="subscription:change_plan")],
-        [InlineKeyboardButton(text="❌ Отключить подписку", callback_data="subscription:autorenew:disable")],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
+        [InlineKeyboardButton(text="в†”пёЏ РЎРјРµРЅРёС‚СЊ РїР»Р°РЅ", callback_data="subscription:change_plan")],
+        [InlineKeyboardButton(text="вќЊ РћС‚РєР»СЋС‡РёС‚СЊ РїРѕРґРїРёСЃРєСѓ", callback_data="subscription:autorenew:disable")],
+        [InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open:subscription")],
     ])
     text = "\n".join(lines)
     try:
@@ -265,22 +277,22 @@ async def cb_subscription_change_plan_confirm(callback: types.CallbackQuery) -> 
     if not sub or not sub.expires_at_utc:
         await cb_settings_open_subscription(callback)
         return
-    plan_map = {"trial": "Пробный доступ", "month": "Месячная подписка", "year": "Годовая подписка"}
+    plan_map = {"trial": "РџСЂРѕР±РЅС‹Р№ РґРѕСЃС‚СѓРї", "month": "РњРµСЃСЏС‡РЅР°СЏ РїРѕРґРїРёСЃРєР°", "year": "Р“РѕРґРѕРІР°СЏ РїРѕРґРїРёСЃРєР°"}
     cur_plan = plan_map.get(sub.plan, sub.plan)
     new_plan = plan_map.get(target, target)
     until = sub.expires_at_utc.astimezone(tzinfo).strftime("%d.%m.%Y")
     lines = [
-        "✅ Подтверждение смены плана",
+        "вњ… РџРѕРґС‚РІРµСЂР¶РґРµРЅРёРµ СЃРјРµРЅС‹ РїР»Р°РЅР°",
         "",
-        f"Сейчас: {cur_plan}",
-        f"На: {new_plan}",
+        f"РЎРµР№С‡Р°СЃ: {cur_plan}",
+        f"РќР°: {new_plan}",
         "",
-        "📅 Когда произойдет смена:",
-        f"В конце текущего периода ({until})",
+        "рџ“… РљРѕРіРґР° РїСЂРѕРёР·РѕР№РґРµС‚ СЃРјРµРЅР°:",
+        f"Р’ РєРѕРЅС†Рµ С‚РµРєСѓС‰РµРіРѕ РїРµСЂРёРѕРґР° ({until})",
     ]
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Подтвердить смену", callback_data=f"subscription:change_plan_apply:{target}")],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="subscription:change_plan")],
+        [InlineKeyboardButton(text="вњ… РџРѕРґС‚РІРµСЂРґРёС‚СЊ СЃРјРµРЅСѓ", callback_data=f"subscription:change_plan_apply:{target}")],
+        [InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="subscription:change_plan")],
     ])
     text = "\n".join(lines)
     try:
@@ -309,9 +321,9 @@ async def cb_subscription_change_plan_apply(callback: types.CallbackQuery) -> No
             update(SubscriptionModel).where(SubscriptionModel.id == sub.id).values(next_plan=target)
         )
         await session.commit()
-    plan_map = {"trial": "Пробный доступ", "month": "Месячная подписка", "year": "Годовая подписка"}
+    plan_map = {"trial": "РџСЂРѕР±РЅС‹Р№ РґРѕСЃС‚СѓРї", "month": "РњРµСЃСЏС‡РЅР°СЏ РїРѕРґРїРёСЃРєР°", "year": "Р“РѕРґРѕРІР°СЏ РїРѕРґРїРёСЃРєР°"}
     new_plan = plan_map.get(target, target)
-    until = "—"
+    until = "вЂ”"
     try:
         async with sessionmaker() as session:
             sub2 = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
@@ -321,23 +333,23 @@ async def cb_subscription_change_plan_apply(callback: types.CallbackQuery) -> No
     except Exception:
         pass
     lines = [
-        "🎉 План успешно изменен!",
+        "рџЋ‰ РџР»Р°РЅ СѓСЃРїРµС€РЅРѕ РёР·РјРµРЅРµРЅ!",
         "",
-        f"Новый план: {new_plan}",
-        f"📅 Дата списания: {until}",
-        "✅ Смена плана завершена!",
+        f"РќРѕРІС‹Р№ РїР»Р°РЅ: {new_plan}",
+        f"рџ“… Р”Р°С‚Р° СЃРїРёСЃР°РЅРёСЏ: {until}",
+        "вњ… РЎРјРµРЅР° РїР»Р°РЅР° Р·Р°РІРµСЂС€РµРЅР°!",
         "",
-        "Следующий платеж будет по новому тарифу.",
+        "РЎР»РµРґСѓСЋС‰РёР№ РїР»Р°С‚РµР¶ Р±СѓРґРµС‚ РїРѕ РЅРѕРІРѕРјСѓ С‚Р°СЂРёС„Сѓ.",
     ]
     # Actions after success
     async with sessionmaker() as session:
         sub = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
-    kb_rows = [[InlineKeyboardButton(text="↔️ Сменить план", callback_data="subscription:change_plan")]]
+    kb_rows = [[InlineKeyboardButton(text="в†”пёЏ РЎРјРµРЅРёС‚СЊ РїР»Р°РЅ", callback_data="subscription:change_plan")]]
     if sub and bool(getattr(sub, "auto_renew", True)):
-        kb_rows.append([InlineKeyboardButton(text="❌ Отключить подписку", callback_data="subscription:autorenew:disable")])
+        kb_rows.append([InlineKeyboardButton(text="вќЊ РћС‚РєР»СЋС‡РёС‚СЊ РїРѕРґРїРёСЃРєСѓ", callback_data="subscription:autorenew:disable")])
     else:
-        kb_rows.append([InlineKeyboardButton(text="✅ Включить автопродление", callback_data="subscription:autorenew:enable")])
-    kb_rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")])
+        kb_rows.append([InlineKeyboardButton(text="вњ… Р’РєР»СЋС‡РёС‚СЊ Р°РІС‚РѕРїСЂРѕРґР»РµРЅРёРµ", callback_data="subscription:autorenew:enable")])
+    kb_rows.append([InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open:subscription")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     text = "\n".join(lines)
     try:
@@ -397,11 +409,11 @@ async def cb_settings_open_daily_norm(callback: types.CallbackQuery, state: FSMC
 
     if not existing:
         text = (
-            "📊 Суточная норма\n\n"
-            "Не нашёл базовые данные. Пройди короткую настройку: /start"
+            "рџ“Љ РЎСѓС‚РѕС‡РЅР°СЏ РЅРѕСЂРјР°\n\n"
+            "РќРµ РЅР°С€С‘Р» Р±Р°Р·РѕРІС‹Рµ РґР°РЅРЅС‹Рµ. РџСЂРѕР№РґРё РєРѕСЂРѕС‚РєСѓСЋ РЅР°СЃС‚СЂРѕР№РєСѓ: /start"
         )
         kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open")]]
+            inline_keyboard=[[InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open")]]
         )
         try:
             await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
@@ -419,10 +431,10 @@ async def cb_settings_open_daily_norm(callback: types.CallbackQuery, state: FSMC
     c_val = None
     try:
         plan_obj = DailyPlan.model_validate(dp_json)
-        cal_val = int(getattr(plan_obj, 'calories', 0) or 0)
-        p_val = int(getattr(plan_obj, 'protein_g', 0) or 0)
-        f_val = int(getattr(plan_obj, 'fat_g', 0) or 0)
-        c_val = int(getattr(plan_obj, 'carbs_g', 0) or 0)
+        cal_val = int(getattr(plan_obj, "calories", 0) or 0)
+        p_val = int(getattr(plan_obj, "protein_g", 0) or 0)
+        f_val = int(getattr(plan_obj, "fat_g", 0) or 0)
+        c_val = int(getattr(plan_obj, "carbs_g", 0) or 0)
     except Exception:
         try:
             cal_val = int(dp_json.get("calories") or 0)
@@ -442,27 +454,27 @@ async def cb_settings_open_daily_norm(callback: types.CallbackQuery, state: FSMC
             cw = float(data_json.get("weight_kg")) if data_json.get("weight_kg") is not None else None
         except Exception:
             cw = None
-    remain_str = "нет данных"
-    goal_str = "нет данных"
+    remain_str = "РЅРµС‚ РґР°РЅРЅС‹С…"
+    goal_str = "РЅРµС‚ РґР°РЅРЅС‹С…"
     try:
         if goal_weight is not None:
-            goal_str = f"{float(goal_weight)} кг"
+            goal_str = f"{float(goal_weight)} РєРі"
         if cw is not None and goal_weight is not None:
             remain = abs(float(cw) - float(goal_weight))
-            remain_str = f"{round(remain, 1)} кг"
+            remain_str = f"{round(remain, 1)} РєРі"
     except Exception:
         pass
 
     text = (
-        "📊 Суточная норма\n\n"
-        f"🔥 Калории: {cal_val} ккал\n"
-        f"🥩 Белки: {p_val} г\n"
-        f"🥑 Жиры: {f_val} г\n"
-        f"🍞 Углеводы: {c_val} г\n\n"
-        f"🎯 Цель: {goal_str} | До цели: {remain_str}"
+        "рџ“Љ РЎСѓС‚РѕС‡РЅР°СЏ РЅРѕСЂРјР°\n\n"
+        f"рџ”Ґ РљР°Р»РѕСЂРёРё: {cal_val} РєРєР°Р»\n"
+        f"рџҐ© Р‘РµР»РєРё: {p_val} Рі\n"
+        f"рџҐ‘ Р–РёСЂС‹: {f_val} Рі\n"
+        f"рџЌћ РЈРіР»РµРІРѕРґС‹: {c_val} Рі\n\n"
+        f"рџЋЇ Р¦РµР»СЊ: {goal_str} | Р”Рѕ С†РµР»Рё: {remain_str}"
     )
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="✏️ Изменить план питания", callback_data="daily_norm:edit_start"), InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open")]]
+        inline_keyboard=[[InlineKeyboardButton(text="вњЏпёЏ РР·РјРµРЅРёС‚СЊ РїР»Р°РЅ РїРёС‚Р°РЅРёСЏ", callback_data="daily_norm:edit_start"), InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open")]]
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
@@ -488,9 +500,9 @@ async def cb_daily_norm_edit_start(callback: types.CallbackQuery, state: FSMCont
     if not callback.from_user:
         return
     await state.set_state(SettingsDailyNormStates.waiting_text)
-    text = "Напиши, в свободном формате, что нужно скорректировать в твоём индивидуальном плане"
+    text = "РќР°РїРёС€Рё, РІ СЃРІРѕР±РѕРґРЅРѕРј С„РѕСЂРјР°С‚Рµ, С‡С‚Рѕ РЅСѓР¶РЅРѕ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°С‚СЊ РІ С‚РІРѕС‘Рј РёРЅРґРёРІРёРґСѓР°Р»СЊРЅРѕРј РїР»Р°РЅРµ"
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:daily_norm")]]
+        inline_keyboard=[[InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open:daily_norm")]]
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb)
@@ -515,10 +527,8 @@ async def cb_daily_norm_edit_start(callback: types.CallbackQuery, state: FSMCont
 async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> None:
     user_id = message.from_user.id
     text_raw = (message.text or "").strip()
-    try:
-        await message.answer(_("✨ Изучаю ваши пожелания и обновляю план..."))
-    except Exception:
-        pass
+    with contextlib.suppress(Exception):
+        await message.answer(_("вњЁ РР·СѓС‡Р°СЋ РІР°С€Рё РїРѕР¶РµР»Р°РЅРёСЏ Рё РѕР±РЅРѕРІР»СЏСЋ РїР»Р°РЅ..."))
 
     try:
         async with sessionmaker() as session:
@@ -526,7 +536,7 @@ async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> 
                 select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id)
             )
             if not existing:
-                await message.answer(_("Не нашёл базовые данные. Пройди короткую настройку: /start"))
+                await message.answer(_("РќРµ РЅР°С€С‘Р» Р±Р°Р·РѕРІС‹Рµ РґР°РЅРЅС‹Рµ. РџСЂРѕР№РґРё РєРѕСЂРѕС‚РєСѓСЋ РЅР°СЃС‚СЂРѕР№РєСѓ: /start"))
                 await state.clear()
                 return
 
@@ -538,7 +548,7 @@ async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> 
                 payload = OnboardingData.model_validate(data_json)
             except Exception as e:
                 logger.warning("settings.daily_norm.payload_invalid | user_id={} | err={}", user_id, e)
-                await message.answer(_("Данные повреждены. Попробуй заново: /start"))
+                await message.answer(_("Р”Р°РЅРЅС‹Рµ РїРѕРІСЂРµР¶РґРµРЅС‹. РџРѕРїСЂРѕР±СѓР№ Р·Р°РЅРѕРІРѕ: /start"))
                 await state.clear()
                 return
 
@@ -603,105 +613,99 @@ async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> 
             )
             if not parsed:
                 if str(getattr(settings, "ADJUST_ENGINE_MODE", "")).lower() == "llm_only":
-                    await message.answer(_("Не до конца понял запрос. Сформулируй одной фразой, например: \n• 'уменьши углеводы на 10%' \n• 'хочу быстрее похудеть' \n• 'к 01.03.2026' \n• 'мало двигаюсь — поставь низкую активность'"))
+                    await message.answer(_("РќРµ РґРѕ РєРѕРЅС†Р° РїРѕРЅСЏР» Р·Р°РїСЂРѕСЃ. РЎС„РѕСЂРјСѓР»РёСЂСѓР№ РѕРґРЅРѕР№ С„СЂР°Р·РѕР№, РЅР°РїСЂРёРјРµСЂ: \nвЂў 'СѓРјРµРЅСЊС€Рё СѓРіР»РµРІРѕРґС‹ РЅР° 10%' \nвЂў 'С…РѕС‡Сѓ Р±С‹СЃС‚СЂРµРµ РїРѕС…СѓРґРµС‚СЊ' \nвЂў 'Рє 01.03.2026' \nвЂў 'РјР°Р»Рѕ РґРІРёРіР°СЋСЃСЊ вЂ” РїРѕСЃС‚Р°РІСЊ РЅРёР·РєСѓСЋ Р°РєС‚РёРІРЅРѕСЃС‚СЊ'"))
                     return
                 h = parse_adjustment_heuristic(text_raw)
                 if h:
                     parsed = h
                 else:
-                    await message.answer(_("Не до конца понял запрос. Сформулируй одной фразой, например: \n• 'уберите углеводы' \n• 'добавь 200 ккал' \n• 'мало двигаюсь — поставь низкую активность'"))
+                    await message.answer(_("РќРµ РґРѕ РєРѕРЅС†Р° РїРѕРЅСЏР» Р·Р°РїСЂРѕСЃ. РЎС„РѕСЂРјСѓР»РёСЂСѓР№ РѕРґРЅРѕР№ С„СЂР°Р·РѕР№, РЅР°РїСЂРёРјРµСЂ: \nвЂў 'СѓР±РµСЂРёС‚Рµ СѓРіР»РµРІРѕРґС‹' \nвЂў 'РґРѕР±Р°РІСЊ 200 РєРєР°Р»' \nвЂў 'РјР°Р»Рѕ РґРІРёРіР°СЋСЃСЊ вЂ” РїРѕСЃС‚Р°РІСЊ РЅРёР·РєСѓСЋ Р°РєС‚РёРІРЅРѕСЃС‚СЊ'"))
                     return
 
             new_plan, explanation, summary = apply_adjustment(base_plan, payload, parsed)
 
             existing.daily_plan = new_plan.model_dump(mode="json")
-            try:
+            with contextlib.suppress(Exception):
                 existing.goal = payload.goal.value if hasattr(payload.goal, "value") else str(payload.goal)
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 existing.calories = int(new_plan.calories)
-            except Exception:
-                pass
             await session.commit()
             # Invalidate cached account summary to reflect new plan immediately
-            try:
+            with contextlib.suppress(Exception):
                 await redis_client.delete(f"account:summary:{user_id}")
-            except Exception:
-                pass
 
     except Exception as e:
         logger.exception("settings.daily_norm.apply_error | user_id={} | err={}", user_id, e)
-        await message.answer(_("Не удалось сохранить изменения. Попробуй позже."))
+        await message.answer(_("РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕС…СЂР°РЅРёС‚СЊ РёР·РјРµРЅРµРЅРёСЏ. РџРѕРїСЂРѕР±СѓР№ РїРѕР·Р¶Рµ."))
         await state.clear()
         return
 
     personal_line: str | None = None
     try:
-        note = getattr(parsed, 'rationale', None)
-        intents = list(getattr(parsed, 'intents', []) or [])
+        note = getattr(parsed, "rationale", None)
+        intents = list(getattr(parsed, "intents", []) or [])
         if isinstance(note, str) and note.strip():
-            personal_line = "Учёл запрос: " + note.strip()
+            personal_line = "РЈС‡С‘Р» Р·Р°РїСЂРѕСЃ: " + note.strip()
         else:
             intent_map = {
-                'low_fodmap_candidate': "уменьшить FODMAP-продукты",
-                'lactose_free': "избегать лактозы",
-                'gluten_free': "без глютена",
-                'sugar_free': "ограничить сахар",
-                'keto': "кето-схему",
-                'low_carb': "снизить углеводы",
-                'high_protein': "акцент на белок",
-                'raise_calories': "увеличить калорийность",
-                'lower_calories': "снизить калорийность",
-                'activity_down': "понизить активность",
-                'activity_up': "повысить активность",
-                'reduce_protein': "снизить белок",
-                'reduce_fat': "снизить жиры",
-                'increase_fat': "повысить жиры",
-                'custom_macros': "кастомные макросы",
+                "low_fodmap_candidate": "СѓРјРµРЅСЊС€РёС‚СЊ FODMAP-РїСЂРѕРґСѓРєС‚С‹",
+                "lactose_free": "РёР·Р±РµРіР°С‚СЊ Р»Р°РєС‚РѕР·С‹",
+                "gluten_free": "Р±РµР· РіР»СЋС‚РµРЅР°",
+                "sugar_free": "РѕРіСЂР°РЅРёС‡РёС‚СЊ СЃР°С…Р°СЂ",
+                "keto": "РєРµС‚Рѕ-СЃС…РµРјСѓ",
+                "low_carb": "СЃРЅРёР·РёС‚СЊ СѓРіР»РµРІРѕРґС‹",
+                "high_protein": "Р°РєС†РµРЅС‚ РЅР° Р±РµР»РѕРє",
+                "raise_calories": "СѓРІРµР»РёС‡РёС‚СЊ РєР°Р»РѕСЂРёР№РЅРѕСЃС‚СЊ",
+                "lower_calories": "СЃРЅРёР·РёС‚СЊ РєР°Р»РѕСЂРёР№РЅРѕСЃС‚СЊ",
+                "activity_down": "РїРѕРЅРёР·РёС‚СЊ Р°РєС‚РёРІРЅРѕСЃС‚СЊ",
+                "activity_up": "РїРѕРІС‹СЃРёС‚СЊ Р°РєС‚РёРІРЅРѕСЃС‚СЊ",
+                "reduce_protein": "СЃРЅРёР·РёС‚СЊ Р±РµР»РѕРє",
+                "reduce_fat": "СЃРЅРёР·РёС‚СЊ Р¶РёСЂС‹",
+                "increase_fat": "РїРѕРІС‹СЃРёС‚СЊ Р¶РёСЂС‹",
+                "custom_macros": "РєР°СЃС‚РѕРјРЅС‹Рµ РјР°РєСЂРѕСЃС‹",
             }
             phrases = [intent_map[i] for i in intents if i in intent_map]
             if phrases:
-                personal_line = "Учёл запрос: " + ", ".join(phrases)
+                personal_line = "РЈС‡С‘Р» Р·Р°РїСЂРѕСЃ: " + ", ".join(phrases)
     except Exception:
         personal_line = None
 
     lines: list[str] = []
-    lines.append("<b>Твой план скорректирован!</b>")
+    lines.append("<b>РўРІРѕР№ РїР»Р°РЅ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°РЅ!</b>")
     lines.append("")
     try:
         if payload.goal != Goal.maintain:
-            if getattr(new_plan, 'eta_date', None) is not None and getattr(payload, 'goal_weight_kg', None) is not None:
+            if getattr(new_plan, "eta_date", None) is not None and getattr(payload, "goal_weight_kg", None) is not None:
                 delta = abs(float(payload.weight_kg) - float(payload.goal_weight_kg))
-                formatted_date = new_plan.eta_date.strftime('%d.%m.%Y')
+                formatted_date = new_plan.eta_date.strftime("%d.%m.%Y")
                 if payload.goal == Goal.lose:
-                    lines.append(f"Ты сбросишь {round(delta, 1)} кг к {formatted_date}")
+                    lines.append(f"РўС‹ СЃР±СЂРѕСЃРёС€СЊ {round(delta, 1)} РєРі Рє {formatted_date}")
                 elif payload.goal == Goal.gain:
-                    lines.append(f"Ты наберешь {round(delta, 1)} кг к {formatted_date}")
-            lines.append(f"Скорость: {getattr(new_plan, 'weekly_rate_kg', 0)} кг в неделю")
+                    lines.append(f"РўС‹ РЅР°Р±РµСЂРµС€СЊ {round(delta, 1)} РєРі Рє {formatted_date}")
+            lines.append(f"РЎРєРѕСЂРѕСЃС‚СЊ: {getattr(new_plan, 'weekly_rate_kg', 0)} РєРі РІ РЅРµРґРµР»СЋ")
     except Exception:
         pass
     lines.append("")
-    lines.append("<b>Обновленная дневная норма:</b>")
-    lines.append(f"🔥 Калории: {new_plan.calories} ккал")
-    lines.append(f"🥩 Белки: {new_plan.protein_g} г")
-    lines.append(f"🥑 Жиры: {new_plan.fat_g} г")
-    lines.append(f"🍞 Углеводы: {new_plan.carbs_g} г")
+    lines.append("<b>РћР±РЅРѕРІР»РµРЅРЅР°СЏ РґРЅРµРІРЅР°СЏ РЅРѕСЂРјР°:</b>")
+    lines.append(f"рџ”Ґ РљР°Р»РѕСЂРёРё: {new_plan.calories} РєРєР°Р»")
+    lines.append(f"рџҐ© Р‘РµР»РєРё: {new_plan.protein_g} Рі")
+    lines.append(f"рџҐ‘ Р–РёСЂС‹: {new_plan.fat_g} Рі")
+    lines.append(f"рџЌћ РЈРіР»РµРІРѕРґС‹: {new_plan.carbs_g} Рі")
     lines.append("")
     if personal_line:
         def _norm_txt(s: str) -> str:
             return re.sub(r"\s+", " ", (s or "").lower()).strip()
-        pl_core = re.sub(r"^уч[её]л\s+запрос:\s*", "", personal_line, flags=re.I)
+        pl_core = re.sub(r"^СѓС‡[РµС‘]Р»\s+Р·Р°РїСЂРѕСЃ:\s*", "", personal_line, flags=re.IGNORECASE)
         if _norm_txt(pl_core) and _norm_txt(pl_core) not in _norm_txt(explanation):
             lines.append(personal_line)
     lines.append(explanation)
     lines.append("")
-    lines.append("Оставим так или нужна еще корректировка?")
+    lines.append("РћСЃС‚Р°РІРёРј С‚Р°Рє РёР»Рё РЅСѓР¶РЅР° РµС‰Рµ РєРѕСЂСЂРµРєС‚РёСЂРѕРІРєР°?")
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Отлично", callback_data="daily_norm:final:ok")],
-            [InlineKeyboardButton(text="Хочу скорректировать", callback_data="daily_norm:final:adjust")],
+            [InlineKeyboardButton(text="РћС‚Р»РёС‡РЅРѕ", callback_data="daily_norm:final:ok")],
+            [InlineKeyboardButton(text="РҐРѕС‡Сѓ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°С‚СЊ", callback_data="daily_norm:final:adjust")],
         ]
     )
     sent_msg = await message.answer("\n".join(lines), reply_markup=kb, disable_web_page_preview=True)
@@ -718,40 +722,38 @@ async def daily_norm_adjust_apply(message: types.Message, state: FSMContext) -> 
                     if not rewritten:
                         return
                     new_lines: list[str] = []
-                    new_lines.append("<b>Твой план скорректирован!</b>")
+                    new_lines.append("<b>РўРІРѕР№ РїР»Р°РЅ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°РЅ!</b>")
                     new_lines.append("")
                     try:
                         if payload.goal != Goal.maintain:
-                            if getattr(new_plan, 'eta_date', None) is not None and getattr(payload, 'goal_weight_kg', None) is not None:
+                            if getattr(new_plan, "eta_date", None) is not None and getattr(payload, "goal_weight_kg", None) is not None:
                                 delta2 = abs(float(payload.weight_kg) - float(payload.goal_weight_kg))
-                                formatted_date2 = new_plan.eta_date.strftime('%d.%m.%Y')
+                                formatted_date2 = new_plan.eta_date.strftime("%d.%m.%Y")
                                 if payload.goal == Goal.lose:
-                                    new_lines.append(f"Ты сбросишь {round(delta2, 1)} кг к {formatted_date2}")
+                                    new_lines.append(f"РўС‹ СЃР±СЂРѕСЃРёС€СЊ {round(delta2, 1)} РєРі Рє {formatted_date2}")
                                 elif payload.goal == Goal.gain:
-                                    new_lines.append(f"Ты наберешь {round(delta2, 1)} кг к {formatted_date2}")
-                            new_lines.append(f"Скорость: {getattr(new_plan, 'weekly_rate_kg', 0)} кг в неделю")
+                                    new_lines.append(f"РўС‹ РЅР°Р±РµСЂРµС€СЊ {round(delta2, 1)} РєРі Рє {formatted_date2}")
+                            new_lines.append(f"РЎРєРѕСЂРѕСЃС‚СЊ: {getattr(new_plan, 'weekly_rate_kg', 0)} РєРі РІ РЅРµРґРµР»СЋ")
                     except Exception:
                         pass
                     new_lines.append("")
-                    new_lines.append("<b>Обновленная дневная норма:</b>")
-                    new_lines.append(f"🔥 Калории: {new_plan.calories} ккал")
-                    new_lines.append(f"🥩 Белки: {new_plan.protein_g} г")
-                    new_lines.append(f"🥑 Жиры: {new_plan.fat_g} г")
-                    new_lines.append(f"🍞 Углеводы: {new_plan.carbs_g} г")
+                    new_lines.append("<b>РћР±РЅРѕРІР»РµРЅРЅР°СЏ РґРЅРµРІРЅР°СЏ РЅРѕСЂРјР°:</b>")
+                    new_lines.append(f"рџ”Ґ РљР°Р»РѕСЂРёРё: {new_plan.calories} РєРєР°Р»")
+                    new_lines.append(f"рџҐ© Р‘РµР»РєРё: {new_plan.protein_g} Рі")
+                    new_lines.append(f"рџҐ‘ Р–РёСЂС‹: {new_plan.fat_g} Рі")
+                    new_lines.append(f"рџЌћ РЈРіР»РµРІРѕРґС‹: {new_plan.carbs_g} Рі")
                     new_lines.append("")
                     if personal_line:
                         def _norm_txt2(s: str) -> str:
                             return re.sub(r"\s+", " ", (s or "").lower()).strip()
-                        pl_core2 = re.sub(r"^уч[её]л\s+запрос:\s*", "", personal_line, flags=re.I)
+                        pl_core2 = re.sub(r"^СѓС‡[РµС‘]Р»\s+Р·Р°РїСЂРѕСЃ:\s*", "", personal_line, flags=re.IGNORECASE)
                         if _norm_txt2(pl_core2) and _norm_txt2(pl_core2) not in _norm_txt2(rewritten):
                             new_lines.append(personal_line)
                     new_lines.append(rewritten)
                     new_lines.append("")
-                    new_lines.append("Оставим так или нужна еще корректировка?")
-                    try:
+                    new_lines.append("РћСЃС‚Р°РІРёРј С‚Р°Рє РёР»Рё РЅСѓР¶РЅР° РµС‰Рµ РєРѕСЂСЂРµРєС‚РёСЂРѕРІРєР°?")
+                    with contextlib.suppress(Exception):
                         await sent_msg.edit_text("\n".join(new_lines), reply_markup=kb)
-                    except Exception:
-                        pass
                 except Exception:
                     pass
             asyncio.create_task(_rephrase_and_edit())
@@ -793,9 +795,9 @@ async def cb_daily_norm_final_ok(callback: types.CallbackQuery) -> None:
 @router.callback_query(F.data == "daily_norm:final:adjust")
 async def cb_daily_norm_final_adjust(callback: types.CallbackQuery, state: FSMContext) -> None:
     await state.set_state(SettingsDailyNormStates.waiting_text)
-    text = "Напиши, в свободном формате, что нужно скорректировать в твоём индивидуальном плане"
+    text = "РќР°РїРёС€Рё, РІ СЃРІРѕР±РѕРґРЅРѕРј С„РѕСЂРјР°С‚Рµ, С‡С‚Рѕ РЅСѓР¶РЅРѕ СЃРєРѕСЂСЂРµРєС‚РёСЂРѕРІР°С‚СЊ РІ С‚РІРѕС‘Рј РёРЅРґРёРІРёРґСѓР°Р»СЊРЅРѕРј РїР»Р°РЅРµ"
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:daily_norm")]]
+        inline_keyboard=[[InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="settings:open:daily_norm")]]
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb)
@@ -821,84 +823,74 @@ async def cb_settings_open_subscription(callback: types.CallbackQuery) -> None:
     if not callback.from_user:
         return
     user_id = callback.from_user.id
-    # Load subscription and user tz
+    now_utc = datetime.now(timezone.utc)
+
     async with sessionmaker() as session:
         sub = await session.scalar(select(SubscriptionModel).where(SubscriptionModel.user_id == user_id))
         tzinfo = await get_user_tzinfo(session, user_id)
 
     def fmt(dt):
         try:
-            return dt.astimezone(tzinfo).strftime("%d.%m.%Y %H:%M") if dt else "—"
+            return dt.astimezone(tzinfo).strftime("%d.%m.%Y %H:%M") if dt else "?"
         except Exception:
-            return "—"
+            return "?"
 
     lines: list[str] = []
     kb_rows: list[list[InlineKeyboardButton]] = []
+    sub_is_active_now = bool(
+        sub and sub.status == "active" and sub.expires_at_utc and sub.expires_at_utc > now_utc
+    )
 
-    if sub and sub.status == "active" and sub.expires_at_utc:
-        # Friendly names and status (short labels for the subscription screen)
-        plan_map = {"trial": "Пробная", "month": "Месячная", "year": "Годовая"}
-        status_text = "Пробная" if sub.plan == "trial" else "Активная"
-        now_utc = datetime.now(timezone.utc)
+    if sub_is_active_now:
+        plan_map = {"trial": "пробный", "month": "месяц", "year": "год"}
+        status_text = "пробный период" if sub.plan == "trial" else "активна"
         try:
             days_left = max(0, (sub.expires_at_utc.astimezone(tzinfo).date() - now_utc.astimezone(tzinfo).date()).days)
         except Exception:
             days_left = 0
 
-        lines.append("💎 Управление подпиской")
+        lines.append("Управление подпиской")
         lines.append("")
-        lines.append(f"✅ Статус: {status_text}")
-        lines.append(f"📦 План: {plan_map.get(sub.plan, sub.plan)}")
-        lines.append(f"📅 Действует до: {fmt(sub.expires_at_utc)}")
-        lines.append(f"🔄 Автопродление: {'Включено' if bool(getattr(sub, 'auto_renew', True)) else 'Выключено'}")
-        lines.append(f"☀️ Дней осталось: {days_left}")
+        lines.append(f"Статус: {status_text}")
+        lines.append(f"Тариф: {plan_map.get(sub.plan, sub.plan)}")
+        lines.append(f"Действует до: {fmt(sub.expires_at_utc)}")
+        lines.append(f"Автопродление: {'да' if bool(getattr(sub, 'auto_renew', True)) else 'нет'}")
+        lines.append(f"Дней осталось: {days_left}")
         lines.append("")
 
-        # Actions
-        kb_rows.append([InlineKeyboardButton(text="↔️ Сменить план", callback_data="subscription:change_plan")])
+        kb_rows.append([InlineKeyboardButton(text="Сменить тариф", callback_data="subscription:change_plan")])
         if bool(getattr(sub, "auto_renew", True)):
-            kb_rows.append([InlineKeyboardButton(text="❌ Отключить подписку", callback_data="subscription:autorenew:disable")])
+            kb_rows.append([InlineKeyboardButton(text="Отключить автопродление", callback_data="subscription:autorenew:disable")])
         else:
-            kb_rows.append([InlineKeyboardButton(text="✅ Включить автопродление", callback_data="subscription:autorenew:enable")])
-        kb_rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open")])
-        text = "\n".join(lines)
-        kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+            kb_rows.append([InlineKeyboardButton(text="Включить автопродление", callback_data="subscription:autorenew:enable")])
+        kb_rows.append([InlineKeyboardButton(text="Назад", callback_data="settings:open")])
     else:
-        lines.append("💎 Управление подпиской")
+        lines.append("Управление подпиской")
         lines.append("")
-        lines.append("У тебя нет активной подписки.")
+        lines.append("У вас нет активной подписки.")
         lines.append("")
-        lines.append("Выбери вариант:")
-        # Hide trial if user already used it
-        used_trial = False
+        lines.append("Доступные тарифы:")
+
+        trial_available = False
         try:
             async with sessionmaker() as session:
-                rows = (await session.execute(
-                    select(PaymentModel.meta)
-                    .where(PaymentModel.user_id == user_id, PaymentModel.status == "succeeded")
-                    .order_by(PaymentModel.id.desc())
-                    .limit(50)
-                )).scalars().all()
-            for md in rows:
-                try:
-                    if str((md or {}).get("plan", "")).lower() == "trial":
-                        used_trial = True
-                        break
-                except Exception:
-                    continue
-        except Exception:
-            used_trial = False
-        if not used_trial:
-            kb_rows.append([InlineKeyboardButton(text="💥 10 руб. за 3 дня", callback_data="subscription:buy:trial")])
-        kb_rows.append([InlineKeyboardButton(text="750 руб/мес", callback_data="subscription:buy:month")])
-        kb_rows.append([InlineKeyboardButton(text="2500 руб/год", callback_data="subscription:buy:year")])
-        kb_rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open")])
-        text = "\n".join(lines)
-        kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+                trial_available = await is_free_trial_available(session, user_id)
+        except Exception as e:
+            logger.warning("settings.subscription.trial_check_failed | user_id={} | err={}", user_id, e)
+
+        if trial_available:
+            kb_rows.append([InlineKeyboardButton(text="3 дня бесплатно", callback_data="subscription:buy:trial")])
+        kb_rows.append([InlineKeyboardButton(text="750 руб / месяц", callback_data="subscription:buy:month")])
+        kb_rows.append([InlineKeyboardButton(text="2500 руб / год", callback_data="subscription:buy:year")])
+        kb_rows.append([InlineKeyboardButton(text="Назад", callback_data="settings:open")])
+
+    text_out = "\n".join(lines)
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     try:
-        await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+        await callback.message.edit_text(text_out, reply_markup=kb, disable_web_page_preview=True)
     except Exception:
-        await callback.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+        await callback.message.answer(text_out, reply_markup=kb, disable_web_page_preview=True)
+
     try:
         if analytics.logger and callback.from_user:
             analytics.fire_event(
@@ -957,36 +949,44 @@ async def cb_subscription_set_next(callback: types.CallbackQuery) -> None:
 async def cb_subscription_buy_trial(callback: types.CallbackQuery) -> None:
     if not callback.from_user:
         return
-    from datetime import datetime, timedelta
-    from bot.services.users import get_user_tzinfo
     user_id = callback.from_user.id
-    # Compute trial end in user's TZ
+
+    trial_available = False
+    try:
+        async with sessionmaker() as session:
+            trial_available = await is_free_trial_available(session, user_id)
+    except Exception as e:
+        logger.warning("settings.buy_trial.check_failed | user_id={} | err={}", user_id, e)
+
+    if not trial_available:
+        await callback.message.answer("Бесплатный пробный период уже использован. Можно перейти на платный тариф.")
+        await cb_settings_open_subscription(callback)
+        await callback.answer()
+        return
+
     try:
         async with sessionmaker() as session:
             tz = await get_user_tzinfo(session, user_id)
     except Exception:
-        from datetime import timezone
         tz = timezone.utc
-    end_dt = (datetime.now(tz) + timedelta(days=3)).strftime("%d.%m.%Y %H:%M")
-    text = (
-        "💎 Оплата подписки\n\n"
-        "План: Пробный доступ\n"
-        "Стоимость: 10 руб\n"
-        "Период: 3 дня\n\n"
-        f"• Пробный период до: {end_dt}\n"
-        "• После пробного периода годовая подписка продлится за 2500 рублей\n\n"
-        "Оплачивая, ты соглашаешься с <a href=\"https://telegra.ph/Polzovatelskoe-soglashenie-12-05-32\">Пользовательским соглашением</a>, "
-        "<a href=\"https://telegra.ph/Politika-konfidencialnosti-12-05-33\">Политикой конфиденциальности</a> и на сохранение способа оплаты для автопродления.\n"
-        "Автосписание можно отключить в разделе «Настройки → Подписка»."
+
+    days = trial_days()
+    end_dt = (datetime.now(tz) + timedelta(days=days)).strftime("%d.%m.%Y %H:%M")
+    text_out = (
+        "Бесплатный пробный период\n\n"
+        f"Длительность: {days} дн.\n"
+        "Стоимость: 0 руб\n\n"
+        f"Действует до: {end_dt}\n\n"
+        "После окончания пробного периода выберите платный тариф."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Оплатить 10 руб", callback_data="subscription:pay:trial")],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
+        [InlineKeyboardButton(text="Активировать бесплатно", callback_data="subscription:start:trial")],
+        [InlineKeyboardButton(text="Назад", callback_data="settings:open:subscription")],
     ])
     try:
-        await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+        await callback.message.edit_text(text_out, reply_markup=kb, disable_web_page_preview=True)
     except Exception:
-        await callback.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+        await callback.message.answer(text_out, reply_markup=kb, disable_web_page_preview=True)
     await callback.answer()
 
 
@@ -994,24 +994,22 @@ async def cb_subscription_buy_trial(callback: types.CallbackQuery) -> None:
 async def cb_subscription_buy_month(callback: types.CallbackQuery) -> None:
     if not callback.from_user:
         return
-    text = (
-        "💎 Оплата подписки\n\n"
-        "План: Месячная подписка\n"
-        "Стоимость: 750 руб/месяц\n"
+    text_out = (
+        "Тариф Месяц\n\n"
+        "План: месячный\n"
+        "Стоимость: 750 руб / месяц\n"
         "Период: 30 дней\n\n"
-        "После оплаты подписка будет автоматически продлеваться.\n\n"
-        "Оплачивая, ты соглашаешься с <a href=\"https://telegra.ph/Polzovatelskoe-soglashenie-12-05-32\">Пользовательским соглашением</a>, "
-        "<a href=\"https://telegra.ph/Politika-konfidencialnosti-12-05-33\">Политикой конфиденциальности</a> и на сохранение способа оплаты для автопродления.\n"
-        "Автосписание можно отключить в разделе «Настройки → Подписка»."
+        "После оплаты подписка продлевается автоматически.\n\n"
+        "Нажимая кнопку оплаты, вы соглашаетесь с офертой и политикой конфиденциальности, а также на регулярные списания до отключения."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Оплатить 750 руб", callback_data="subscription:pay:month")],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
+        [InlineKeyboardButton(text="Назад", callback_data="settings:open:subscription")],
     ])
     try:
-        await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+        await callback.message.edit_text(text_out, reply_markup=kb, disable_web_page_preview=True)
     except Exception:
-        await callback.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+        await callback.message.answer(text_out, reply_markup=kb, disable_web_page_preview=True)
     await callback.answer()
 
 
@@ -1019,92 +1017,116 @@ async def cb_subscription_buy_month(callback: types.CallbackQuery) -> None:
 async def cb_subscription_buy_year(callback: types.CallbackQuery) -> None:
     if not callback.from_user:
         return
-    text = (
-        "💎 Оплата подписки\n\n"
-        "План: Годовая подписка\n"
-        "Стоимость: 2500 руб/в год\n"
+    text_out = (
+        "Тариф Месяц\n\n"
+        "План: годовой\n"
+        "Стоимость: 2500 руб / год\n"
         "Период: 365 дней\n\n"
-        "После оплаты подписка будет автоматически продлеваться.\n\n"
-        "Оплачивая, ты соглашаешься с <a href=\"https://telegra.ph/Polzovatelskoe-soglashenie-12-05-32\">Пользовательским соглашением</a>, "
-        "<a href=\"https://telegra.ph/Politika-konfidencialnosti-12-05-33\">Политикой конфиденциальности</a> и на сохранение способа оплаты для автопродления.\n"
-        "Автосписание можно отключить в разделе «Настройки → Подписка»."
+        "После оплаты подписка продлевается автоматически.\n\n"
+        "Нажимая кнопку оплаты, вы соглашаетесь с офертой и политикой конфиденциальности, а также на регулярные списания до отключения."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Оплатить 2500 руб", callback_data="subscription:pay:year")],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
+        [InlineKeyboardButton(text="Назад", callback_data="settings:open:subscription")],
     ])
     try:
-        await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+        await callback.message.edit_text(text_out, reply_markup=kb, disable_web_page_preview=True)
     except Exception:
-        await callback.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+        await callback.message.answer(text_out, reply_markup=kb, disable_web_page_preview=True)
     await callback.answer()
 
 
 async def _check_email_and_pay(callback: types.CallbackQuery, state: FSMContext, plan: str) -> None:
-    """Check if user has email, if not — ask for it, otherwise create payment."""
+    """Check if user has email, if not ask for it, otherwise create payment."""
     if not callback.from_user:
         return
+    if plan not in {"month", "year"}:
+        with contextlib.suppress(Exception):
+            await callback.answer()
+        return
+
     user_id = callback.from_user.id
-    
-    # Check if email exists
     async with sessionmaker() as session:
         user_email = await session.scalar(select(UserModel.email).where(UserModel.id == user_id))
-    
+
     if not user_email:
-        # Save plan to state and ask for email
         await state.set_state(SubscriptionEmailStates.waiting_email)
         await state.update_data(pending_plan=plan)
-        text = "🧾🙏🏼 Мы почти закончили! Нужен лишь ваш e-mail для чека. Поделитесь, пожалуйста, в формате: yourmail@example.ru"
+        text_out = "Нужен e-mail для чека. Введите, пожалуйста, в формате: yourmail@example.ru"
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Отмена", callback_data="subscription:email:cancel")],
+            [InlineKeyboardButton(text="Отмена", callback_data="subscription:email:cancel")],
         ])
-        await callback.message.answer(text, reply_markup=kb)
+        await callback.message.answer(text_out, reply_markup=kb)
         await callback.answer()
         return
-    
-    # Email exists — proceed to payment
+
     await _create_and_show_payment(callback, user_id, plan)
 
 
 async def _create_and_show_payment(callback: types.CallbackQuery, user_id: int, plan: str) -> None:
     """Create payment and show payment link."""
     from bot.services.yookassa import create_payment
-    
+
     plan_info = {
-        "trial": ("10 руб", "10"),
         "month": ("750 руб", "750"),
         "year": ("2500 руб", "2500"),
     }
-    btn_text, _ = plan_info.get(plan, ("Оплатить", "0"))
-    
+    btn_text, _ = plan_info.get(plan, ("тариф", "0"))
+
     try:
         cp = await create_payment(user_id=user_id, plan=plan)
     except Exception as e:
-        if str(e) == "trial_already_used":
-            await callback.message.answer("Пробный доступ доступен один раз. Выбери другой тариф.")
-        else:
-            logger.error(f"Payment creation failed: {e}")
-            await callback.message.answer("Ошибка при создании платежа. Попробуй позже.")
-        try:
+        logger.error(f"Payment creation failed: {e}")
+        await callback.message.answer("Не удалось создать платеж. Попробуйте позже.")
+        with contextlib.suppress(Exception):
             await callback.answer()
-        except Exception:
-            pass
         return
-    
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"Оплатить {btn_text}", url=cp.confirmation_url)],
-        [InlineKeyboardButton(text="◀️ Вернуться", callback_data="settings:open:subscription")],
+        [InlineKeyboardButton(text="Назад", callback_data="settings:open:subscription")],
     ])
-    await callback.message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
-    try:
+    await callback.message.answer("Перейдите по ссылке для оплаты:", reply_markup=kb, disable_web_page_preview=True)
+    with contextlib.suppress(Exception):
         await callback.answer()
-    except Exception:
-        pass
 
 
+@router.callback_query(F.data == "subscription:start:trial")
 @router.callback_query(F.data == "subscription:pay:trial")
-async def cb_subscription_pay_trial(callback: types.CallbackQuery, state: FSMContext) -> None:
-    await _check_email_and_pay(callback, state, "trial")
+async def cb_subscription_start_trial(callback: types.CallbackQuery, state: FSMContext) -> None:
+    if not callback.from_user:
+        return
+    user_id = callback.from_user.id
+    try:
+        async with sessionmaker() as session:
+            expires_at_utc = await activate_free_trial(session, user_id)
+            tz = await get_user_tzinfo(session, user_id)
+    except Exception as e:
+        logger.warning("settings.start_trial.failed | user_id={} | err={}", user_id, e)
+        await callback.message.answer("Пока не удалось активировать пробный период. Попробуйте позже.")
+        await callback.answer()
+        return
+
+    if expires_at_utc is None:
+        await callback.message.answer("Бесплатный пробный период уже использован. Можно перейти на платный тариф.")
+        await cb_settings_open_subscription(callback)
+        await callback.answer()
+        return
+
+    end_dt = expires_at_utc.astimezone(tz).strftime("%d.%m.%Y %H:%M")
+    text_out = (
+        "Бесплатный пробный период активирован\n\n"
+        f"Действует до: {end_dt}\n\n"
+        "После окончания периода вы сможете выбрать месячный или годовой тариф."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Выбрать тарифы", callback_data="settings:open:subscription")],
+    ])
+    try:
+        await callback.message.edit_text(text_out, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        await callback.message.answer(text_out, reply_markup=kb, disable_web_page_preview=True)
+    await callback.answer()
 
 
 @router.callback_query(F.data == "subscription:pay:month")
@@ -1129,54 +1151,51 @@ async def handle_subscription_email(message: types.Message, state: FSMContext) -
         return
     user_id = message.from_user.id
     email = message.text.strip()
-    
+
     if not EMAIL_RE.match(email):
-        await message.answer("Кажется, это не e-mail. Отправьте, пожалуйста, в формате: yourmail@example.ru")
+        await message.answer("Похоже, это не e-mail. Проверьте и отправьте: yourmail@example.ru")
         return
-    
-    # Save email
+
     async with sessionmaker() as session:
         await session.execute(update(UserModel).where(UserModel.id == user_id).values(email=email))
         await session.commit()
-    
-    await message.answer(f"✅ Email сохранён: {email}")
-    
-    # Get pending plan and create payment
+
+    await message.answer(f"E-mail сохранен: {email}")
+
     data = await state.get_data()
     plan = data.get("pending_plan", "month")
     await state.clear()
-    
-    # Create a fake callback to reuse payment logic
+
+    if plan not in {"month", "year"}:
+        await message.answer("E-mail сохранен. Можно выбрать тариф в разделе подписки.")
+        return
+
     from bot.services.yookassa import create_payment
-    
+
     plan_info = {
-        "trial": ("10 руб", "10"),
         "month": ("750 руб", "750"),
         "year": ("2500 руб", "2500"),
     }
-    btn_text, _ = plan_info.get(plan, ("Оплатить", "0"))
-    
+    btn_text, _ = plan_info.get(plan, ("тариф", "0"))
+
     try:
         cp = await create_payment(user_id=user_id, plan=plan)
     except Exception as e:
-        if str(e) == "trial_already_used":
-            await message.answer("Пробный доступ доступен один раз. Выбери другой тариф.")
-        else:
-            logger.error(f"Payment creation failed after email: {e}")
-            await message.answer("Ошибка при создании платежа. Попробуй позже.")
+        logger.error(f"Payment creation failed after email: {e}")
+        await message.answer("Не удалось создать платеж. Попробуйте позже.")
         return
-    
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"Оплатить {btn_text}", url=cp.confirmation_url)],
-        [InlineKeyboardButton(text="◀️ Вернуться", callback_data="settings:open:subscription")],
+        [InlineKeyboardButton(text="Назад", callback_data="settings:open:subscription")],
     ])
-    await message.answer("Перейди к оплате по кнопке ниже:", reply_markup=kb, disable_web_page_preview=True)
+    await message.answer("Перейдите по ссылке для оплаты:", reply_markup=kb, disable_web_page_preview=True)
 
 
 def _templates_root_with_back_kb(counts: dict[str, int] | None) -> InlineKeyboardMarkup:
     base = categories_browse_kb(counts)
     rows = [list(row) for row in base.inline_keyboard]
-    rows.append([InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="templates:back:settings")])
+    rows.append([InlineKeyboardButton(text="в—ЂпёЏ Р’РµСЂРЅСѓС‚СЊСЃСЏ РЅР°Р·Р°Рґ", callback_data="templates:back:settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1187,7 +1206,7 @@ async def cb_settings_open_templates(callback: types.CallbackQuery) -> None:
     user_id = callback.from_user.id
     async with sessionmaker() as session:
         counts = await list_categories_with_counts(session, user_id)
-    text = _("Выбери категорию приёма пищи:")
+    text = _("Р’С‹Р±РµСЂРё РєР°С‚РµРіРѕСЂРёСЋ РїСЂРёС‘РјР° РїРёС‰Рё:")
     kb = _templates_root_with_back_kb(counts)
     try:
         await callback.message.edit_text(text, reply_markup=kb)
@@ -1224,3 +1243,5 @@ async def cb_templates_back_settings(callback: types.CallbackQuery) -> None:
     except Exception:
         pass
     await callback.answer()
+
+

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.i18n import gettext as _
 
 _CATS = ("breakfast", "lunch", "dinner", "snack")
@@ -44,7 +44,7 @@ def choose_category_kb(meal_id: int) -> InlineKeyboardMarkup:
 def templates_list_kb(templates: list[tuple[int, str]], category: str) -> InlineKeyboardMarkup:
     # Show rows with [➕ #i] and [❌Удалить]; no title button
     rows = []
-    for idx, (tpl_id, title) in enumerate(templates, start=1):
+    for idx, (tpl_id, _title) in enumerate(templates, start=1):
         rows.append([
             InlineKeyboardButton(text=f"➕ #{idx}", callback_data=f"tpl:add:{tpl_id}"),
             InlineKeyboardButton(text=_("❌Удалить"), callback_data=f"tpl:del:{tpl_id}:{category}"),

@@ -1,11 +1,14 @@
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 import pytest
-from aiogram.types import InlineKeyboardMarkup
+
+if TYPE_CHECKING:
+    from aiogram.types import InlineKeyboardMarkup
 
 
 class DummyUser:
-    def __init__(self, user_id: int = 123):
+    def __init__(self, user_id: int = 123) -> None:
         self.id = user_id
         self.language_code = "ru"
 
@@ -29,19 +32,19 @@ class DummyCallback:
         self.from_user = DummyUser(user_id)
         self.message = DummyCBMessage()
 
-    async def answer(self, *args, **kwargs):
+    async def answer(self, *args, **kwargs) -> None:
         return None
 
 
 class _FakeMealItem:
-    def __init__(self, name: str, weight_g: float | None, calories: float | None):
+    def __init__(self, name: str, weight_g: float | None, calories: float | None) -> None:
         self.name = name
         self.weight_g = weight_g
         self.calories = calories
 
 
 class _FakeMeal:
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: int) -> None:
         self.user_id = user_id
         self.title = "Сэндвич"
         self.calories = 450
@@ -56,7 +59,7 @@ class _FakeMeal:
 
 
 class _FakeSession:
-    def __init__(self, meal):
+    def __init__(self, meal) -> None:
         self._meal = meal
 
     async def get(self, _model, _id):
@@ -64,7 +67,7 @@ class _FakeSession:
 
 
 class _FakeSM:
-    def __init__(self, meal):
+    def __init__(self, meal) -> None:
         self._meal = meal
 
     async def __aenter__(self):
@@ -121,7 +124,7 @@ async def test_cb_edit_detail_no_weight_no_extra_blank(monkeypatch: pytest.Monke
     monkeypatch.setattr(analytics_module.analytics, "logger", None)
 
     class _MealNoWeight(_FakeMeal):
-        def __init__(self, user_id: int):
+        def __init__(self, user_id: int) -> None:
             super().__init__(user_id)
             self.weight_g = 0.0
 

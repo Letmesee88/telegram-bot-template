@@ -1,14 +1,12 @@
 # tests/test_foodai_fsm_isolation.py
 from __future__ import annotations
-
 import asyncio
 import types
-
-import pytest
+from typing import NoReturn
 
 
 class DummyState:
-    def __init__(self, value: str | None):
+    def __init__(self, value: str | None) -> None:
         self._value = value
 
     async def get_state(self):
@@ -16,39 +14,42 @@ class DummyState:
 
 
 class DummyMessage:
-    def __init__(self, text: str | None = None, photo: list | None = None):
+    def __init__(self, text: str | None = None, photo: list | None = None) -> None:
         # Provide only attributes potentially accessed by handler AFTER guard
         self.text = text
         self.photo = photo or []
         self.from_user = types.SimpleNamespace(id=123)
         self.chat = types.SimpleNamespace(id=456, type="private")
 
-    async def answer(self, *args, **kwargs):  # should not be called in these tests
-        raise AssertionError("answer() should not be called when FSM is active")
+    async def answer(self, *args, **kwargs) -> NoReturn:  # should not be called in these tests
+        msg = "answer() should not be called when FSM is active"
+        raise AssertionError(msg)
 
-    async def answer_photo(self, *args, **kwargs):
-        raise AssertionError("answer_photo() should not be called when FSM is active")
+    async def answer_photo(self, *args, **kwargs) -> NoReturn:
+        msg = "answer_photo() should not be called when FSM is active"
+        raise AssertionError(msg)
 
 
 class DummyCallback:
-    def __init__(self, data: str):
+    def __init__(self, data: str) -> None:
         self.data = data
         self.from_user = types.SimpleNamespace(id=123)
         self.message = types.SimpleNamespace(chat=types.SimpleNamespace(id=456, type="private"))
         self._answered = False
 
-    async def answer(self, *args, **kwargs):
+    async def answer(self, *args, **kwargs) -> None:
         # In handler we do a silent acknowledge before returning
         self._answered = True
 
 
-def test_foodai_text_ignored_when_fsm_active(monkeypatch):
-    async def _run():
+def test_foodai_text_ignored_when_fsm_active(monkeypatch) -> None:
+    async def _run() -> None:
         from bot.handlers import foodai as foodai_mod
 
         # If analyze_text is called -> fail the test
-        async def explode(*_, **__):
-            raise AssertionError("analyze_text must NOT be called when FSM is active")
+        async def explode(*_, **__) -> NoReturn:
+            msg = "analyze_text must NOT be called when FSM is active"
+            raise AssertionError(msg)
 
         monkeypatch.setattr(foodai_mod, "analyze_text", explode)
 
@@ -61,12 +62,13 @@ def test_foodai_text_ignored_when_fsm_active(monkeypatch):
     asyncio.run(_run())
 
 
-def test_foodai_photo_ignored_when_fsm_active(monkeypatch):
-    async def _run():
+def test_foodai_photo_ignored_when_fsm_active(monkeypatch) -> None:
+    async def _run() -> None:
         from bot.handlers import foodai as foodai_mod
 
-        async def explode(*_, **__):
-            raise AssertionError("analyze_photo must NOT be called when FSM is active")
+        async def explode(*_, **__) -> NoReturn:
+            msg = "analyze_photo must NOT be called when FSM is active"
+            raise AssertionError(msg)
 
         monkeypatch.setattr(foodai_mod, "analyze_photo", explode)
 
@@ -80,8 +82,8 @@ def test_foodai_photo_ignored_when_fsm_active(monkeypatch):
     asyncio.run(_run())
 
 
-def test_foodai_callback_ignored_when_fsm_active():
-    async def _run():
+def test_foodai_callback_ignored_when_fsm_active() -> None:
+    async def _run() -> None:
         from bot.handlers import foodai as foodai_mod
 
         cb = DummyCallback(data="foodai:save:1")

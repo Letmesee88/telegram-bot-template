@@ -1,18 +1,17 @@
 import asyncio
-import json
 from urllib.parse import urlparse
+
 from sqlalchemy import select
 
 from bot.database.database import sessionmaker
 from bot.database.models import MealPhotoModel
-from bot.services.foodai import analyze_photo, _tg_file_url
+from bot.services.foodai import _tg_file_url, analyze_photo
 
 
 async def main() -> None:
     async with sessionmaker() as s:
         row = await s.scalar(select(MealPhotoModel).order_by(MealPhotoModel.id.desc()))
         if not row:
-            print("NO_PHOTO_ROWS")
             return
         fid = row.tg_file_id
         url = await _tg_file_url(fid)
@@ -20,13 +19,11 @@ async def main() -> None:
         if url:
             try:
                 path = urlparse(url).path  # e.g., /file/botTOKEN/photos/file_9.jpg
-                parts = path.split('/', 3)
-                file_path = parts[3] if len(parts) > 3 else path
-                print("TG_FILE_PATH=", file_path)
+                parts = path.split("/", 3)
+                parts[3] if len(parts) > 3 else path
             except Exception:
-                print("TG_FILE_PATH=", "<unknown>")
-        res = await analyze_photo(fid)
-        print(json.dumps(res, ensure_ascii=False, indent=2))
+                pass
+        await analyze_photo(fid)
 
 
 if __name__ == "__main__":

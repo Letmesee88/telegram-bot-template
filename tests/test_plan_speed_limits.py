@@ -1,6 +1,6 @@
 import math
 
-from bot.schemas.onboarding import OnboardingData, ActivityLevel, Goal, Gender, Speed
+from bot.schemas.onboarding import ActivityLevel, Gender, Goal, OnboardingData, Speed
 from bot.services.plan import calculate_daily_plan
 
 
@@ -30,7 +30,7 @@ def _mk_data(
     )
 
 
-def test_lose_capped_by_frac_deficit():
+def test_lose_capped_by_frac_deficit() -> None:
     # Case: requested deficit slightly above 35% TDEE => cap by fractional limit (0.35)
     # Setup: 120 kg, 180 cm, male, light activity
     data = _mk_data(weight_kg=120.0, height_cm=180.0, activity_level=ActivityLevel.light, goal=Goal.lose, speed=Speed.fast)
@@ -51,10 +51,10 @@ def test_lose_capped_by_frac_deficit():
     # Target calories = TDEE - expected_deficit (floats rounded at the end by code)
     expected_target = tdee - expected_deficit
     assert abs(plan.tdee - round(tdee)) <= 2
-    assert abs(plan.calories - int(round(expected_target))) <= 2
+    assert abs(plan.calories - round(expected_target)) <= 2
 
 
-def test_lose_capped_by_abs_deficit():
+def test_lose_capped_by_abs_deficit() -> None:
     # Case: requested deficit above 1200 and frac 35% * TDEE is higher than 1200 => cap by absolute 1200
     # Setup: 140 kg, 190 cm, male, active activity (high TDEE)
     data = _mk_data(
@@ -75,7 +75,7 @@ def test_lose_capped_by_abs_deficit():
     assert abs((plan.tdee - plan.calories) - 1200) <= 30
 
 
-def test_gain_capped_by_surplus_and_rate():
+def test_gain_capped_by_surplus_and_rate() -> None:
     # Gain: FAST requests 0.8%/wk, but MAX_GAIN_RATE=0.7% and surplus capped at 600 kcal/day.
     # Setup: 80 kg, moderate activity, maintain->gain with FAST
     data = _mk_data(

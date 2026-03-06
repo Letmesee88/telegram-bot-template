@@ -1,23 +1,25 @@
 from __future__ import annotations
-
-from typing import Any, Dict, List, Tuple
-from datetime import datetime, timedelta, timezone, date as date_cls, time as dtime
+import contextlib
+from datetime import date as date_cls
+from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
+from typing import Any
 
 from sqlalchemy import select
 
+from bot.core.config import settings
+from bot.core.loader import redis_client
 from bot.database.database import sessionmaker
 from bot.database.models import MealModel, OnboardingAnswerModel
-from bot.services.users import get_user_tzinfo
-from bot.core.loader import redis_client
-from bot.core.config import settings
 from bot.services.foodai import _openai_request  # reuse Responses helper
+from bot.services.users import get_user_tzinfo
 
 WEEKDAY_RU_SHORT = [
     "Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"
 ]
 
 
-async def aggregate_last7_days(user_id: int) -> Tuple[List[Dict[str, Any]], Dict[str, float]]:
+async def aggregate_last7_days(user_id: int) -> tuple[list[dict[str, Any]], dict[str, float]]:
     """Return per-day aggregates for last 7 calendar days (D0..D-6) in user's TZ.
 
     Returns (days, totals) where days is a list of dicts with keys:
@@ -27,7 +29,7 @@ async def aggregate_last7_days(user_id: int) -> Tuple[List[Dict[str, Any]], Dict
       - has_entries: bool
     And totals is week-level sums across all 7 days.
     """
-    days: List[Dict[str, Any]] = []
+    days: list[dict[str, Any]] = []
     week_totals = {"cal": 0.0, "p": 0.0, "f": 0.0, "c": 0.0}
 
     async with sessionmaker() as session:
@@ -35,7 +37,7 @@ async def aggregate_last7_days(user_id: int) -> Tuple[List[Dict[str, Any]], Dict
         now_local = datetime.now(tz)
         today_local = now_local.date()
 
-        for i in range(0, 7):
+        for i in range(7):
             d_local = today_local - timedelta(days=i)
             start_local = datetime.combine(d_local, dtime(0, 0), tz)
             end_local = start_local + timedelta(days=1)
@@ -82,7 +84,7 @@ def _advice_cache_key(user_id: int, window_start: date_cls) -> str:
     return f"history:advice:v1:{user_id}:{window_start.isoformat()}"
 
 
-async def get_week_advice(user_id: int, days: List[Dict[str, Any]]) -> str | None:
+async def get_week_advice(user_id: int, days: list[dict[str, Any]]) -> str | None:
     """Return short weekly advice using LLM with 5h Redis cache. Returns None on failure."""
     if not days:
         return None
@@ -175,10 +177,8 @@ async def get_week_advice(user_id: int, days: List[Dict[str, Any]]) -> str | Non
         if isinstance(raw, str):
             advice = raw.strip().replace("\n", " ")
         if advice:
-            try:
-                await redis_client.setex(key, int(5 * 3600), advice)
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                await redis_client.setex(key, (5 * 3600), advice)
             return advice
     except Exception:
         return None
@@ -192,10 +192,8 @@ def weekday_ru(d: date_cls) -> str:
 
 # --- Add-in-day (backdating) helpers ---
 async def set_add_in_day_target(user_id: int, local_date_iso: str, ttl_sec: int = 900) -> None:
-    try:
+    with contextlib.suppress(Exception):
         await redis_client.setex(f"history:add_target:{user_id}", int(ttl_sec), local_date_iso)
-    except Exception:
-        pass
 
 
 async def get_add_in_day_target(user_id: int) -> str | None:
@@ -212,7 +210,5 @@ async def get_add_in_day_target(user_id: int) -> str | None:
 
 
 async def clear_add_in_day_target(user_id: int) -> None:
-    try:
+    with contextlib.suppress(Exception):
         await redis_client.delete(f"history:add_target:{user_id}")
-    except Exception:
-        pass

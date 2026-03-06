@@ -1,27 +1,27 @@
 from .base import Base
-from .user import UserModel
-from .onboarding_answer import OnboardingAnswerModel
-from .meals import MealModel, MealItemModel, MealPhotoModel, DailyIntakeModel
-from .recommendation_log import RecommendationLogModel
-from .templates import MealTemplateModel, MealTemplateItemModel
-from .weight import WeightLogModel
 from .daily_report import DailyReportLogModel
-from .subscription import SubscriptionModel
+from .meals import DailyIntakeModel, MealItemModel, MealModel, MealPhotoModel
+from .onboarding_answer import OnboardingAnswerModel
 from .payment import PaymentModel
+from .recommendation_log import RecommendationLogModel
+from .subscription import SubscriptionModel
+from .templates import MealTemplateItemModel, MealTemplateModel
+from .user import UserModel
+from .weight import WeightLogModel
 
 __all__ = [
     "Base",
-    "UserModel",
-    "OnboardingAnswerModel",
-    "MealModel",
-    "MealItemModel",
-    "MealPhotoModel",
     "DailyIntakeModel",
-    "RecommendationLogModel",
-    "MealTemplateModel",
-    "MealTemplateItemModel",
-    "WeightLogModel",
     "DailyReportLogModel",
-    "SubscriptionModel",
+    "MealItemModel",
+    "MealModel",
+    "MealPhotoModel",
+    "MealTemplateItemModel",
+    "MealTemplateModel",
+    "OnboardingAnswerModel",
     "PaymentModel",
+    "RecommendationLogModel",
+    "SubscriptionModel",
+    "UserModel",
+    "WeightLogModel",
 ]

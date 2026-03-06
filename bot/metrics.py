@@ -2,14 +2,14 @@ try:
     import prometheus_client  # type: ignore
 except Exception:  # pragma: no cover - test env fallback
     class _NoopLabels:
-        def inc(self, *args, **kwargs):
+        def inc(self, *args, **kwargs) -> None:
             return None
 
-        def observe(self, *args, **kwargs):
+        def observe(self, *args, **kwargs) -> None:
             return None
 
     class _NoopCounter:
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args, **kwargs) -> None:
             pass
 
         def labels(self, *args, **kwargs):
@@ -28,7 +28,7 @@ except Exception:  # pragma: no cover - test env fallback
         CONTENT_TYPE_LATEST = "text/plain; version=0.0.4"
 
         @staticmethod
-        def generate_latest(*args, **kwargs):
+        def generate_latest(*args, **kwargs) -> bytes:
             return b""
 
     prometheus_client = _NoopProm()  # type: ignore

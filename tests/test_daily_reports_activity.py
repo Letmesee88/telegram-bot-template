@@ -1,12 +1,12 @@
-import pytest
-from datetime import datetime, timedelta, timezone, date
-
 import types
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 
 # ---- Local fakes (lightweight; do not import across tests) ----
 class FakeResult:
-    def __init__(self, scalar_obj=None, scalars_list=None):
+    def __init__(self, scalar_obj=None, scalars_list=None) -> None:
         self._scalar_obj = scalar_obj
         self._scalars_list = scalars_list or []
 
@@ -14,7 +14,7 @@ class FakeResult:
         return self._scalar_obj
 
     class _Scalars:
-        def __init__(self, items):
+        def __init__(self, items) -> None:
             self._items = list(items)
         def first(self):
             return self._items[0] if self._items else None
@@ -25,7 +25,7 @@ class FakeResult:
 
 
 class SelectPromise:
-    def __init__(self, model):
+    def __init__(self, model) -> None:
         self.model = model
     def where(self, *args, **kwargs):
         return self
@@ -42,7 +42,7 @@ def fake_select(model):
 
 
 class UpdatePromise:
-    def __init__(self, model):
+    def __init__(self, model) -> None:
         self.model = model
         self._values = {}
     def where(self, *args, **kwargs):
@@ -57,7 +57,7 @@ def fake_update(model):
 
 
 class FakeSession:
-    def __init__(self, state: dict):
+    def __init__(self, state: dict) -> None:
         self.state = state
         self.added = []
         self.updates = []
@@ -92,18 +92,18 @@ class FakeSession:
                 return self.state.get("log_existing")
         return None
 
-    def add(self, obj):
+    def add(self, obj) -> None:
         self.added.append(obj)
 
-    async def commit(self):
+    async def commit(self) -> None:
         self._commits += 1
 
-    async def rollback(self):
+    async def rollback(self) -> None:
         return None
 
 
 class FakeSessionCM:
-    def __init__(self, session: FakeSession):
+    def __init__(self, session: FakeSession) -> None:
         self._s = session
     async def __aenter__(self):
         return self._s
@@ -112,29 +112,28 @@ class FakeSessionCM:
 
 
 class FakeBot:
-    def __init__(self):
+    def __init__(self) -> None:
         self.sent = []
-    async def send_message(self, chat_id, text, **kwargs):
+    async def send_message(self, chat_id, text, **kwargs) -> None:
         self.sent.append((chat_id, text, kwargs))
-        return None
 
 
 class FakeRedis:
-    def __init__(self):
+    def __init__(self) -> None:
         self.zsets = {}
-    async def zadd(self, key, mapping: dict, nx: bool = False):
+    async def zadd(self, key, mapping: dict, nx: bool = False) -> None:
         z = self.zsets.setdefault(key, {})
         for member, score in mapping.items():
             if nx and str(member) in z:
                 continue
             z[str(member)] = int(score)
     class _Pipe:
-        def __init__(self, outer):
+        def __init__(self, outer) -> None:
             self.outer = outer
             self.ops = []
-        def zscore(self, key, member):
+        def zscore(self, key, member) -> None:
             self.ops.append(("zscore", key, member))
-        def zadd(self, key, mapping: dict, nx: bool = False):
+        def zadd(self, key, mapping: dict, nx: bool = False) -> None:
             self.ops.append(("zadd", key, mapping, nx))
         async def execute(self):
             out = []
@@ -154,7 +153,7 @@ class FakeRedis:
 # ---- Tests ----
 
 @pytest.mark.asyncio
-async def test_runtime_skip_inactive(monkeypatch):
+async def test_runtime_skip_inactive(monkeypatch) -> None:
     from bot.services import reports as rep
     # Config: require activity, disable premium gate
     monkeypatch.setattr(rep.settings, "DAILY_REPORTS_REQUIRE_ACTIVITY_DAYS", 7)
@@ -190,7 +189,7 @@ async def test_runtime_skip_inactive(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_runtime_active_allows_send(monkeypatch):
+async def test_runtime_active_allows_send(monkeypatch) -> None:
     from bot.services import reports as rep
     monkeypatch.setattr(rep.settings, "DAILY_REPORTS_REQUIRE_ACTIVITY_DAYS", 7)
     monkeypatch.setattr(rep.settings, "DAILY_REPORTS_REQUIRE_PREMIUM", False)
@@ -233,14 +232,14 @@ async def test_runtime_active_allows_send(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_seed_audience_activity_filter(monkeypatch):
+async def test_seed_audience_activity_filter(monkeypatch) -> None:
     from bot.background import report_scheduler as sched
     # Enable activity filter; ignore premium gate for this test
     monkeypatch.setattr(sched.settings, "DAILY_REPORTS_REQUIRE_ACTIVITY_DAYS", 7)
     monkeypatch.setattr(sched.settings, "DAILY_REPORTS_REQUIRE_PREMIUM", False)
 
     # Fixed epoch for determinism
-    async def next_epoch(uid: int):
+    async def next_epoch(uid: int) -> int:
         return 1728000000
     monkeypatch.setattr(sched, "_next_run_epoch", next_epoch)
 
@@ -258,5 +257,7 @@ async def test_seed_audience_activity_filter(monkeypatch):
     await sched._seed_audience()
     z = fr.zsets.get(sched.ZSET_KEY, {})
     # Both active users should be scheduled
-    assert "101" in z and z["101"] == 1728000000
-    assert "202" in z and z["202"] == 1728000000
+    assert "101" in z
+    assert z["101"] == 1728000000
+    assert "202" in z
+    assert z["202"] == 1728000000

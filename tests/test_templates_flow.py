@@ -1,13 +1,14 @@
-import types
 import importlib
+import types
+
 import pytest
 
-from bot.keyboards.templates import categories_browse_kb, templates_list_kb
 from bot.handlers import templates as tpl_mod
+from bot.keyboards.templates import categories_browse_kb, templates_list_kb
 
 
 @pytest.fixture(autouse=True)
-def _patch_i18n(monkeypatch):
+def _patch_i18n(monkeypatch) -> None:
     # Neutralize aiogram i18n in unit tests
     templates_mod = importlib.import_module("bot.handlers.templates")
     foodai_mod = importlib.import_module("bot.handlers.foodai")
@@ -38,11 +39,11 @@ class DummyMessage:
         self.last_markup = None
         self.chat = DummyChat()
 
-    async def edit_text(self, text: str, reply_markup=None):
+    async def edit_text(self, text: str, reply_markup=None) -> None:
         self.last_text = text
         self.last_markup = reply_markup
 
-    async def answer(self, text: str, reply_markup=None):
+    async def answer(self, text: str, reply_markup=None) -> None:
         # Fallback path
         self.last_text = text
         self.last_markup = reply_markup
@@ -54,13 +55,13 @@ class DummyCallback:
         self.from_user = DummyUser(user_id)
         self.message = DummyMessage()
 
-    async def answer(self, *args, **kwargs):
+    async def answer(self, *args, **kwargs) -> None:
         return None
 
 
 # -------- Pure keyboard tests --------
 
-def test_categories_browse_kb_two_columns(monkeypatch):
+def test_categories_browse_kb_two_columns(monkeypatch) -> None:
     # Patch i18n gettext to no-op to avoid aiogram I18n context
     monkeypatch.setattr("bot.keyboards.templates._", lambda s: s, raising=False)
     kb = categories_browse_kb({"breakfast": 1, "lunch": 2, "dinner": 3, "snack": 4})
@@ -73,7 +74,7 @@ def test_categories_browse_kb_two_columns(monkeypatch):
     assert rows[0][1].text.startswith("🍜 ")
 
 
-def test_templates_list_kb_buttons_symbols(monkeypatch):
+def test_templates_list_kb_buttons_symbols(monkeypatch) -> None:
     monkeypatch.setattr("bot.keyboards.templates._", lambda s: s, raising=False)
     data = [(1, "Блюдо 1"), (2, "Блюдо 2"), (3, "Блюдо 3")]
     kb = templates_list_kb(data, "lunch")
@@ -88,7 +89,7 @@ def test_templates_list_kb_buttons_symbols(monkeypatch):
 # -------- Handler tests with monkeypatches --------
 
 class _FakeMeal:
-    def __init__(self, user_id=123, title="Блины", calories=558, p=18.9, f=32.8, c=50.5, w=340.0, source="photo"):
+    def __init__(self, user_id=123, title="Блины", calories=558, p=18.9, f=32.8, c=50.5, w=340.0, source="photo") -> None:
         self.user_id = user_id
         self.title = title
         self.calories = calories
@@ -106,7 +107,7 @@ class _FakeMeal:
 
 
 class _FakeDI:
-    def __init__(self, cal=0, p=0, f=0, c=0):
+    def __init__(self, cal=0, p=0, f=0, c=0) -> None:
         self.calories = cal
         self.protein_g = p
         self.fat_g = f
@@ -114,12 +115,12 @@ class _FakeDI:
 
 
 class _FakeOA:
-    def __init__(self):
+    def __init__(self) -> None:
         self.daily_plan = {"calories": 2000, "protein_g": 120.0, "fat_g": 70.0, "carbs_g": 250.0}
 
 
 class _FakeSession:
-    def __init__(self, meal: _FakeMeal | None = None, di: _FakeDI | None = None, oa: _FakeOA | None = None):
+    def __init__(self, meal: _FakeMeal | None = None, di: _FakeDI | None = None, oa: _FakeOA | None = None) -> None:
         self._meal = meal
         self._di = di
         self._oa = oa
@@ -147,19 +148,19 @@ class _FakeSession:
 
 
 class _FakeSessionMaker:
-    def __init__(self, session):
+    def __init__(self, session) -> None:
         self._session = session
 
     def __call__(self):
         return self._session
 
 
-async def _async_noop(*args, **kwargs):
+async def _async_noop(*args, **kwargs) -> None:
     return None
 
 
 @pytest.mark.asyncio
-async def test_cb_tpl_del_confirmation(monkeypatch):
+async def test_cb_tpl_del_confirmation(monkeypatch) -> None:
     cb = DummyCallback("tpl:del:1:lunch")
     # Patch delete_template to no-op at the handler import site
     templates_mod = importlib.import_module("bot.handlers.templates")
@@ -176,7 +177,7 @@ async def test_cb_tpl_del_confirmation(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cb_tpl_save_back_returns_saved_with_day_analysis(monkeypatch):
+async def test_cb_tpl_save_back_returns_saved_with_day_analysis(monkeypatch) -> None:
     cb = DummyCallback("tpl:save_back:10")
     meal = _FakeMeal(user_id=cb.from_user.id)
     di = _FakeDI(cal=1000, p=50, f=30, c=120)
@@ -197,13 +198,13 @@ async def test_cb_tpl_save_back_returns_saved_with_day_analysis(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cb_tpl_add_preview_includes_grams_and_kcal(monkeypatch):
+async def test_cb_tpl_add_preview_includes_grams_and_kcal(monkeypatch) -> None:
     cb = DummyCallback("tpl:add:21")
     meal = _FakeMeal(user_id=cb.from_user.id)
     fake_sess = _FakeSession(meal=meal)
     monkeypatch.setattr(tpl_mod, "sessionmaker", _FakeSessionMaker(fake_sess), raising=False)
     # Patch create_meal_draft_from_template to return a fixed meal_id
-    async def _fake_create(*args, **kwargs):
+    async def _fake_create(*args, **kwargs) -> int:
         return 777
     monkeypatch.setattr(tpl_mod, "create_meal_draft_from_template", _fake_create, raising=False)
     monkeypatch.setattr("bot.handlers.templates._", lambda s: s, raising=False)
@@ -213,14 +214,15 @@ async def test_cb_tpl_add_preview_includes_grams_and_kcal(monkeypatch):
     text = cb.message.last_text or ""
     # Must contain composition header and item lines with grams and kcal
     assert "🍜 Состав:" in text
-    assert "200 г" in text and "360 ккал" in text
+    assert "200 г" in text
+    assert "360 ккал" in text
     # Totals and weight present
     assert "🔥 Калории:" in text
     assert "⚖️ Вес:" in text
 
 
 @pytest.mark.asyncio
-async def test_cb_tpl_save_entry_formatting_and_spacing(monkeypatch):
+async def test_cb_tpl_save_entry_formatting_and_spacing(monkeypatch) -> None:
     cb = DummyCallback("tpl:save:10")
     meal = _FakeMeal(user_id=cb.from_user.id)
     fake_sess = _FakeSession(meal=meal)

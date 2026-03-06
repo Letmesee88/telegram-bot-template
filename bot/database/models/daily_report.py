@@ -1,8 +1,5 @@
 from __future__ import annotations
-
-from datetime import datetime, date
-from typing import Optional
-
+from datetime import date, datetime
 from sqlalchemy import BigInteger, Date, DateTime, Enum, ForeignKey, Integer, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,11 +21,11 @@ class DailyReportLogModel(Base):
         server_default="queued",
     )
 
-    message_id: Mapped[Optional[int]]
-    sent_at_utc: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    message_id: Mapped[int | None]
+    sent_at_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    error_code: Mapped[Optional[str]] = mapped_column(String(64))
-    error_text: Mapped[Optional[str]] = mapped_column(String(512))
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_text: Mapped[str | None] = mapped_column(String(512))
     retries: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
 
     created_at: Mapped[created_at]

@@ -1,12 +1,12 @@
 from __future__ import annotations
+from datetime import datetime, timezone
 
 import pytest
-from datetime import datetime, timezone
 from aiogram.types import InlineKeyboardMarkup
 
 
 class DummyUser:
-    def __init__(self, user_id: int = 123):
+    def __init__(self, user_id: int = 123) -> None:
         self.id = user_id
         self.first_name = "Test"
         self.last_name = None
@@ -37,7 +37,7 @@ class DummyCallback:
         self.from_user = DummyUser(user_id)
         self.message = DummyCBMessage()
 
-    async def answer(self, *args, **kwargs):
+    async def answer(self, *args, **kwargs) -> None:
         return None
 
 
@@ -49,11 +49,11 @@ class _DT(datetime):
 
 
 class _FakeResult:
-    def __init__(self, meals: list[object]):
+    def __init__(self, meals: list[object]) -> None:
         self._meals = meals
 
     class _Scalars:
-        def __init__(self, meals: list[object]):
+        def __init__(self, meals: list[object]) -> None:
             self._meals = meals
 
         def all(self):
@@ -64,7 +64,7 @@ class _FakeResult:
 
 
 class _FakeSession:
-    def __init__(self, meals: list[object]):
+    def __init__(self, meals: list[object]) -> None:
         self._meals = meals
 
     async def execute(self, _query):
@@ -72,7 +72,7 @@ class _FakeSession:
 
 
 class _FakeSM:
-    def __init__(self, meals: list[object]):
+    def __init__(self, meals: list[object]) -> None:
         self._meals = meals
 
     async def __aenter__(self):
@@ -83,7 +83,7 @@ class _FakeSM:
 
 
 class FakeMeal:
-    def __init__(self, id: int, title: str, dt: datetime, cal=0):
+    def __init__(self, id: int, title: str, dt: datetime, cal=0) -> None:
         self.id = id
         self.title = title
         self.consumed_at = dt
@@ -115,18 +115,25 @@ async def test_cb_edit_list_numbered_text_and_single_column_buttons(monkeypatch:
     text = cb.message.captured.get("text")
     assert isinstance(text, str)
     assert "Выберите блюдо" in text
-    assert "1 " in text and "2 " in text and "3 " in text
+    assert "1 " in text
+    assert "2 " in text
+    assert "3 " in text
     assert "1. " not in text  # no dot after index
-    assert "→" in text and "ккал" in text
+    assert "→" in text
+    assert "ккал" in text
 
     kb = cb.message.captured.get("reply_markup")
     assert isinstance(kb, InlineKeyboardMarkup)
     rows = kb.inline_keyboard
     # n item rows, then optional nav row, then back row
     n = len(meals)
-    assert len(rows[0]) == 1 and len(rows[1]) == 1 and len(rows[2]) == 1
+    assert len(rows[0]) == 1
+    assert len(rows[1]) == 1
+    assert len(rows[2]) == 1
     first_btn_texts = [rows[i][0].text for i in range(n)]
-    assert first_btn_texts[0].startswith("1 ") and first_btn_texts[1].startswith("2 ") and first_btn_texts[2].startswith("3 ")
+    assert first_btn_texts[0].startswith("1 ")
+    assert first_btn_texts[1].startswith("2 ")
+    assert first_btn_texts[2].startswith("3 ")
     first_btn_datas = [rows[i][0].callback_data for i in range(n)]
     assert all(d.startswith("de:d:") and d.endswith(":1") for d in first_btn_datas)
     assert rows[-1][0].text == "◀️ Вернуться назад"
@@ -157,8 +164,9 @@ async def test_cb_edit_list_navigation_first_middle_last(monkeypatch: pytest.Mon
     kb1 = cb1.message.captured.get("reply_markup")
     assert isinstance(kb1, InlineKeyboardMarkup)
     texts1 = [btn.text for row in kb1.inline_keyboard for btn in row]
-    assert "Вперёд ▶️" in texts1 and "◀️ Назад" not in texts1
-    # First button should start with 1 
+    assert "Вперёд ▶️" in texts1
+    assert "◀️ Назад" not in texts1
+    # First button should start with 1
     assert kb1.inline_keyboard[0][0].text.startswith("1 ")
 
     # Page 2
@@ -167,8 +175,9 @@ async def test_cb_edit_list_navigation_first_middle_last(monkeypatch: pytest.Mon
     kb2 = cb2.message.captured.get("reply_markup")
     assert isinstance(kb2, InlineKeyboardMarkup)
     texts2 = [btn.text for row in kb2.inline_keyboard for btn in row]
-    assert "◀️ Назад" in texts2 and "Вперёд ▶️" in texts2
-    # First item on page 2 should start with 11 
+    assert "◀️ Назад" in texts2
+    assert "Вперёд ▶️" in texts2
+    # First item on page 2 should start with 11
     assert kb2.inline_keyboard[0][0].text.startswith("11 ")
 
     # Page 3 (last)
@@ -177,4 +186,5 @@ async def test_cb_edit_list_navigation_first_middle_last(monkeypatch: pytest.Mon
     kb3 = cb3.message.captured.get("reply_markup")
     assert isinstance(kb3, InlineKeyboardMarkup)
     texts3 = [btn.text for row in kb3.inline_keyboard for btn in row]
-    assert "◀️ Назад" in texts3 and "Вперёд ▶️" not in texts3
+    assert "◀️ Назад" in texts3
+    assert "Вперёд ▶️" not in texts3

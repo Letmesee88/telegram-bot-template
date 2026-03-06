@@ -4,7 +4,6 @@ import pytest
 
 from bot.services.foodai import refine_meal
 
-
 # ==============================
 # Unit tests for refine_meal()
 # ==============================
@@ -23,7 +22,8 @@ async def test_refine_meal_add_grams() -> None:
         ],
     }
     out = await refine_meal(base, "добавить сыр 30 г")
-    assert isinstance(out, dict) and not out.get("error")
+    assert isinstance(out, dict)
+    assert not out.get("error")
     assert out.get("meta", {}).get("action") == "add"
     items = out.get("items") or []
     assert any("сыр" in (i.get("name") or "").lower() for i in items)
@@ -104,7 +104,7 @@ async def test_edit_flow_add_success(db_session, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(h, "_", lambda s: s)
 
     # Create meal in DB
-    from bot.database.models import MealModel, MealItemModel, UserModel
+    from bot.database.models import MealModel, UserModel
     # Ensure user exists to satisfy FK
     await db_session.merge(UserModel(id=5001, first_name="T", last_name=None, username=None, language_code="ru"))
     await db_session.commit()
@@ -114,11 +114,11 @@ async def test_edit_flow_add_success(db_session, monkeypatch: pytest.MonkeyPatch
 
     # Prepare state and message
     class _State:
-        def __init__(self):
+        def __init__(self) -> None:
             self._data = {"edit_meal_id": m.id}
         async def get_data(self):
             return dict(self._data)
-        async def clear(self):
+        async def clear(self) -> None:
             self._data.clear()
 
     class _Chat:
@@ -130,12 +130,12 @@ async def test_edit_flow_add_success(db_session, monkeypatch: pytest.MonkeyPatch
         language_code = "ru"
 
     class _Msg:
-        def __init__(self):
+        def __init__(self) -> None:
             self.from_user = _User()
             self.chat = _Chat()
             self.text = "добавить сыр 30 г"
             self.sent: list[str] = []
-        async def answer(self, text: str, **kwargs):
+        async def answer(self, text: str, **kwargs) -> None:
             self.sent.append(text)
 
     state = _State()
@@ -173,11 +173,11 @@ async def test_edit_flow_error_message(db_session, monkeypatch: pytest.MonkeyPat
     await db_session.commit()
 
     class _State:
-        def __init__(self):
+        def __init__(self) -> None:
             self._data = {"edit_meal_id": m.id}
         async def get_data(self):
             return dict(self._data)
-        async def clear(self):
+        async def clear(self) -> None:
             self._data.clear()
 
     class _Chat:
@@ -189,12 +189,12 @@ async def test_edit_flow_error_message(db_session, monkeypatch: pytest.MonkeyPat
         language_code = "ru"
 
     class _Msg:
-        def __init__(self):
+        def __init__(self) -> None:
             self.from_user = _User()
             self.chat = _Chat()
             self.text = "блаблабла"  # unsupported
             self.sent: list[str] = []
-        async def answer(self, text: str, **kwargs):
+        async def answer(self, text: str, **kwargs) -> None:
             self.sent.append(text)
 
     state = _State()

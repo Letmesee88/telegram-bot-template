@@ -1,17 +1,17 @@
 from __future__ import annotations
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
-from datetime import datetime, timezone, timedelta
 
 from bot.core.config import settings
 from bot.database.database import sessionmaker
-from bot.database.models import SubscriptionModel, PaymentModel, UserModel
+from bot.database.models import PaymentModel, SubscriptionModel, UserModel
 from bot.services.yookassa import create_payment, create_recurring_payment
 
 
 @pytest.mark.asyncio
-async def test_create_payment_includes_receipt_payload(test_db_env, ensure_user, monkeypatch):
+async def test_create_payment_includes_receipt_payload(test_db_env, ensure_user, monkeypatch) -> None:
     user_id = await ensure_user(10081, email="buyer@example.com")
 
     # Spy Payment.create to capture payload
@@ -40,7 +40,8 @@ async def test_create_payment_includes_receipt_payload(test_db_env, ensure_user,
     payload = captured["payload"]
     assert payload["receipt"]["customer"]["email"] == "buyer@example.com"
     items = payload["receipt"]["items"]
-    assert isinstance(items, list) and len(items) == 1
+    assert isinstance(items, list)
+    assert len(items) == 1
     item = items[0]
     assert item["description"] == "Подписка Calorissimo — 30 дней"
     assert item["quantity"] == 1.0
@@ -54,7 +55,7 @@ async def test_create_payment_includes_receipt_payload(test_db_env, ensure_user,
 
 
 @pytest.mark.asyncio
-async def test_create_recurring_payment_includes_receipt_payload(test_db_env, ensure_user, monkeypatch):
+async def test_create_recurring_payment_includes_receipt_payload(test_db_env, ensure_user, monkeypatch) -> None:
     user_id = await ensure_user(10082, email="rebuyer@example.com")
 
     # Seed subscription (so FK/linking is valid if enforced)
@@ -98,7 +99,8 @@ async def test_create_recurring_payment_includes_receipt_payload(test_db_env, en
     payload = captured["payload"]
     assert payload["receipt"]["customer"]["email"] == "rebuyer@example.com"
     items = payload["receipt"]["items"]
-    assert isinstance(items, list) and len(items) == 1
+    assert isinstance(items, list)
+    assert len(items) == 1
     item = items[0]
     assert item["description"] == "Подписка Calorissimo — 365 дней"
     assert item["quantity"] == 1.0
@@ -113,13 +115,13 @@ async def test_create_recurring_payment_includes_receipt_payload(test_db_env, en
 @pytest.mark.asyncio
 async def test_webhook_succeeded_saves_receipt_registration(
     test_db_env, ensure_user, make_webhook_request, make_yk_view, yk_stub
-):
+) -> None:
     user_id = await ensure_user(10083)
 
     # Prepare stubbed YooKassa find_one returning receipt_registration
     metadata = {"user_id": user_id, "plan": "month"}
     value = f"{settings.PRICE_MONTH_RUB:.2f}"
-    yk_obj = yk_stub(status="succeeded", value=value, metadata=metadata, pm_id="pm_x", pm_saved=True, rr="registered")
+    yk_stub(status="succeeded", value=value, metadata=metadata, pm_id="pm_x", pm_saved=True, rr="registered")
 
     # Trigger webhook
     req = make_webhook_request({

@@ -1,8 +1,5 @@
 from __future__ import annotations
-
 from datetime import datetime
-from typing import Optional
-
 from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,16 +23,16 @@ class SubscriptionModel(Base):
         server_default="month",
     )
 
-    payment_method_id: Mapped[Optional[str]] = mapped_column(String(128))
+    payment_method_id: Mapped[str | None] = mapped_column(String(128))
     # Whether to auto-renew at period end (UX toggle; actual rebilling comes next release)
     auto_renew: Mapped[bool] = mapped_column(default=True)
     # Deferred plan change that takes effect at the end of current period
-    next_plan: Mapped[Optional[str]] = mapped_column(String(16))
+    next_plan: Mapped[str | None] = mapped_column(String(16))
 
     started_at_utc: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("TIMEZONE('utc', now())"), nullable=False
     )
-    expires_at_utc: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    canceled_at_utc: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    expires_at_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    canceled_at_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     created_at: Mapped[created_at]

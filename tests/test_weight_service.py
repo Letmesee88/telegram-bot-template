@@ -1,18 +1,16 @@
 from __future__ import annotations
-
-import asyncio
 from datetime import date
 
 import pytest
 from sqlalchemy import select
 
 from bot.database.database import sessionmaker
-from bot.database.models import WeightLogModel, OnboardingAnswerModel
-from bot.services.weight import save_weight, get_current_weight, build_my_weight_text
+from bot.database.models import OnboardingAnswerModel, WeightLogModel
+from bot.services.weight import build_my_weight_text, get_current_weight, save_weight
 
 
 @pytest.mark.asyncio
-async def test_save_weight_upsert_and_current(ensure_user):
+async def test_save_weight_upsert_and_current(ensure_user) -> None:
     user_id = await ensure_user(user_id=20001)
 
     # First save today
@@ -43,7 +41,7 @@ async def test_save_weight_upsert_and_current(ensure_user):
 
 
 @pytest.mark.asyncio
-async def test_build_my_weight_text_no_progress_line(ensure_user):
+async def test_build_my_weight_text_no_progress_line(ensure_user) -> None:
     user_id = await ensure_user(user_id=20002)
 
     # Onboarding goal and start

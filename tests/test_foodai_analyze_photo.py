@@ -1,12 +1,13 @@
 import json
+
 import pytest
 
-from bot.services.foodai import analyze_photo
 from bot.services import foodai as foodai_module
+from bot.services.foodai import analyze_photo
 
 
 @pytest.mark.asyncio
-async def test_analyze_photo_happy_path(monkeypatch: pytest.MonkeyPatch):
+async def test_analyze_photo_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_tg_file_url(file_id: str) -> str | None:
         return "https://example.com/img.jpg"
 
@@ -36,7 +37,7 @@ async def test_analyze_photo_happy_path(monkeypatch: pytest.MonkeyPatch):
             ],
             "references": {
                 "sources": [
-                    "ФГБУН \"ФИЦ питания и биотехнологии\"",
+                    'ФГБУН "ФИЦ питания и биотехнологии"',
                     "USDA FoodData Central",
                 ]
             },
@@ -57,13 +58,13 @@ async def test_analyze_photo_happy_path(monkeypatch: pytest.MonkeyPatch):
     assert isinstance(res.get("items"), list)
     refs = (res.get("references") or {}).get("sources")
     assert refs == [
-        "ФГБУН \"ФИЦ питания и биотехнологии\"",
+        'ФГБУН "ФИЦ питания и биотехнологии"',
         "USDA FoodData Central",
     ]
 
 
 @pytest.mark.asyncio
-async def test_analyze_photo_not_food(monkeypatch: pytest.MonkeyPatch):
+async def test_analyze_photo_not_food(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_tg_file_url(file_id: str) -> str | None:
         return "https://example.com/img.jpg"
 
@@ -82,7 +83,7 @@ async def test_analyze_photo_not_food(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_analyze_photo_escalation(monkeypatch: pytest.MonkeyPatch):
+async def test_analyze_photo_escalation(monkeypatch: pytest.MonkeyPatch) -> None:
     # Arrange settings to use a simple chain m1>m2 and force at most 2 steps
     foodai_module.settings.FOODAI_VISION_ESCALATION_ENABLED = True
     foodai_module.settings.FOODAI_VISION_ESCALATION_CHAIN = "m1>m2"
@@ -108,7 +109,7 @@ async def test_analyze_photo_escalation(monkeypatch: pytest.MonkeyPatch):
                 "weight_g": 0.0,
                 "confidence": 0.5,
                 "items": [],
-                "references": {"sources": ["ФГБУН \"ФИЦ питания и биотехнологии\"", "USDA FoodData Central"]},
+                "references": {"sources": ['ФГБУН "ФИЦ питания и биотехнологии"', "USDA FoodData Central"]},
                 "analysis_text": None,
                 "appearance": {"is_packaged": False, "plate_visible": False, "plate_diameter_cm": None},
                 "not_food": False,
@@ -125,7 +126,7 @@ async def test_analyze_photo_escalation(monkeypatch: pytest.MonkeyPatch):
             "items": [
                 {"name": "рис", "calories": 220, "protein_g": 4.0, "fat_g": 1.5, "carbs_g": 48.0, "weight_g": 200.0, "is_liquid": False}
             ],
-            "references": {"sources": ["ФГБУН \"ФИЦ питания и биотехнологии\"", "USDA FoodData Central"]},
+            "references": {"sources": ['ФГБУН "ФИЦ питания и биотехнологии"', "USDA FoodData Central"]},
             "analysis_text": "На фото рис. Использованы справочные данные ФИЦ питания и USDA.",
             "appearance": {"is_packaged": False, "plate_visible": True, "plate_diameter_cm": 24},
             "not_food": False,
@@ -142,6 +143,6 @@ async def test_analyze_photo_escalation(monkeypatch: pytest.MonkeyPatch):
     assert float(res.get("confidence") or 0) >= 0.75
     refs = (res.get("references") or {}).get("sources")
     assert refs == [
-        "ФГБУН \"ФИЦ питания и биотехнологии\"",
+        'ФГБУН "ФИЦ питания и биотехнологии"',
         "USDA FoodData Central",
     ]

@@ -1,18 +1,18 @@
 from __future__ import annotations
+from datetime import datetime, timedelta, timezone
 
 import pytest
-from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
 
 from bot.core.config import settings
 from bot.database.database import sessionmaker
-from bot.database.models import SubscriptionModel, PaymentModel, UserModel
+from bot.database.models import PaymentModel, SubscriptionModel
 
 
 @pytest.mark.asyncio
 async def test_rebill_succeeded_applies_next_plan_and_nonotify(
     test_db_env, ensure_user, yk_stub, make_webhook_request, make_yk_view, capture_bot_messages
-):
+) -> None:
     user_id = await ensure_user(10061)
 
     # Seed current subscription with next_plan to be applied on rebill
@@ -46,10 +46,12 @@ async def test_rebill_succeeded_applies_next_plan_and_nonotify(
         assert sub is not None
         assert sub.plan == "year"
         assert sub.next_plan is None
-        assert sub.expires_at_utc is not None and sub.expires_at_utc > datetime.now(timezone.utc)
+        assert sub.expires_at_utc is not None
+        assert sub.expires_at_utc > datetime.now(timezone.utc)
         # Payment stored succeeded
         pm = (await session.execute(select(PaymentModel).where(PaymentModel.yk_payment_id == "pay_rebill_ok_1"))).scalar_one_or_none()
-        assert pm is not None and pm.status == "succeeded"
+        assert pm is not None
+        assert pm.status == "succeeded"
 
     # Nonotify on rebill success
     assert len(capture_bot_messages) == 0
@@ -58,7 +60,7 @@ async def test_rebill_succeeded_applies_next_plan_and_nonotify(
 @pytest.mark.asyncio
 async def test_payment_succeeded_amount_mismatch_ignored(
     test_db_env, ensure_user, yk_stub, make_webhook_request, make_yk_view
-):
+) -> None:
     user_id = await ensure_user(10062)
 
     # Stub YooKassa: succeeded month but with wrong amount value

@@ -1,38 +1,39 @@
 from __future__ import annotations
-
 import asyncio
+import contextlib
 import json
 import random
 import time
-from datetime import datetime, timedelta, timezone, date, time as dtime
-from typing import Any, Optional
-
-from loguru import logger
 from collections import deque
+from datetime import date, datetime, timedelta, timezone
+from datetime import time as dtime
+from typing import TYPE_CHECKING, Any
+
+from aiogram.exceptions import TelegramForbiddenError
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from loguru import logger
 from sqlalchemy import select, update
 
 from bot.core.config import settings
 from bot.database.database import sessionmaker
 from bot.database.models import (
     DailyIntakeModel,
-    OnboardingAnswerModel,
     DailyReportLogModel,
-    UserModel,
+    OnboardingAnswerModel,
     WeightLogModel,
 )
 from bot.metrics import (
-    daily_report_started,
-    daily_report_sent,
+    daily_report_duration_ms,
     daily_report_failed,
     daily_report_fallback,
-    daily_report_duration_ms,
+    daily_report_sent,
+    daily_report_started,
 )
-from bot.services.users import get_user_tzinfo, is_subscription_active
 from bot.services.foodai import _openai_request  # type: ignore
-from aiogram import Bot
-from aiogram.exceptions import TelegramForbiddenError
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from bot.services.users import get_user_tzinfo, is_subscription_active
 
+if TYPE_CHECKING:
+    from aiogram import Bot
 
 _MOTIVATION_SHORT_POOL: list[str] = [
     "✨Супер! Первый день позади. Ещё вчера это казалось сложным, а сегодня уже получается!",
@@ -113,7 +114,7 @@ def _compose_neutral_text(pool: list[str], lo: int, hi: int) -> str:
             L = join_len(parts)
             if lo <= L <= hi:
                 return " ".join(parts)
-            if L <= hi and L > best_len:
+            if hi >= L and best_len < L:
                 best, best_len = parts, L
     # 3) try triples
     for i in range(n):
@@ -123,7 +124,7 @@ def _compose_neutral_text(pool: list[str], lo: int, hi: int) -> str:
                 L = join_len(parts)
                 if lo <= L <= hi:
                     return " ".join(parts)
-                if L <= hi and L > best_len:
+                if hi >= L and best_len < L:
                     best, best_len = parts, L
     # 4) fallback to the longest <= hi if exists, otherwise the shortest sentence
     if best is not None and best_len >= 0 and best_len >= lo:
@@ -132,7 +133,7 @@ def _compose_neutral_text(pool: list[str], lo: int, hi: int) -> str:
     single_best = ""
     for s in sents:
         L = len(s)
-        if L <= hi and L > len(single_best):
+        if hi >= L and len(single_best) < L:
             single_best = s
     if single_best:
         return single_best
@@ -201,15 +202,13 @@ async def _fetch_plan_and_fact(user_id: int) -> tuple[dict[str, float], dict[str
 
         oa = await session.scalar(select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id))
         dp = (oa.daily_plan if oa and isinstance(getattr(oa, "daily_plan", None), dict) else {}) or {}
-        try:
+        with contextlib.suppress(Exception):
             plan = {
                 "calories": float(dp.get("calories") or 0),
                 "protein_g": float(dp.get("protein_g") or 0),
                 "fat_g": float(dp.get("fat_g") or 0),
                 "carbs_g": float(dp.get("carbs_g") or 0),
             }
-        except Exception:
-            pass
 
         res = await session.execute(
             select(DailyIntakeModel).where(
@@ -231,7 +230,7 @@ async def _fetch_plan_and_fact(user_id: int) -> tuple[dict[str, float], dict[str
 
 def _pct(fact: float, plan: float) -> int:
     if plan > 0:
-        return int(round((fact / plan) * 100.0))
+        return round((fact / plan) * 100.0)
     return 0
 
 
@@ -289,18 +288,14 @@ async def _collect_user_context(user_id: int) -> dict[str, Any]:
         )
         last_row = latest.scalars().first()
         if last_row and last_row.weight_kg is not None:
-            try:
+            with contextlib.suppress(Exception):
                 ctx["current_weight"] = float(last_row.weight_kg)
-            except Exception:
-                pass
 
         oa = await session.scalar(select(OnboardingAnswerModel).where(OnboardingAnswerModel.user_id == user_id))
         oa_data = (oa.data if oa and isinstance(getattr(oa, "data", None), dict) else {}) or {}
         if oa_data.get("goal_weight_kg") is not None:
-            try:
+            with contextlib.suppress(Exception):
                 ctx["goal_weight"] = float(oa_data.get("goal_weight_kg"))
-            except Exception:
-                pass
 
         first = await session.execute(
             select(WeightLogModel)
@@ -310,22 +305,16 @@ async def _collect_user_context(user_id: int) -> dict[str, Any]:
         )
         first_row = first.scalars().first()
         if first_row and first_row.weight_kg is not None:
-            try:
+            with contextlib.suppress(Exception):
                 ctx["start_weight"] = float(first_row.weight_kg)
-            except Exception:
-                pass
         if ctx["start_weight"] is None:
             # fallback to onboarding start/current
             if oa_data.get("start_weight_kg") is not None:
-                try:
+                with contextlib.suppress(Exception):
                     ctx["start_weight"] = float(oa_data.get("start_weight_kg"))
-                except Exception:
-                    pass
             elif oa_data.get("weight_kg") is not None:
-                try:
+                with contextlib.suppress(Exception):
                     ctx["start_weight"] = float(oa_data.get("weight_kg"))
-                except Exception:
-                    pass
 
         # Progress pct towards goal
         sw = ctx.get("start_weight")
@@ -393,7 +382,7 @@ async def _collect_user_context(user_id: int) -> dict[str, Any]:
     return ctx
 
 
-async def _gen_llm_content(plan: dict[str, float], fact: dict[str, float], ctx: Optional[dict[str, Any]] = None) -> tuple[Optional[str], Optional[str], Optional[str]]:
+async def _gen_llm_content(plan: dict[str, float], fact: dict[str, float], ctx: dict[str, Any] | None = None) -> tuple[str | None, str | None, str | None]:
     model = (settings.DAILY_REPORTS_MODEL or settings.RECOMMENDER_MODEL or settings.FOODAI_DEFAULT_MODEL or "gpt-5-mini")
     timeout = int(getattr(settings, "DAILY_REPORTS_LLM_TIMEOUT_SEC", 10) or 10)
     mot_min, mot_max, adv_min, adv_max = _len_limits()
@@ -418,7 +407,7 @@ async def _gen_llm_content(plan: dict[str, float], fact: dict[str, float], ctx: 
     streak = ctx.get("adherence_streak_days") if ctx else None
     logged7 = ctx.get("logging_days_last7") if ctx else None
 
-    def _fmt(v: Optional[float], suf: str = "") -> str:
+    def _fmt(v: float | None, suf: str = "") -> str:
         return (f"{v:.1f}{suf}" if isinstance(v, (int, float)) else "нет данных")
 
     plan_line = "План на день: калории {pc}, белки {pp} г, жиры {pf} г, углеводы {pcb} г.".format(
@@ -435,12 +424,7 @@ async def _gen_llm_content(plan: dict[str, float], fact: dict[str, float], ctx: 
         tr=(f"{tr7:+.1f} кг" if isinstance(tr7, (int, float)) else "нет данных"), st=(streak or 0), lg=(logged7 or 0)
     )
 
-    user_text = " ".join([
-        plan_line,
-        fact_line,
-        ctx_line,
-        "Сформируй персональную мотивацию и практичные советы на 1 день: питание, режим, поведенческие рекомендации. Без списков покупок."
-    ])
+    user_text = f"{plan_line} {fact_line} {ctx_line} Сформируй персональную мотивацию и практичные советы на 1 день: питание, режим, поведенческие рекомендации. Без списков покупок."
 
     payload: dict[str, Any] = {
         "model": model,
@@ -473,17 +457,15 @@ async def _gen_llm_content(plan: dict[str, float], fact: dict[str, float], ctx: 
             }
         ],
     }
-    async def _call_and_parse(pl: dict[str, Any]) -> tuple[Optional[str], Optional[str], Optional[str]]:
-        raw: Optional[str] = None
+    async def _call_and_parse(pl: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+        raw: str | None = None
         try:
             raw = await asyncio.wait_for(_openai_request("responses", pl), timeout=timeout)
             if not raw:
-                try:
+                with contextlib.suppress(Exception):
                     logger.warning("daily_report_llm_empty | sample={}", (raw or "")[:200])
-                except Exception:
-                    pass
                 return None, None, "empty"
-            data: Optional[dict[str, Any]] = None
+            data: dict[str, Any] | None = None
             try:
                 data = json.loads(raw)
             except Exception:
@@ -496,34 +478,28 @@ async def _gen_llm_content(plan: dict[str, float], fact: dict[str, float], ctx: 
                     except Exception:
                         data = None
             if not isinstance(data, dict):
-                try:
+                with contextlib.suppress(Exception):
                     logger.warning("daily_report_llm_bad_json | sample={}", (raw or "")[:200])
-                except Exception:
-                    pass
                 return None, None, "json_parse"
             mot = str(data.get("motivation_full") or "").strip()
             adv = str(data.get("advice") or "").strip()
             if not mot or not adv:
-                try:
+                with contextlib.suppress(Exception):
                     logger.warning("daily_report_llm_invalid_fields | sample={}", (raw or "")[:200])
-                except Exception:
-                    pass
                 return None, None, "invalid"
             return mot, adv, None
         except asyncio.TimeoutError:
             return None, None, "timeout"
         except Exception as e:
-            try:
+            with contextlib.suppress(Exception):
                 logger.warning("daily_report_llm_error | err={}", e)
-            except Exception:
-                pass
             return None, None, "other"
 
     attempts = 0
     max_attempts = int(getattr(settings, "DAILY_REPORTS_LLM_MAX_ATTEMPTS", 2) or 2)
-    mot_out: Optional[str] = None
-    adv_out: Optional[str] = None
-    last_err: Optional[str] = None
+    mot_out: str | None = None
+    adv_out: str | None = None
+    last_err: str | None = None
     while attempts < max_attempts:
         attempts += 1
         mot_out, adv_out, err = await _call_and_parse(payload)
@@ -578,19 +554,15 @@ async def _gen_llm_content(plan: dict[str, float], fact: dict[str, float], ctx: 
             last_err = err_r or "range"
         else:
             last_err = err or "other"
-        try:
+        with contextlib.suppress(Exception):
             await asyncio.sleep(0.3 * (2 ** (attempts - 1)))
-        except Exception:
-            pass
     return None, None, (last_err or "failed")
 
 
-async def assemble_and_send_report(bot: Bot, user_id: int, *, scheduled_epoch: Optional[int] = None) -> bool:
+async def assemble_and_send_report(bot: Bot, user_id: int, *, scheduled_epoch: int | None = None) -> bool:
     t0 = time.time()
-    try:
+    with contextlib.suppress(Exception):
         daily_report_started.inc()
-    except Exception:
-        pass
 
     plan, fact, y_local = await _fetch_plan_and_fact(user_id)
 
@@ -618,17 +590,16 @@ async def assemble_and_send_report(bot: Bot, user_id: int, *, scheduled_epoch: O
                         await session.commit()
                     except Exception:
                         await session.rollback()
-                else:
-                    if existing.status != "sent":
-                        await session.execute(
-                            update(DailyReportLogModel)
-                            .where(
-                                (DailyReportLogModel.user_id == user_id)
-                                & (DailyReportLogModel.date_local == y_local)
-                            )
-                            .values(status="skipped", error_code="not_subscribed")
+                elif existing.status != "sent":
+                    await session.execute(
+                        update(DailyReportLogModel)
+                        .where(
+                            (DailyReportLogModel.user_id == user_id)
+                            & (DailyReportLogModel.date_local == y_local)
                         )
-                        await session.commit()
+                        .values(status="skipped", error_code="not_subscribed")
+                    )
+                    await session.commit()
                 return False
 
     try:
@@ -674,17 +645,16 @@ async def assemble_and_send_report(bot: Bot, user_id: int, *, scheduled_epoch: O
                         await session.commit()
                     except Exception:
                         await session.rollback()
-                else:
-                    if existing.status != "sent":
-                        await session.execute(
-                            update(DailyReportLogModel)
-                            .where(
-                                (DailyReportLogModel.user_id == user_id)
-                                & (DailyReportLogModel.date_local == y_local)
-                            )
-                            .values(status="skipped", error_code="inactive")
+                elif existing.status != "sent":
+                    await session.execute(
+                        update(DailyReportLogModel)
+                        .where(
+                            (DailyReportLogModel.user_id == user_id)
+                            & (DailyReportLogModel.date_local == y_local)
                         )
-                        await session.commit()
+                        .values(status="skipped", error_code="inactive")
+                    )
+                    await session.commit()
                 return False
 
     # Idempotency: ensure single send per (user_id, date_local)
@@ -695,7 +665,7 @@ async def assemble_and_send_report(bot: Bot, user_id: int, *, scheduled_epoch: O
             )
         )
         if existing and existing.status == "sent":
-            return
+            return None
         if not existing:
             try:
                 session.add(DailyReportLogModel(user_id=user_id, date_local=y_local, status="queued"))
@@ -717,7 +687,7 @@ async def assemble_and_send_report(bot: Bot, user_id: int, *, scheduled_epoch: O
     text = _fmt_summary_text(y_local, plan, fact, short, mot or "", adv or "")
 
     # Send and update log
-    msg_id: Optional[int] = None
+    msg_id: int | None = None
     try:
         await _limit_telegram_rps()
         kb = InlineKeyboardMarkup(
@@ -746,10 +716,8 @@ async def assemble_and_send_report(bot: Bot, user_id: int, *, scheduled_epoch: O
         return True
     except TelegramForbiddenError as e:
         # User blocked the bot — mark skipped and do not reschedule
-        try:
+        with contextlib.suppress(Exception):
             daily_report_failed.labels("telegram").inc()
-        except Exception:
-            pass
         async with sessionmaker() as session:
             await session.execute(
                 update(DailyReportLogModel)
@@ -759,10 +727,8 @@ async def assemble_and_send_report(bot: Bot, user_id: int, *, scheduled_epoch: O
             await session.commit()
         return False
     except Exception as e:
-        try:
+        with contextlib.suppress(Exception):
             daily_report_failed.labels("telegram").inc()
-        except Exception:
-            pass
         async with sessionmaker() as session:
             await session.execute(
                 update(DailyReportLogModel)
@@ -772,7 +738,5 @@ async def assemble_and_send_report(bot: Bot, user_id: int, *, scheduled_epoch: O
             await session.commit()
         return True
     finally:
-        try:
+        with contextlib.suppress(Exception):
             daily_report_duration_ms.observe((time.time() - t0) * 1000)
-        except Exception:
-            pass
