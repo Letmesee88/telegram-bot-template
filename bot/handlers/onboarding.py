@@ -683,15 +683,18 @@ async def sale_choose(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "sale:buy:month")
 async def sale_buy_month(call: CallbackQuery, state: FSMContext) -> None:
     text = (
-        "Тариф Месяц\n\n"
-        "План: месячный\n"
-        "Стоимость: 750 руб / месяц\n"
-        "Срок: 30 дней\n\n"
-        "После оплаты подписка продлевается автоматически."
+        "💎 Оплата подписки\n\n"
+        "План: Месячная подписка\n"
+        "Стоимость: 750 руб/месяц\n"
+        "Период: 30 дней\n\n"
+        "После оплаты подписка будет автоматически продлеваться.\n\n"
+        "Оплачивая, ты соглашаешься с <a href=\"https://telegra.ph/Polzovatelskoe-soglashenie-12-05-32\">Пользовательским соглашением</a>, "
+        "<a href=\"https://telegra.ph/Politika-konfidencialnosti-12-05-33\">Политикой конфиденциальности</a> и на сохранение способа оплаты для автопродления.\n"
+        "Автосписание можно отключить в разделе «Настройки → Подписка»."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Оплатить 750 руб", callback_data="sale:pay:month")],
-        [InlineKeyboardButton(text="Назад", callback_data="sale:choose")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:choose")],
     ])
     try:
         await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
@@ -703,15 +706,18 @@ async def sale_buy_month(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "sale:buy:year")
 async def sale_buy_year(call: CallbackQuery, state: FSMContext) -> None:
     text = (
-        "Тариф Год\n\n"
-        "План: годовой\n"
-        "Стоимость: 2500 руб / год\n"
-        "Срок: 365 дней\n\n"
-        "После оплаты подписка продлевается автоматически."
+        "💎 Оплата подписки\n\n"
+        "План: Годовая подписка\n"
+        "Стоимость:  2500 руб/в год\n"
+        "Период: 365 дней\n\n"
+        "После оплаты подписка будет автоматически продлеваться.\n\n"
+        "Оплачивая, ты соглашаешься с <a href=\"https://telegra.ph/Polzovatelskoe-soglashenie-12-05-32\">Пользовательским соглашением</a>, "
+        "<a href=\"https://telegra.ph/Politika-konfidencialnosti-12-05-33\">Политикой конфиденциальности</a> и на сохранение способа оплаты для автопродления.\n"
+        "Автосписание можно отключить в разделе «Настройки → Подписка»."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Оплатить 2500 руб", callback_data="sale:pay:year")],
-        [InlineKeyboardButton(text="Назад", callback_data="sale:choose")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="sale:choose")],
     ])
     try:
         await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)

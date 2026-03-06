@@ -995,16 +995,18 @@ async def cb_subscription_buy_month(callback: types.CallbackQuery) -> None:
     if not callback.from_user:
         return
     text_out = (
-        "Тариф Месяц\n\n"
-        "План: месячный\n"
-        "Стоимость: 750 руб / месяц\n"
+        "💎 Оплата подписки\n\n"
+        "План: Месячная подписка\n"
+        "Стоимость: 750 руб/месяц\n"
         "Период: 30 дней\n\n"
-        "После оплаты подписка продлевается автоматически.\n\n"
-        "Нажимая кнопку оплаты, вы соглашаетесь с офертой и политикой конфиденциальности, а также на регулярные списания до отключения."
+        "После оплаты подписка будет автоматически продлеваться.\n\n"
+        "Оплачивая, ты соглашаешься с <a href=\"https://telegra.ph/Polzovatelskoe-soglashenie-12-05-32\">Пользовательским соглашением</a>, "
+        "<a href=\"https://telegra.ph/Politika-konfidencialnosti-12-05-33\">Политикой конфиденциальности</a> и на сохранение способа оплаты для автопродления.\n"
+        "Автосписание можно отключить в разделе «Настройки → Подписка»."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Оплатить 750 руб", callback_data="subscription:pay:month")],
-        [InlineKeyboardButton(text="Назад", callback_data="settings:open:subscription")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
     ])
     try:
         await callback.message.edit_text(text_out, reply_markup=kb, disable_web_page_preview=True)
@@ -1018,16 +1020,18 @@ async def cb_subscription_buy_year(callback: types.CallbackQuery) -> None:
     if not callback.from_user:
         return
     text_out = (
-        "Тариф Месяц\n\n"
-        "План: годовой\n"
-        "Стоимость: 2500 руб / год\n"
+        "💎 Оплата подписки\n\n"
+        "План: Годовая подписка\n"
+        "Стоимость: 2500 руб/в год\n"
         "Период: 365 дней\n\n"
-        "После оплаты подписка продлевается автоматически.\n\n"
-        "Нажимая кнопку оплаты, вы соглашаетесь с офертой и политикой конфиденциальности, а также на регулярные списания до отключения."
+        "После оплаты подписка будет автоматически продлеваться.\n\n"
+        "Оплачивая, ты соглашаешься с <a href=\"https://telegra.ph/Polzovatelskoe-soglashenie-12-05-32\">Пользовательским соглашением</a>, "
+        "<a href=\"https://telegra.ph/Politika-konfidencialnosti-12-05-33\">Политикой конфиденциальности</a> и на сохранение способа оплаты для автопродления.\n"
+        "Автосписание можно отключить в разделе «Настройки → Подписка»."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Оплатить 2500 руб", callback_data="subscription:pay:year")],
-        [InlineKeyboardButton(text="Назад", callback_data="settings:open:subscription")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="settings:open:subscription")],
     ])
     try:
         await callback.message.edit_text(text_out, reply_markup=kb, disable_web_page_preview=True)
